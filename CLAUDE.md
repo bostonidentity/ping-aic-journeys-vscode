@@ -1,0 +1,82 @@
+# Ping AIC Journeys (VS Code Extension)
+
+A VS Code extension for browsing and analyzing **journey dependency graphs** in Ping Advanced Identity Cloud (AIC) tenants. Connects via service-account JWT-bearer auth, resolves journeys to their full transitive dependency tree (inner journeys, scripts, library scripts, themes, ESVs), and visualizes the result inside the editor.
+
+## Stack
+
+VS Code Extension API (Node.js extension host) | TypeScript | `esbuild` bundling | `axios` for AIC REST | `jose` for JWT signing | Biome (lint) + Vitest (test). Webview UI (later) will be React + ReactFlow as a separate esbuild bundle.
+
+## Structure
+
+- `src/` — everything that ships
+  - `extension.ts` — `activate()`, command registration, tree provider wiring
+  - `aic/` — raw AIC REST client (auth, http, types, client). No VS Code imports.
+  - `resolver/` — dependency graph builder. No VS Code imports.
+  - `tenants/` (planned) — connection registry, wraps settings + SecretStorage
+  - `views/` (planned) — `TreeDataProvider`s for the sidebar
+  - `webview/` (planned) — graph visualizer, separate esbuild bundle
+- `out/` — built output (`extension.js`); produced by `npm run build`, gitignored
+- `tests/` — non-shipped test infrastructure (fixtures, integration tests)
+- `docs/` — design docs and decision log
+- `.claude/` — agents, hooks, rules, skills for this project
+- `sandbox/` (planned, gitignored) — scratch space for POCs and live-tenant smoke tests
+- `media/` (planned) — extension icons and webview static assets
+- `dev-tail.sh` — tails the latest `AIC Journeys` OutputChannel log file in a terminal
+
+## Commands
+
+- `npm run build` — esbuild bundle to `out/extension.js`
+- `npm run watch` — esbuild watch mode (rebuilds on save)
+- `npm run lint` / `npm run lint:fix` — Biome check / auto-fix
+- `npm run typecheck` — `tsc --noEmit`
+- `npm test` — Vitest full suite
+- `npm run test:fast` — Vitest unit tests only
+
+## Dev loop
+
+1. `code .` opens this repo.
+2. `Cmd+Shift+P` → "Debug: Start Debugging" launches the Extension Development Host.
+3. In the EDH window, click the globe icon in the activity bar → AIC Journeys sidebar.
+4. After code changes: `npm run build` (or keep `npm run watch` running), then `Cmd+R` in the EDH window to reload.
+5. Logs land in `~/Library/Application Support/Code/logs/<session>/window<N>/exthost/boston-identity.ping-aic-journeys/AIC Journeys.log`. Use `./dev-tail.sh` to follow them in a terminal.
+
+F5 is bound to a system shortcut on Mac; use the command palette instead.
+
+## Foundations / why we built it this way
+
+- **Raw REST, not frodo-lib or fr-config-manager.** See `poc-journey-export/findings-04-subsystems-to-reuse.md` for the audit and what we borrowed (ideas, not code).
+- **Storage = settings.json + SecretStorage.** Plaintext fields (`host`, `saId`, optional `name`) in `aicJourneys.connections`; JWK in `SecretStorage` keyed by `aicJourneys.saJwk.<host>`. See `poc-journey-export/findings-05-storage-strategy.md`.
+- **`host` is the stable identity** for each connection. `name` is an optional display label.
+
+## Key constraints
+
+- **No `process.exit()` anywhere.** It kills the Extension Host and takes down every other extension with us. Always throw.
+- **No top-level `console.log`.** Use the `LogOutputChannel` (`log.info/warn/error/debug/trace`). Stderr is silently swallowed in production.
+- **No network from webviews.** All HTTP happens in extension code; results flow to webviews via `postMessage`.
+- **`@aic-apps/*` imports only allowed in `src/aic/*`.** Anything else is a layering violation.
+- **VS Code engine pinned in `package.json`** — bump deliberately, not casually.
+
+## Security & coding rules
+
+All detailed rules live in `.claude/rules/` (auto-loaded each session):
+- **[rules/security.md](.claude/rules/security.md)** — credentials, SecretStorage, PII, fixtures, never-commit, AIC-tenant safety
+- **[rules/conventions.md](.claude/rules/conventions.md)** — logging, imports, naming, errors, VS Code API patterns, commits
+- **[rules/testing.md](.claude/rules/testing.md)** — test layout, fixtures, mocking VS Code APIs, integration patterns
+
+## Docs
+
+- [docs/design-plan.md](docs/design-plan.md) — design plan, locked decisions, data model, build phases
+- [docs/progress.md](docs/progress.md) — current task tracker
+- [docs/lessons.md](docs/lessons.md) — corrections and patterns to avoid repeating
+
+## Sibling extensions (for cross-reference)
+
+- `~/BostonIdentity/ping-aic-logs-vscode/` — log search/tail; same `settings.json + SecretStorage` pattern, different domain. Good reference for `TreeDataProvider`, env editor wizard, panel webview lifecycle.
+- `~/BostonIdentity/ssh-fleet-vscode/` — multi-server SSH. Reference for hierarchical tree provider + YAML config + state management.
+- `~/BostonIdentity/PingHub/aic-pipeline/` — the Next.js full-stack tool with the most mature journey viewer/diff today. The dependency-graph value prop in this extension is built on the gaps documented in `poc-journey-export/findings-*.md`.
+
+## Predecessor / parallel work
+
+This extension lives alongside `aic-pipeline` (a Next.js full-stack app at `~/BostonIdentity/PingHub/aic-pipeline/`). The extension is read-only and focused; aic-pipeline does pull/push/promote. They share no code today; both use the same AIC REST endpoints.
+
+The POC and reasoning behind every design choice is at `~/BostonIdentity/poc-journey-export/findings-*.md`. Read those before adding anything that changes the auth model, storage shape, or dependency-resolution strategy.

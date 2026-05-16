@@ -1,0 +1,110 @@
+{
+  "name": "ping-aic-journeys",
+  "displayName": "Ping AIC Journeys",
+  "description": "Browse and analyze AIC journey dependencies from VS Code.",
+  "version": "0.0.1",
+  "publisher": "boston-identity",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aicJourneys",
+          "title": "AIC Journeys",
+          "icon": "$(globe)"
+        }
+      ]
+    },
+    "views": {
+      "aicJourneys": [
+        {
+          "id": "aicJourneys.connections",
+          "name": "Connections"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aicJourneys.addConnection",
+        "title": "Add Connection",
+        "icon": "$(add)"
+      },
+      {
+        "command": "aicJourneys.editConnection",
+        "title": "Edit Connection"
+      },
+      {
+        "command": "aicJourneys.removeConnection",
+        "title": "Remove Connection"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aicJourneys.addConnection",
+          "when": "view == aicJourneys.connections",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aicJourneys.editConnection",
+          "when": "view == aicJourneys.connections",
+          "group": "1@1"
+        },
+        {
+          "command": "aicJourneys.removeConnection",
+          "when": "view == aicJourneys.connections",
+          "group": "9@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AIC Journeys",
+      "properties": {
+        "aicJourneys.connections": {
+          "type": "array",
+          "default": [],
+          "description": "AIC connections. Secret (saJwk) is stored in SecretStorage, not here.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "saId": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs",
+    "watch": "npm run build -- --watch",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude '**/*.integration.test.ts'",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.0",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}
