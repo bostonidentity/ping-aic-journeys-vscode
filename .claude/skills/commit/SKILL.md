@@ -20,14 +20,14 @@ Message must use conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `t
 Append to the commit body:
 
 ```
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 ```
 
 ## Never commit
 
 - `.env` files (any variant except `.env.example`)
-- `sandbox/` (anything)
-- Captured HARs (`*.har`) and exported AIC bundles (`*Export*.json`) from `poc-journey-export/paic-ui/`
+- `poc/` and `ref/` (gitignored scratch / reference clones)
+- Any captured tenant data (HARs, exported journey bundles, response JSON)
 - Anything matched by the pre-tool secrets hook
 
-The `.gitignore` already excludes `node_modules/` and `out/`. Double-check `git status` before staging.
+The `.gitignore` already excludes `node_modules/`, `out/`, `poc/`, and `ref/`. Double-check `git status` before staging.

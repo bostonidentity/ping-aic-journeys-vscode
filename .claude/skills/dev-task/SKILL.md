@@ -1,6 +1,6 @@
 ---
 name: dev-task
-description: Plan and implement the next development task. Use when the user wants to build a feature, work on a task, implement something from the design plan, or says things like "let's work on the resolver", "build the AIC client", "what's next", or "pick up the next task".
+description: Plan and implement the next development task. Use when the user wants to build a feature, work on a task, implement something from the design plan, or says things like "let's work on the resolver", "build the PAIC client", "what's next", or "pick up the next task".
 ---
 
 Pick up the next task from the development plan and implement it. The goal is to produce working, tested code — but the plan matters more than the code. A bad plan wastes tokens and time; a good plan makes implementation mechanical.
@@ -22,16 +22,16 @@ This phase is cheap in tokens and prevents expensive rework. Take your time here
    - Files the task will create or modify
    - Files the task depends on (imports, types, existing patterns)
    - Existing test files to understand testing conventions
-   - Relevant reference material in `~/BostonIdentity/poc-journey-export/findings-*.md` (we keep these as our authoritative auth/HTTP/resolver design notes)
+   - Authoritative design notes: `docs/design-plan.md` (locked decisions + milestones), `docs/sidebar-tree.md` (tree shape), `docs/logging-spec.md` (log contract). For HTTP/auth patterns also peek at `ref/frodo-lib/src/api/BaseApi.ts` and `ref/frodo-lib/src/ops/AuthenticateOps.ts` (gitignored reference clone) for ideas — never import.
 8. Determine which layer this task targets:
-   - **`src/aic/`** — raw AIC REST client. Pure TypeScript, no `vscode` imports. Uses `axios` + `jose`.
+   - **`src/paic/`** — raw PAIC REST client. Pure TypeScript, no `vscode` imports. Uses `axios` + `jose`.
    - **`src/resolver/`** — pure dependency graph builder. No `vscode` imports.
    - **`src/tenants/`** — Connection registry wrapping `getConfiguration` + `SecretStorage`. May import `vscode`.
    - **`src/views/`** — `TreeDataProvider` implementations. May import `vscode`.
    - **`src/commands/`** — command handlers. May import `vscode`.
    - **`src/webview/`** — React webview UI bundle (separate esbuild entry). React + ReactFlow.
    - **`src/extension.ts`** — wiring layer, imports from all of the above.
-9. For AIC work: **always test against captured fixtures in `tests/fixtures/`**, never hit a live tenant during development. If no fixture exists, mine one from `poc-journey-export/paic-ui/` (scrub before committing) or ask the user to capture a fresh one in `sandbox/`.
+9. For PAIC work: **always test against captured fixtures in `tests/fixtures/`**, never hit a live tenant during development. If no fixture exists, ask the user to capture one against a live tenant into `poc/` (gitignored), then scrub before promoting to `tests/fixtures/`.
 10. Consult library docs via type definitions in `node_modules/` — `axios`, `jose`, `vscode`.
 
 ### Plan Round 1 — Draft

@@ -1,7 +1,7 @@
 {
-  "name": "ping-aic-journeys",
-  "displayName": "Ping AIC Journeys",
-  "description": "Browse and analyze AIC journey dependencies from VS Code.",
+  "name": "ping-paic-journeys",
+  "displayName": "PAIC Journeys",
+  "description": "Browse and analyze PAIC journey dependencies from VS Code.",
   "version": "0.0.1",
   "publisher": "boston-identity",
   "license": "MIT",
@@ -14,63 +14,75 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "aicJourneys",
-          "title": "AIC Journeys",
+          "id": "paicJourneys",
+          "title": "PAIC Journeys",
           "icon": "$(globe)"
         }
       ]
     },
     "views": {
-      "aicJourneys": [
+      "paicJourneys": [
         {
-          "id": "aicJourneys.connections",
+          "id": "paicJourneys.connections",
           "name": "Connections"
         }
       ]
     },
     "commands": [
       {
-        "command": "aicJourneys.addConnection",
+        "command": "paicJourneys.addConnection",
         "title": "Add Connection",
         "icon": "$(add)"
       },
       {
-        "command": "aicJourneys.editConnection",
-        "title": "Edit Connection"
+        "command": "paicJourneys.editConnection",
+        "title": "Edit Connection",
+        "icon": "$(edit)"
       },
       {
-        "command": "aicJourneys.removeConnection",
-        "title": "Remove Connection"
+        "command": "paicJourneys.removeConnection",
+        "title": "Remove Connection",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "aicJourneys.addConnection",
-          "when": "view == aicJourneys.connections",
+          "command": "paicJourneys.addConnection",
+          "when": "view == paicJourneys.connections",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "aicJourneys.editConnection",
-          "when": "view == aicJourneys.connections",
+          "command": "paicJourneys.editConnection",
+          "when": "view == paicJourneys.connections && viewItem == connection",
+          "group": "inline@1"
+        },
+        {
+          "command": "paicJourneys.removeConnection",
+          "when": "view == paicJourneys.connections && viewItem == connection",
+          "group": "inline@2"
+        },
+        {
+          "command": "paicJourneys.editConnection",
+          "when": "view == paicJourneys.connections && viewItem == connection",
           "group": "1@1"
         },
         {
-          "command": "aicJourneys.removeConnection",
-          "when": "view == aicJourneys.connections",
+          "command": "paicJourneys.removeConnection",
+          "when": "view == paicJourneys.connections && viewItem == connection",
           "group": "9@1"
         }
       ]
     },
     "configuration": {
-      "title": "AIC Journeys",
+      "title": "PAIC Journeys",
       "properties": {
-        "aicJourneys.connections": {
+        "paicJourneys.connections": {
           "type": "array",
           "default": [],
-          "description": "AIC connections. Secret (saJwk) is stored in SecretStorage, not here.",
+          "description": "PAIC connections. Secret (saJwk) is stored in SecretStorage, not here.",
           "items": {
             "type": "object",
             "properties": {
@@ -106,5 +118,8 @@
     "esbuild": "^0.21.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.3"
   }
 }

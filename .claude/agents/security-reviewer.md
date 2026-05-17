@@ -11,14 +11,14 @@ Check against `.claude/rules/security.md` "Credentials storage" section. Flag an
 - JWK or access token written outside `SecretStorage`
 - Plain-text credentials in `.env`, source, fixtures, comments, commit messages
 - Tokens cached in JS memory beyond one resolver session
-- Wrong SecretStorage keying convention (must be `aicJourneys.saJwk.<host>`)
+- Wrong SecretStorage keying convention (must be `paicJourneys.saJwk.<host>`)
 - Rename operations that don't move secrets atomically with the metadata update
 
 ### PII / customer data
 Check against `.claude/rules/security.md` "PII / customer data in codebase" section. Flag:
 - Real tenant URLs (anything matching `openam-*.forgeblocks.com` or `*.id.forgerock.io`)
 - Real customer journey/script/realm names committed to source or fixtures
-- Unscrubbed captured HARs or exported bundles outside `sandbox/` / `poc-journey-export/paic-ui/`
+- Unscrubbed captured tenant data outside the gitignored `poc/` directory
 
 ### Input handling
 Check against `.claude/rules/security.md` "Input handling" section. Flag:
@@ -41,9 +41,9 @@ Check against `.claude/rules/conventions.md` "Logging" section. Flag any log sta
 
 ### Import boundaries
 Check against `.claude/rules/conventions.md` "Import conventions" section. Flag:
-- `vscode` imports in `src/aic/*` or `src/resolver/*` (those must be pure)
-- `axios` imports outside `src/aic/*`
-- `jose` imports outside `src/aic/auth.ts`
+- `vscode` imports in `src/paic/*` or `src/resolver/*` (those must be pure)
+- `axios` imports outside `src/paic/*`
+- `jose` imports outside `src/paic/auth.ts`
 - React imports outside `src/webview/ui/*`
 
 ### Configuration

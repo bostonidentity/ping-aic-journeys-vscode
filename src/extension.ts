@@ -7,8 +7,8 @@ interface Connection {
   name?: string;
 }
 
-const SETTINGS_KEY = "aicJourneys.connections";
-const SECRET_PREFIX = "aicJourneys.saJwk.";
+const SETTINGS_KEY = "paicJourneys.connections";
+const SECRET_PREFIX = "paicJourneys.saJwk.";
 
 // ---------- logging ----------
 
@@ -37,12 +37,14 @@ class ConnectionsProvider implements vscode.TreeDataProvider<Connection> {
     this._onDidChange.fire();
   }
 
-  getChildren(): Connection[] {
-    return list();
+  getChildren(element?: Connection): Connection[] {
+    // Top level: list of connections. Each connection is a folder; its children
+    // (realms / journeys) come in later phases — return [] for now.
+    return element ? [] : list();
   }
 
   getTreeItem(c: Connection): vscode.TreeItem {
-    const item = new vscode.TreeItem(c.name || c.host);
+    const item = new vscode.TreeItem(c.name || c.host, vscode.TreeItemCollapsibleState.Collapsed);
     item.description = c.name ? c.host : undefined;
     item.tooltip = `${c.host}\nsaId: ${c.saId}`;
     item.contextValue = "connection";
@@ -54,21 +56,22 @@ class ConnectionsProvider implements vscode.TreeDataProvider<Connection> {
 // ---------- commands ----------
 
 export function activate(context: vscode.ExtensionContext): void {
-  log = vscode.window.createOutputChannel("AIC Journeys", { log: true });
+  log = vscode.window.createOutputChannel("PAIC Journeys", { log: true });
   context.subscriptions.push(log);
   log.info("Extension activated");
 
   const provider = new ConnectionsProvider();
-  vscode.window.registerTreeDataProvider("aicJourneys.connections", provider);
+  vscode.window.registerTreeDataProvider("paicJourneys.connections", provider);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("aicJourneys.addConnection", async () => {
+    vscode.commands.registerCommand("paicJourneys.addConnection", async () => {
       log.info("addConnection: opening form");
       const conns = list();
       const r = await openConnectionForm(context, {
         mode: "add",
         existingHosts: conns.map((c) => c.host),
         log,
+        getExistingJwk: (h) => context.secrets.get(SECRET_PREFIX + h),
       });
       if (!r) {
         log.debug("addConnection: cancelled");
@@ -86,7 +89,7 @@ export function activate(context: vscode.ExtensionContext): void {
       provider.refresh();
     }),
 
-    vscode.commands.registerCommand("aicJourneys.editConnection", async (item: Connection) => {
+    vscode.commands.registerCommand("paicJourneys.editConnection", async (item: Connection) => {
       log.info(`editConnection: opening form for "${item.host}"`);
       const conns = list();
       const r = await openConnectionForm(context, {
@@ -94,6 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
         initial: { host: item.host, saId: item.saId, name: item.name },
         existingHosts: conns.map((c) => c.host),
         log,
+        getExistingJwk: (h) => context.secrets.get(SECRET_PREFIX + h),
       });
       if (!r) {
         log.debug("editConnection: cancelled");
@@ -116,14 +120,12 @@ export function activate(context: vscode.ExtensionContext): void {
       provider.refresh();
     }),
 
-    vscode.commands.registerCommand("aicJourneys.removeConnection", async (item: Connection) => {
+    vscode.commands.registerCommand("paicJourneys.removeConnection", async (item: Connection) => {
       log.info(`removeConnection: confirming "${item.host}"`);
-      const ok = await vscode.window.showWarningMessage(
-        `Remove connection "${item.name || item.host}"?`,
-        { modal: true },
-        "Remove",
-      );
-      if (ok !== "Remove") {
+      const choice = await vscode.window.showQuickPick(["YES", "NO"], {
+        placeHolder: `Are you sure you want to remove connection "${item.name || item.host}"?`,
+      });
+      if (choice !== "YES") {
         log.debug("removeConnection: cancelled");
         return;
       }

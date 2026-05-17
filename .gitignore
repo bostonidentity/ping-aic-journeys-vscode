@@ -141,3 +141,9 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Reference-only repos cloned for cross-reading (not shipped, not ours)
+ref/
+
+# POC scratch space — live-tenant captures, exploratory scripts, never committed
+poc/

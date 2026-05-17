@@ -14,8 +14,8 @@ Rules for writing code in this project. Referenced by the `dev-task` skill and `
 | Test Connection failure | `ERROR` |
 | Token mint started / completed | `DEBUG` |
 | Token cache hit | `TRACE` |
-| AIC HTTP request (method, URL, status) | `DEBUG` |
-| AIC HTTP error (status, body) | `ERROR` |
+| PAIC HTTP request (method, URL, status) | `DEBUG` |
+| PAIC HTTP error (status, body) | `ERROR` |
 | Resolver: walking journey | `INFO` |
 | Resolver: cache hit | `TRACE` |
 | Webview: posting message (type, size) | `DEBUG` |
@@ -27,7 +27,7 @@ Rules for writing code in this project. Referenced by the `dev-task` skill and `
 log.info('context: operation key=value key2=value2');
 ```
 
-Use `key=value` pairs for structured data. Prefix logs with the component context (`addConnection:`, `resolver:`, `aicHttp:`, `webview:`).
+Use `key=value` pairs for structured data. Prefix logs with the component context (`addConnection:`, `resolver:`, `paicHttp:`, `webview:`).
 
 ### What level to use
 
@@ -46,8 +46,8 @@ Rule of thumb: if a user pasted their log into a bug report, would the line help
 | Layer | How to log | Import |
 |---|---|---|
 | Extension code (`src/extension.ts`, `src/commands/`, `src/views/`) | `log.info()` etc. | `import { log } from './logger'` (or wherever it's exported) |
-| AIC client (`src/aic/*`) | Pass a `Logger` via constructor / params; never call vscode APIs directly | from `src/util/logger.ts` |
-| Resolver (`src/resolver/*`) | Same as AIC client — injected logger | from `src/util/logger.ts` |
+| PAIC client (`src/paic/*`) | Pass a `Logger` via constructor / params; never call vscode APIs directly | from `src/util/logger.ts` |
+| Resolver (`src/resolver/*`) | Same as PAIC client — injected logger | from `src/util/logger.ts` |
 | Webview UI (`src/webview/ui/*`) | `console.log` is acceptable; for important events `postMessage({type: 'log', level, msg})` and let the extension log it | n/a |
 
 ### What to NEVER log
@@ -62,9 +62,9 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 
 ## Import conventions
 
-- `vscode` imports allowed only in: `src/extension.ts`, `src/commands/*`, `src/views/*`, `src/webview/panel.ts`, `src/tenants/*`, `src/util/logger.ts`. **Never** in `src/aic/*` or `src/resolver/*` — those must be pure TypeScript with no editor dependency.
-- `axios` allowed only in `src/aic/*`. Other layers go through `AicClient`.
-- `jose` allowed only in `src/aic/auth.ts`.
+- `vscode` imports allowed only in: `src/extension.ts`, `src/commands/*`, `src/views/*`, `src/webview/panel.ts`, `src/tenants/*`, `src/util/logger.ts`. **Never** in `src/paic/*` or `src/resolver/*` — those must be pure TypeScript with no editor dependency.
+- `axios` allowed only in `src/paic/*`. Other layers go through `PaicClient`.
+- `jose` allowed only in `src/paic/auth.ts`.
 - React + ReactFlow imports allowed only in `src/webview/ui/*`. Never in extension code.
 - Use the `@/` path alias for all imports from `src/`.
 
@@ -73,7 +73,7 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 - User-facing errors via `vscode.window.showErrorMessage()` — plain language, no codes. ("Couldn't connect to the tenant. Check the host and your service-account credentials.")
 - Log-facing errors include the technical message (`token mint failed: 401 invalid_client`).
 - Always catch + log in command handlers and async tree-provider methods before re-throwing or surfacing to the user. An uncaught rejection in a command leaves the UI dangling.
-- Wrap every AIC HTTP error in an `AicError` (`src/aic/errors.ts`). Callers only see `AicError`, never raw `AxiosError`.
+- Wrap every PAIC HTTP error in an `PaicError` (`src/paic/errors.ts`). Callers only see `PaicError`, never raw `AxiosError`.
 
 ## Naming
 
@@ -81,9 +81,9 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 - Functions: camelCase.
 - Types/interfaces: PascalCase.
 - Constants: UPPER_SNAKE_CASE.
-- Settings keys: `aicJourneys.<noun>` or `aicJourneys.<noun>.<sub>`.
-- Command IDs: `aicJourneys.<verb><Noun>` (e.g. `aicJourneys.addConnection`).
-- Secret keys: `aicJourneys.<purpose>.<host>` (e.g. `aicJourneys.saJwk.openam-...`).
+- Settings keys: `paicJourneys.<noun>` or `paicJourneys.<noun>.<sub>`.
+- Command IDs: `paicJourneys.<verb><Noun>` (e.g. `paicJourneys.addConnection`).
+- Secret keys: `paicJourneys.<purpose>.<host>` (e.g. `paicJourneys.saJwk.openam-...`).
 - Settings property defaults to `[]` / `""`, never `null` (matches VS Code's settings schema conventions).
 
 ## VS Code Extension API patterns
@@ -95,7 +95,7 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 - `activationEvents: []` is correct for view-contributed extensions — VS Code activates us automatically when our view becomes visible.
 - Hot reload: `Cmd+R` in the Extension Development Host window after rebuild. F5-based debugging instructions get told off on Mac (lesson 2026-05-15).
 
-## AIC REST patterns
+## PAIC REST patterns
 
 - Construct AM URLs via `getRealmPath()`; script URLs use the short form (`/am/json/<realm>/scripts/...`).
 - Always send `Accept-API-Version` per endpoint family:
@@ -108,7 +108,7 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 
 ## Commits
 
-- Stage specific files with `git add`, never `-A` — prevents accidentally committing secrets, captured HARs, or sandbox data.
+- Stage specific files with `git add`, never `-A` — prevents accidentally committing secrets or captured tenant data.
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`.
-- Append to commit body: `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`
-- Never commit: `.env` (except `.env.example`), `sandbox/`, `poc-journey-export/paic-ui/*.har`, `poc-journey-export/paic-ui/*Export*.json`, any captured tenant data.
+- Append to commit body: `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`
+- Never commit: `.env` (except `.env.example`), the gitignored `poc/` and `ref/` directories, any captured tenant data (HARs, exports, response JSON).

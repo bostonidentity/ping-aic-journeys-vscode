@@ -7,15 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": [
-      "**",
-      "!node_modules",
-      "!out",
-      "!coverage",
-      "!tests/fixtures",
-      "!poc-journey-export",
-      "!sandbox"
-    ]
+    "includes": ["**", "!node_modules", "!out", "!coverage", "!tests/fixtures", "!poc", "!ref"]
   },
   "formatter": {
     "enabled": true,

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
+import { mintToken } from "../paic/auth";
 
 export interface ConnectionFormData {
   host: string;
@@ -19,17 +20,20 @@ export interface ConnectionFormOptions {
   initial?: ConnectionFormInitial;
   existingHosts: string[];
   log: vscode.LogOutputChannel;
+  // Edit mode: returns the JWK currently stored in SecretStorage for this host,
+  // so the user can validate without re-pasting it. Undefined if not stored.
+  getExistingJwk?: (host: string) => Thenable<string | undefined>;
 }
 
 export function openConnectionForm(
   context: vscode.ExtensionContext,
   opts: ConnectionFormOptions,
 ): Promise<ConnectionFormData | undefined> {
-  const { mode, initial, existingHosts, log } = opts;
+  const { mode, initial, existingHosts, log, getExistingJwk } = opts;
   const title = mode === "add" ? "Add Connection" : `Edit Connection — ${initial?.host ?? ""}`;
 
   const panel = vscode.window.createWebviewPanel(
-    "aicJourneys.connectionForm",
+    "paicJourneys.connectionForm",
     title,
     vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
@@ -50,15 +54,19 @@ export function openConnectionForm(
       panel.dispose();
     };
 
-    panel.webview.onDidReceiveMessage((msg: { type: string; data?: ConnectionFormData }) => {
-      if (msg.type === "save" && msg.data) {
-        log.debug(`connectionForm: save host=${msg.data.host}`);
-        finish(msg.data);
-      } else if (msg.type === "cancel") {
-        log.debug("connectionForm: cancel");
-        finish(undefined);
-      }
-    });
+    panel.webview.onDidReceiveMessage(
+      async (msg: { type: string; data?: ConnectionFormData; requestId?: number }) => {
+        if (msg.type === "save" && msg.data) {
+          log.debug(`connectionForm: save host=${msg.data.host}`);
+          finish(msg.data);
+        } else if (msg.type === "cancel") {
+          log.debug("connectionForm: cancel");
+          finish(undefined);
+        } else if (msg.type === "validate" && msg.data) {
+          await handleValidate(msg.data, msg.requestId, panel.webview, log, getExistingJwk);
+        }
+      },
+    );
 
     panel.onDidDispose(() => finish(undefined));
 
@@ -163,11 +171,35 @@ function renderHtml(
   }
   .actions {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
     gap: 8px;
     margin-top: 24px;
     padding-top: 16px;
     border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+  }
+  .actions .right {
+    display: flex;
+    gap: 8px;
+  }
+  .validate-result {
+    margin-top: 12px;
+    padding: 8px 10px;
+    border-radius: 2px;
+    font-size: 0.9em;
+    display: none;
+  }
+  .validate-result.ok {
+    color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #3c9c3c));
+    border: 1px solid currentColor;
+  }
+  .validate-result.err {
+    color: var(--vscode-errorForeground);
+    border: 1px solid currentColor;
+  }
+  .validate-result.pending {
+    color: var(--vscode-descriptionForeground);
+    border: 1px solid currentColor;
   }
   button {
     padding: 6px 14px;
@@ -226,9 +258,13 @@ function renderHtml(
   </div>
 
   <div class="actions">
-    <button class="secondary" id="cancel">Cancel</button>
-    <button id="save">Save</button>
+    <button class="secondary" id="test">Test Connection</button>
+    <div class="right">
+      <button class="secondary" id="cancel">Cancel</button>
+      <button id="save">Save</button>
+    </div>
   </div>
+  <div class="validate-result" id="validate-result"></div>
 
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
@@ -238,7 +274,7 @@ function renderHtml(
   document.getElementById("title").textContent = isEdit ? "Edit Connection" : "Add Connection";
   document.getElementById("subtitle").textContent = isEdit
     ? "Update this connection's metadata. Leave the JWK blank to keep the existing secret."
-    : "Add a new AIC tenant connection. The JWK is stored in VS Code SecretStorage.";
+    : "Add a new PAIC tenant connection. The JWK is stored in VS Code SecretStorage.";
 
   const nameEl = document.getElementById("name");
   const hostEl = document.getElementById("host");
@@ -321,10 +357,92 @@ function renderHtml(
     vscode.postMessage({ type: "cancel" });
   });
 
+  const testBtn = document.getElementById("test");
+  const resultEl = document.getElementById("validate-result");
+  let pendingRequestId = 0;
+
+  function showResult(cls, text) {
+    resultEl.className = "validate-result " + cls;
+    resultEl.textContent = text;
+    resultEl.style.display = "block";
+  }
+
+  testBtn.addEventListener("click", () => {
+    const data = validate();
+    if (!data) return;
+    pendingRequestId += 1;
+    testBtn.disabled = true;
+    showResult("pending", "Testing connection…");
+    vscode.postMessage({ type: "validate", data, requestId: pendingRequestId });
+  });
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || msg.type !== "validateResult") return;
+    if (msg.requestId !== pendingRequestId) return;
+    testBtn.disabled = false;
+    if (msg.ok) {
+      const dropped = Array.isArray(msg.droppedScopes) ? msg.droppedScopes : [];
+      const dropSuffix = dropped.length
+        ? " (some scopes not granted: " + dropped.join(", ") + ")"
+        : "";
+      showResult("ok", "✓ Connected. Token valid for " + (msg.expiresIn || "?") + "s." + dropSuffix);
+    } else {
+      showResult("err", "✗ " + (msg.message || "Validation failed."));
+    }
+  });
+
   hostEl.focus();
 </script>
 </body>
 </html>`;
+}
+
+async function handleValidate(
+  data: ConnectionFormData,
+  requestId: number | undefined,
+  webview: vscode.Webview,
+  log: vscode.LogOutputChannel,
+  getExistingJwk?: (host: string) => Thenable<string | undefined>,
+): Promise<void> {
+  log.debug(`connectionForm: validate host=${data.host}`);
+  let jwk = data.jwk;
+  if (!jwk && getExistingJwk) {
+    jwk = await getExistingJwk(data.host);
+  }
+  if (!jwk) {
+    webview.postMessage({
+      type: "validateResult",
+      requestId,
+      ok: false,
+      message: "JWK is required to test the connection.",
+    });
+    return;
+  }
+
+  const result = await mintToken({ host: data.host, saId: data.saId, jwk });
+  if (result.ok) {
+    log.info(
+      `validateConnection: ok host=${data.host} expiresIn=${result.expiresIn} droppedScopes=${result.droppedScopes.length}`,
+    );
+    webview.postMessage({
+      type: "validateResult",
+      requestId,
+      ok: true,
+      expiresIn: result.expiresIn,
+      droppedScopes: result.droppedScopes,
+    });
+  } else {
+    log.error(
+      `validateConnection: failed host=${data.host} status=${result.status ?? "?"} error=${result.error ?? "?"}`,
+    );
+    webview.postMessage({
+      type: "validateResult",
+      requestId,
+      ok: false,
+      message: result.message,
+    });
+  }
 }
 
 function makeNonce(): string {

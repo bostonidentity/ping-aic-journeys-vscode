@@ -11,10 +11,10 @@ Run Vitest tests and show failures clearly with file and line numbers.
 - `--all` or `all`: run full suite (`npm test`)
 - Any other arguments: pass through to vitest (`npx vitest run $ARGUMENTS`)
 
-## Never hit a live AIC tenant
+## Never hit a live PAIC tenant
 
-Integration tests that require a real tenant are gated behind `PINGAIC_LIVE=1`. Do not set this env var in default runs. Only set it when the user explicitly asks for a live integration test.
+Integration tests that require a real tenant are gated behind `PINGPAIC_LIVE=1`. Do not set this env var in default runs. Only set it when the user explicitly asks for a live integration test.
 
-## Sandbox-loaded tests
+## Live-tenant tests skip gracefully
 
-Some integration tests load captured HARs or credentials from `sandbox/` or from `poc-journey-export/paic-ui/`. These files are gitignored and may not exist on every machine. The tests use `fs.existsSync()` to skip gracefully when the data is missing — a skip is NOT a failure. When reporting results, distinguish skips from actual passes/fails so the user knows what was covered.
+Some integration tests load credentials from `~/.pctl/connections.json` or captured fixtures from `poc/` (both per-machine, not committed). The tests use `fs.existsSync()` to skip gracefully when the data is missing — a skip is NOT a failure. When reporting results, distinguish skips from actual passes/fails so the user knows what was covered.

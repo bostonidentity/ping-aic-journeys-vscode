@@ -1,75 +1,143 @@
-# Ping AIC Journeys — Progress
+# PAIC Journeys — Progress
 
-> Build status tracker. See [design-plan.md](design-plan.md) for what each phase means.
+> Build status tracker. See [design-plan.md](design-plan.md) for what each milestone means and why (open questions live there too).
 
-## Phase 0: POC — connection CRUD ✅
+## M0 — Connection CRUD ✅
 
-- [x] Repo scaffolded (`gh repo create --public --license mit --gitignore Node`)
-- [x] Manifest with one activity bar container, one tree view, three commands, one settings property
-- [x] `Connection` type + add/edit/remove via QuickPick chain
-- [x] Plaintext fields → `aicJourneys.connections` setting (workspace-if-open else global)
-- [x] `saJwk` → `SecretStorage` keyed by `aicJourneys.saJwk.<host>`
+- [x] Repo scaffolded
+- [x] Manifest with activity bar container, tree view, three commands, settings property
+- [x] `Connection` type + add/edit/remove flow
+- [x] Plaintext fields → `paicJourneys.connections` setting (workspace-if-open else global)
+- [x] `saJwk` → `SecretStorage` keyed by `paicJourneys.saJwk.<host>`
 - [x] Tree view with `host`/`name` label
-- [x] `LogOutputChannel('AIC Journeys', { log: true })` wired into all commands
-- [x] `dev-tail.sh` to follow the latest disk log file from a terminal
+- [x] Inline action buttons (Edit, Remove) on each connection row
+- [x] Each connection row is collapsible (folder shape, even with no children yet)
+- [x] Non-modal QuickPick confirmation for Remove (matches database extension pattern)
+- [x] `LogOutputChannel('PAIC Journeys', { log: true })` wired into all commands
+- [x] `dev-tail.sh` to follow the latest disk log file from a terminal (Linux + macOS)
 - [x] esbuild build pipeline (`npm run build`, `npm run watch`)
-- [x] Verified end-to-end: add → edit (rename host) → remove all logged correctly
+- [x] `src/paic/auth.ts` — `mintToken()` (JWT-bearer, scope fallback, RS256)
+- [x] Test Connection button in Add/Edit form (mints token, shows ✓/✗ inline)
 
-## Phase 1: AIC client + auth ⏳
+## M1 — Forward exploration with detail panel ⏳ (current)
 
-- [ ] `src/aic/types.ts` — `Tree`, `Node`, `Script`, `Connection`, `CachedToken`
-- [ ] `src/aic/auth.ts` — `TokenSource` class (JWT-bearer mint + cache + invalidate)
-- [ ] `src/aic/realm-path.ts` — `getRealmPath()` (verbatim from frodo)
-- [ ] `src/aic/errors.ts` — `AicError extends Error`
-- [ ] `src/aic/http.ts` — `makeClient()` axios instance with header injection + interceptors
-- [ ] `src/aic/pagination.ts` — async iterable for `_queryFilter=true`
-- [ ] `src/aic/client.ts` — `AicClient`: `listJourneys`, `getTree`, `getNode`, `getScript`, `getScriptByName`
-- [ ] `aicJourneys.testConnection` command — mint token, list realms, show ✓/✗
-- [ ] Unit tests against axios mocks
+**Goal:** pick connection → realm → journey → see scripts + inner-trees as children → select anything → see basic info in a detail panel.
 
-## Phase 2: Resolver ⏳
+### Structured logger (D9)
 
-- [ ] `src/resolver/graph.ts` — `DependencyGraph`, `GraphNode`, `GraphEdge` types
-- [ ] `src/resolver/walk.ts` — `walkJourney(client, journeyId)` full BFS, cycle-guarded
-- [ ] `src/resolver/cache.ts` — per-session memoization keyed by `(kind, id)`
-- [ ] ESV regex helpers (`&{esv...}`, `systemEnv.X`)
-- [ ] Library-script recursion (port the regex from frodo's `getLibraryScriptNames`)
-- [ ] Fixture tests against `poc-journey-export/paic-ui/multiple-journeysExport-*.json`
+- [ ] Add `pino` + `pino-roll` runtime deps
+- [ ] `src/util/logger.ts` — pino instance with `pino.multistream([fileStream, channelAdapter])`, `redact` paths for secrets, `base: { service, version }`, `level` from setting
+- [ ] Channel adapter: tiny `Writable` that parses NDJSON and routes to `LogOutputChannel.info/warn/error`
+- [ ] Settings: `paicJourneys.logging.level`, `paicJourneys.logging.fileEnabled`
+- [ ] Migrate ~10 existing `log.info(...)` calls in `extension.ts` + `connection-form.ts` to pino's `log.info({fields}, "msg")` shape with `event` field
+- [ ] Verify NDJSON output at `globalStorageUri/logs/paic-journeys.ndjson`
 
-## Phase 3: Tree view → realms → journeys → deps ⏳
+### Transport + domain layers
 
-- [ ] `realmsTreeProvider` — fetches realms once per connection
-- [ ] `journeysTreeProvider` — `_queryFilter=true` paginated, group by enabled/disabled
-- [ ] Per-journey lazy expansion: load tree → emit dep children
-- [ ] Loading/error states with icons
+- [ ] `src/paic/errors.ts` — `PaicError` flattening AxiosError fields
+- [ ] `src/paic/realm-path.ts` — `getRealmPath(realm)` (verbatim from frodo)
+- [ ] `src/paic/pagination.ts` — `listAllPaged(fetchPage)` helper
+- [ ] `src/paic/concurrency.ts` — `mapConcurrent(items, N, fn)` helper (~25 lines) OR `p-limit` import (Q-3)
+- [ ] `src/paic/http.ts` — axios instance per connection, retry, 429 Retry-After, error wrap, `X-ForgeRock-TransactionId` header (uses injected logger from above)
+- [ ] `src/paic/mappers.ts` — raw PAIC → domain translation (location TBD via Q-1)
+- [ ] `src/paic/client.ts` — `PaicClient`: `listRealms`, `listJourneys`, `getJourney`, `getNode`, `getScript`
+- [ ] `src/domain/types.ts` (or `models/types.ts` — Q-2) — `Realm`, `Journey`, `Script`, `InnerJourneyRef`, refined `Connection`
+
+### Tenant registry
+
+- [ ] `src/tenants/registry.ts` — extract connection list/persist/secret-handling from `extension.ts`
+
+### Tree view (deeper levels + D12 cutover)
+
+- [ ] `views/nodes/base.ts` — abstract `PaicNode` (class hierarchy lands here, not deferred)
+- [ ] `views/nodes/connection.ts` — wraps existing logic
+- [ ] `views/nodes/realm.ts`
+- [ ] `views/nodes/journey.ts`
+- [ ] `views/nodes/script.ts` — leaf
+- [ ] `views/nodes/inner-journey.ts` — leaf
+- [ ] Lazy `getChildren()` per kind; loading / error states
 - [ ] "Refresh" command at each level
 
-## Phase 4: Graph webview ⏳
+### Detail panel (D15 trigger — webview framework lands here)
 
-- [ ] `webview/ui/` separate esbuild entry point (React + ReactFlow)
-- [ ] `postMessage` protocol typed
-- [ ] Hierarchical + force layouts toggle
-- [ ] Kind filter chips
-- [ ] Node detail pane
+- [ ] esbuild second entry → `out/webview.js`
+- [ ] `src/webview/messages.ts` — typed message protocol (discriminated unions)
+- [ ] `src/webview/inspector/` — React panel component, opens beside the editor
+- [ ] Tree-selection → `postMessage` with `(kind, id, raw)` → panel renders kind-specific card
+- [ ] Cards: Connection / Realm / Journey / Script / InnerJourney — all basic info only, no body / no diagram
+- [ ] In-panel links to navigate tree selection (e.g. journey card → click a referenced script → tree selection moves there)
+- [ ] VSCode CSS variables only; no component lib
 
-## Phase 5+: Reverse lookups, orphans, saved graphs
+### Tests
 
-Tracked at design-plan headings; will populate here when started.
+- [ ] Unit tests for `paic/auth.ts`, `errors.ts`, `realm-path.ts`, `pagination.ts`, `mappers.ts`, `client.ts`
+- [ ] Component smoke tests for the inspector panel against fixture domain objects
+- [ ] Captured AIC responses scrubbed of real tenant hostnames / IDs and committed under `tests/fixtures/`
+
+## M2 — Fill the detail panel: real content ⏳
+
+- [ ] Pick M2 script renderer (Q-16): Monaco vs react-syntax-highlighter
+- [ ] Wire script-card → render body with picked renderer
+- [ ] Add ReactFlow to the bundle; render per-journey node-flow diagram in the journey card
+- [ ] Hover tooltips on tree items (Markdown-formatted metadata)
+- [ ] Persist tree collapse state to `globalState` keyed by node `uid`
+- [ ] "Open in Editor" right-click action on script nodes (opens script body as a regular editor tab — `vscode.workspace.openTextDocument`)
+
+## M3 — Wider dependency kinds ⏳
+
+- [ ] Resolver: `require()` extraction → library scripts
+- [ ] Resolver: `&{esv...}` and `systemEnv.X` extraction → ESVs (Q-13)
+- [ ] Node-type table expands: `ConfigProviderNode`, `ClientScriptNode`, `SocialProviderHandlerNode(V2)`, `PageNode`
+- [ ] Theme refs via `PageNode.stage`
+- [ ] Tree provider grows new node kinds (theme, ESV, library-script)
+- [ ] Detail panel grows kind-specific cards for each new node type
+- [ ] Expect first-click latency on journey expansion to grow (more script-body fetches); document acceptable bound
+
+## M4 — RealmIndex background scan ⏳
+
+- [ ] `src/resolver/realm-index.ts` — `buildIndex(client, realm) → RealmIndex` pure logic
+- [ ] Wire to realm-expand event in tree provider
+- [ ] Indexes all edge kinds from M3 (journey→script, journey→inner, journey→theme, script→library-script, script→ESV)
+- [ ] Status indicator while indexing (Q-8)
+- [ ] Cancellation policy when realm collapsed mid-scan (Q-9)
+
+## M5 — Query panel (reverse lookups + orphans) ⏳
+
+- [ ] `src/webview/query/` — second React panel (D15 already in place from M1)
+- [ ] Tabs: Reverse Lookup / Orphans / Impact (placeholder)
+- [ ] "Open Query Panel" command on realm node
+- [ ] Index-not-ready state with progress
+- [ ] Queries span all edge kinds from M3
+
+## M6 — Realm-wide graph webview ⏳
+
+- [ ] `src/webview/graph/` — third React entry
+- [ ] Re-uses ReactFlow already loaded at M2
+- [ ] Hierarchical + force-directed layouts toggle
+- [ ] Kind-colored nodes, typed edges
+- [ ] Filter chips per `NodeKind`
+
+## M7 — Impact analysis + saved graphs + diff ⏳
+
+- [ ] Impact = reverse-reachability over the union of edge kinds
+- [ ] "Save Graph" explicit user action → `globalStorageUri/cache/<host>/graphs/<timestamp>.json` (the only on-disk derived data we ever write)
+- [ ] Diff two saved graphs
 
 ---
 
 ## What's working today
 
-- Activity bar globe icon opens the AIC Journeys sidebar.
-- "Add Connection" prompts for host / saId / name / JWK, persists.
-- "Edit Connection" round-trips correctly, including host rename (moves secret to new key).
-- "Remove Connection" deletes both metadata and secret.
-- All actions log to `AIC Journeys` OutputChannel.
+- Activity bar globe icon opens the PAIC Journeys sidebar.
+- Add / Edit / Remove Connection commands; round-trip with JWK in SecretStorage.
+- Inline Edit + Remove buttons on each connection row.
+- Non-modal QuickPick confirmation for Remove.
+- Test Connection button in the Add/Edit form (live JWT-bearer mint + verification with sb3 — confirmed working).
+- All actions log to `PAIC Journeys` OutputChannel.
 - `./dev-tail.sh` follows the latest disk log file across reloads.
 
 ## What's broken today
 
-(nothing yet)
+(nothing)
 
 ## Active blockers
 
