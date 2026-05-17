@@ -18,10 +18,35 @@ export interface NodeRef {
   kind: "connection" | "realm" | "journey" | "script" | "innerJourney";
 }
 
+/** Per-node info attached to journey-diagram nodes for click handling + hover. */
+export interface NodeInfo {
+  kind: "script" | "inner" | "other";
+  /** Tree-node uid the inspector can navigate to (matches a ScriptNode or
+   * InnerJourneyNode created during journey expansion). */
+  uid?: string;
+  /** For ScriptedDecisionNode → clicking opens this script's body. */
+  scriptId?: string;
+  /** For InnerTreeEvaluatorNode → the inner journey's id (informational). */
+  innerTreeId?: string;
+  /** Schema slices for hover tooltips (M2 polish). All optional — populated
+   * only for `ScriptedDecisionNode`-shaped entries today; M3 widens. */
+  outcomes?: string[];
+  inputs?: string[];
+  outputs?: string[];
+  /** For `kind: "other"` — the raw AIC node-type string (`PageNode`, etc.). */
+  rawNodeType?: string;
+}
+
 /** Extension → webview. */
 export type E2W =
   | { type: "select"; payload: SelectPayload }
-  | { type: "journeyDeps"; uid: string; scripts: NodeRef[]; inners: NodeRef[] }
+  | {
+      type: "journeyDeps";
+      uid: string;
+      scripts: NodeRef[];
+      inners: NodeRef[];
+      nodeIndex: Record<string, NodeInfo>;
+    }
   | { type: "error"; uid?: string; message: string };
 
 export type SelectPayload =
@@ -47,7 +72,16 @@ export type SelectPayload =
   | { kind: "message"; uid: string; label: string };
 
 /** Webview → extension. */
-export type W2E = { type: "ready" } | { type: "navigate"; uid: string };
+export type W2E =
+  | { type: "ready" }
+  | { type: "navigate"; uid: string }
+  | {
+      type: "openScriptBody";
+      host: string;
+      realm: string;
+      scriptId: string;
+      language?: string;
+    };
 
 // ─── Type-guard helpers ───────────────────────────────────────────────────
 // Useful in tests + on the webview side where `event.data` is `unknown`.
@@ -61,5 +95,5 @@ export function isE2W(msg: unknown): msg is E2W {
 export function isW2E(msg: unknown): msg is W2E {
   if (!msg || typeof msg !== "object") return false;
   const t = (msg as { type?: unknown }).type;
-  return t === "ready" || t === "navigate";
+  return t === "ready" || t === "navigate" || t === "openScriptBody";
 }

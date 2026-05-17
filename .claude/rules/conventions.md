@@ -62,7 +62,7 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 
 ## Import conventions
 
-- `vscode` imports allowed only in: `src/extension.ts`, `src/commands/*`, `src/views/*`, `src/webview/panel.ts`, `src/tenants/*`, `src/util/logger.ts`. **Never** in `src/paic/*` or `src/resolver/*` — those must be pure TypeScript with no editor dependency.
+- `vscode` imports allowed only in: `src/extension.ts`, `src/commands/*`, `src/views/*`, `src/webview/panel.ts`, `src/tenants/*`, `src/providers/*`, `src/util/logger.ts`. **Never** in `src/paic/*` or `src/resolver/*` — those must be pure TypeScript with no editor dependency.
 - `axios` allowed only in `src/paic/*`. Other layers go through `PaicClient`.
 - `jose` allowed only in `src/paic/auth.ts`.
 - React + ReactFlow imports allowed only in `src/webview/ui/*`. Never in extension code.

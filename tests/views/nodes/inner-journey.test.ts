@@ -63,4 +63,41 @@ describe("InnerJourneyNode", () => {
     // getJourney was not called.
     expect((client.getJourney as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
+
+  it("ensureJourney fetches once and is shared between concurrent callers", async () => {
+    const innerJourney: Journey = {
+      id: "Inner",
+      enabled: true,
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const payload: NodePayload = {
+      id: "n1",
+      nodeType: "ScriptedDecisionNode",
+      scriptId: "s-inner",
+      outcomes: [],
+      inputs: [],
+      outputs: [],
+    };
+    const client = makeFakePaicClient({
+      journeyById: { Inner: innerJourney },
+      nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: payload },
+    });
+    const node = new InnerJourneyNode(
+      HOST,
+      REALM,
+      "Inner",
+      makeFakeCache(client),
+      makeFakeLogger(),
+      ["Login"],
+    );
+    // Concurrent + serial calls + a tree-expansion path (which uses ensureJourney
+    // internally via the parent hook) all share the same Promise.
+    const [a, b] = await Promise.all([node.ensureJourney(), node.ensureJourney()]);
+    await node.getChildren();
+    const c = await node.ensureJourney();
+    expect(a).toBe(b);
+    expect(a).toBe(c);
+    expect((client.getJourney as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
 });

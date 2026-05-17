@@ -18,8 +18,9 @@ export class RealmNode extends PaicNode {
     super(realm.name, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
     this.uid = `realm:${host}:${realm.name}`;
+    this.id = this.uid;
     this.description = realm.active ? undefined : "(inactive)";
-    this.tooltip = `Realm "${realm.name}" (${realm.parentPath})`;
+    this.tooltip = buildRealmTooltip(host, realm);
     this.contextValue = "realm";
     this.iconPath = new vscode.ThemeIcon("globe");
   }
@@ -34,4 +35,13 @@ export class RealmNode extends PaicNode {
       (j) => new JourneyNode(this.host, this.realm.name, j, this.cache, this.log, [], this),
     );
   }
+}
+
+function buildRealmTooltip(host: string, realm: Realm): vscode.MarkdownString {
+  const md = new vscode.MarkdownString(undefined, true);
+  md.appendMarkdown(`### Realm: \`${realm.name}\`\n\n`);
+  md.appendMarkdown(`**Host:** \`${host}\`\n\n`);
+  md.appendMarkdown(`**Parent path:** \`${realm.parentPath}\`\n\n`);
+  md.appendMarkdown(`**Status:** ${realm.active ? "Active" : "Inactive"}\n`);
+  return md;
 }

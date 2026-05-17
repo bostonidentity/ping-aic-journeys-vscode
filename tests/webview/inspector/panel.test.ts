@@ -132,11 +132,21 @@ describe("InspectorPanel", () => {
     const post = state.createdPanels[0].webview.postMessage;
     const calls = post.mock.calls.map((c: unknown[]) => c[0]);
     const depsMsg = calls.find(
-      (m): m is { type: "journeyDeps"; uid: string; scripts: unknown[] } =>
-        Boolean(m) && (m as { type?: unknown }).type === "journeyDeps",
+      (
+        m,
+      ): m is {
+        type: "journeyDeps";
+        uid: string;
+        scripts: unknown[];
+        nodeIndex: Record<string, { kind: string; scriptId?: string; uid?: string }>;
+      } => Boolean(m) && (m as { type?: unknown }).type === "journeyDeps",
     );
     expect(depsMsg).toBeDefined();
     expect(depsMsg?.scripts).toHaveLength(1);
+    // The nodeIndex maps the original nodeId ("n1") to its discovered script.
+    expect(depsMsg?.nodeIndex.n1?.kind).toBe("script");
+    expect(depsMsg?.nodeIndex.n1?.scriptId).toBe("s-1");
+    expect(depsMsg?.nodeIndex.n1?.uid).toBe("script:h.example.com:alpha:s-1");
   });
 
   it("on `navigate` message reveals the cached node in the tree view", async () => {

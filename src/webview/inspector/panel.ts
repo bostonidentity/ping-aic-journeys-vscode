@@ -8,7 +8,7 @@ import { InnerJourneyNode } from "../../views/nodes/inner-journey";
 import { JourneyNode } from "../../views/nodes/journey";
 import { RealmNode } from "../../views/nodes/realm";
 import { ScriptNode } from "../../views/nodes/script";
-import type { E2W, NodeRef, SelectPayload, W2E } from "../messages";
+import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../messages";
 
 export interface InspectorPanelDeps {
   context: vscode.ExtensionContext;
@@ -41,7 +41,7 @@ export class InspectorPanel implements vscode.Disposable {
   async show(node: PaicNode): Promise<void> {
     this.ensurePanel();
     this.uidIndex.set(node.uid, node);
-    const payload = this.toSelectPayload(node);
+    const payload = await this.toSelectPayload(node);
     if (!payload) return;
     this.post({ type: "select", payload });
 
@@ -96,15 +96,46 @@ export class InspectorPanel implements vscode.Disposable {
       const kids = await node.getChildren();
       const scripts: NodeRef[] = [];
       const inners: NodeRef[] = [];
+      const scriptUidById = new Map<string, string>();
+      const innerUidById = new Map<string, string>();
       for (const k of kids) {
         this.uidIndex.set(k.uid, k);
         if (k instanceof ScriptNode) {
           scripts.push({ uid: k.uid, label: k.scriptId, kind: "script" });
+          scriptUidById.set(k.scriptId, k.uid);
         } else if (k instanceof InnerJourneyNode) {
           inners.push({ uid: k.uid, label: k.id, kind: "innerJourney" });
+          innerUidById.set(k.id, k.uid);
         }
       }
-      this.post({ type: "journeyDeps", uid: node.uid, scripts, inners });
+      const nodeIndex: Record<string, NodeInfo> = {};
+      const payloads = node.payloadsByNodeId;
+      if (payloads) {
+        for (const [nodeId, p] of payloads) {
+          if (p.nodeType === "ScriptedDecisionNode" && p.scriptId) {
+            nodeIndex[nodeId] = {
+              kind: "script",
+              scriptId: p.scriptId,
+              uid: scriptUidById.get(p.scriptId),
+              outcomes: p.outcomes,
+              inputs: p.inputs,
+              outputs: p.outputs,
+            };
+          } else if (p.nodeType === "InnerTreeEvaluatorNode" && p.tree) {
+            nodeIndex[nodeId] = {
+              kind: "inner",
+              innerTreeId: p.tree,
+              uid: innerUidById.get(p.tree),
+            };
+          } else {
+            nodeIndex[nodeId] = {
+              kind: "other",
+              rawNodeType: p.nodeType === "other" ? p.rawNodeType : p.nodeType,
+            };
+          }
+        }
+      }
+      this.post({ type: "journeyDeps", uid: node.uid, scripts, inners, nodeIndex });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.childLog.error(
@@ -115,7 +146,7 @@ export class InspectorPanel implements vscode.Disposable {
     }
   }
 
-  private toSelectPayload(node: PaicNode): SelectPayload | null {
+  private async toSelectPayload(node: PaicNode): Promise<SelectPayload | null> {
     if (node instanceof ConnectionNode) {
       return { kind: "connection", uid: node.uid, connection: node.connection };
     }
@@ -132,15 +163,27 @@ export class InspectorPanel implements vscode.Disposable {
       };
     }
     if (node instanceof InnerJourneyNode) {
-      // For an inner-journey we don't yet have its full Journey shape on the
-      // node; we synthesize a minimal Journey-shaped object from what we know.
-      // Detail-card consumers tolerate `nodes: {}` (M3 will widen).
+      // Fetch the inner-journey's full skeleton so the diagram has nodes to
+      // render. Cached on the node (and shared with tree expansion), so the
+      // pair of fetches is deduped. On failure, fall back to a placeholder
+      // and let the deps message surface the error.
+      let journey;
+      try {
+        journey = await node.ensureJourney();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.childLog.warn(
+          { event: "inspector.innerJourney.fetchFailed", uid: node.uid, message },
+          "Inner journey skeleton fetch failed — falling back to placeholder",
+        );
+        journey = { id: node.id, entryNodeId: "", enabled: true, nodes: {} };
+      }
       return {
         kind: "innerJourney",
         uid: node.uid,
         host: node.host,
         realmName: node.realm,
-        journey: { id: node.id, entryNodeId: "", enabled: true, nodes: {} },
+        journey,
         visited: node.visited,
       };
     }
@@ -161,6 +204,13 @@ export class InspectorPanel implements vscode.Disposable {
     const bundleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.deps.context.extensionUri, "out", "webview.js"),
     );
+    // esbuild emits `out/webview.css` as a sibling of `out/webview.js` when the
+    // JS bundle imports any CSS (ReactFlow's stylesheet does, inside
+    // JourneyDiagram.tsx). Loading it as a <link> keeps it out of the inlined
+    // <style> below.
+    const stylesUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.deps.context.extensionUri, "out", "webview.css"),
+    );
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource} 'unsafe-inline'`,
@@ -169,8 +219,9 @@ export class InspectorPanel implements vscode.Disposable {
       `font-src ${webview.cspSource}`,
     ].join("; ");
 
-    // Inline the stylesheet so we don't have to publish a static file with
-    // matching cspSource bookkeeping. Bundle size cost is trivial.
+    // Inline our shell CSS so user-theme CSS variables resolve without
+    // round-tripping through a static file. ReactFlow's stylesheet (loaded
+    // above) defines its own selectors that don't conflict.
     const css = INSPECTOR_CSS;
 
     return `<!DOCTYPE html>
@@ -179,6 +230,7 @@ export class InspectorPanel implements vscode.Disposable {
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <title>PAIC Inspector</title>
+<link rel="stylesheet" href="${stylesUri.toString()}" />
 <style>${css}</style>
 </head>
 <body>
@@ -222,6 +274,19 @@ export class InspectorPanel implements vscode.Disposable {
           "Tree reveal failed",
         );
       }
+      return;
+    }
+    if (m.type === "openScriptBody") {
+      this.childLog.debug(
+        { event: "inspector.openScriptBody", host: m.host, realm: m.realm, scriptId: m.scriptId },
+        "Webview asked to open script body",
+      );
+      await vscode.commands.executeCommand("paicJourneys.openScriptBody", {
+        host: m.host,
+        realm: m.realm,
+        scriptId: m.scriptId,
+        language: m.language,
+      });
     }
   }
 }
@@ -264,4 +329,18 @@ body {
 .deps li { margin: 2px 0; }
 button.link { background: none; border: none; padding: 0; font: inherit; color: var(--vscode-textLink-foreground); cursor: pointer; text-align: left; }
 button.link:hover { text-decoration: underline; color: var(--vscode-textLink-activeForeground); }
+.card-actions { margin-top: 16px; }
+.card-actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid var(--vscode-button-border, transparent); padding: 6px 14px; border-radius: 2px; cursor: pointer; font: inherit; }
+.card-actions button.primary:hover { background: var(--vscode-button-hoverBackground); }
+.diagram { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.diagram-empty { margin-top: 18px; color: var(--vscode-descriptionForeground); padding-top: 12px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.diag-node { width: 200px; height: 64px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); border-radius: 4px; background: var(--vscode-editor-background); color: var(--vscode-foreground); font-size: 0.85em; box-sizing: border-box; cursor: pointer; }
+.diag-node .kind { font-size: 0.7em; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
+.diag-node .label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diag-node .hint { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.75em; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diag-node.script { border-left: 3px solid var(--vscode-charts-purple, #b180d7); }
+.diag-node.inner { border-left: 3px solid var(--vscode-charts-blue, #4f8cc9); }
+.diag-node.other { border-left: 3px solid var(--vscode-charts-foreground, #8c8c8c); opacity: 0.85; }
+.diag-node.entry { box-shadow: 0 0 0 2px var(--vscode-charts-green, #3c9c3c); }
+.diag-node:hover { background: var(--vscode-list-hoverBackground); }
 `;

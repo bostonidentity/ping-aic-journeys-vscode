@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { ScriptCard } from "@/webview/inspector/ui/cards/ScriptCard";
 import type { SelectPayload } from "@/webview/messages";
 
@@ -31,8 +31,28 @@ describe("ScriptCard", () => {
     expect(screen.getByText("JAVASCRIPT")).toBeTruthy();
   });
 
-  it("shows the M2 hint about script-body rendering", () => {
+  it("renders no Open-body action when onOpenBody is not provided", () => {
     render(<ScriptCard payload={baseline} />);
-    expect(screen.getByText(/Script body rendering arrives in M2/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Open body in editor/ })).toBeNull();
+  });
+
+  it("calls onOpenBody with host / realm / scriptId / language when the button is clicked", () => {
+    const onOpenBody = vi.fn();
+    render(
+      <ScriptCard
+        payload={{
+          ...baseline,
+          script: { id: "s-1", name: "AuthDecision", language: "JAVASCRIPT", body: "" },
+        }}
+        onOpenBody={onOpenBody}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Open body in editor/ }));
+    expect(onOpenBody).toHaveBeenCalledWith(
+      "openam-tenant.example.forgeblocks.com",
+      "alpha",
+      "s-1",
+      "JAVASCRIPT",
+    );
   });
 });

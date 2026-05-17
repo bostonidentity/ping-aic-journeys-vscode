@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { E2W, NodeRef, SelectPayload, W2E } from "../../messages";
+import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../../messages";
 import { ConnectionCard } from "./cards/ConnectionCard";
 import { InnerJourneyCard } from "./cards/InnerJourneyCard";
 import { JourneyCard } from "./cards/JourneyCard";
@@ -18,6 +18,7 @@ interface DepsState {
   uid: string;
   scripts: NodeRef[];
   inners: NodeRef[];
+  nodeIndex: Record<string, NodeInfo>;
 }
 
 export function App({ vscode }: Props) {
@@ -33,7 +34,7 @@ export function App({ vscode }: Props) {
         setDeps(null);
         setError(null);
       } else if (m.type === "journeyDeps") {
-        setDeps({ uid: m.uid, scripts: m.scripts, inners: m.inners });
+        setDeps({ uid: m.uid, scripts: m.scripts, inners: m.inners, nodeIndex: m.nodeIndex });
       } else if (m.type === "error") {
         setError(m.message);
       }
@@ -43,6 +44,8 @@ export function App({ vscode }: Props) {
   }, []);
 
   const navigate = (uid: string) => vscode.postMessage({ type: "navigate", uid });
+  const openBody = (host: string, realm: string, scriptId: string, language?: string) =>
+    vscode.postMessage({ type: "openScriptBody", host, realm, scriptId, language });
 
   if (!selection) {
     return <div className="empty">Select a tree node to inspect.</div>;
@@ -61,11 +64,25 @@ export function App({ vscode }: Props) {
     case "realm":
       return <RealmCard payload={selection} />;
     case "journey":
-      return <JourneyCard payload={selection} deps={matchingDeps} onNavigate={navigate} />;
+      return (
+        <JourneyCard
+          payload={selection}
+          deps={matchingDeps}
+          onNavigate={navigate}
+          onOpenBody={openBody}
+        />
+      );
     case "innerJourney":
-      return <InnerJourneyCard payload={selection} deps={matchingDeps} onNavigate={navigate} />;
+      return (
+        <InnerJourneyCard
+          payload={selection}
+          deps={matchingDeps}
+          onNavigate={navigate}
+          onOpenBody={openBody}
+        />
+      );
     case "script":
-      return <ScriptCard payload={selection} />;
+      return <ScriptCard payload={selection} onOpenBody={openBody} />;
     case "message":
       return <div className="empty">{selection.label}</div>;
   }

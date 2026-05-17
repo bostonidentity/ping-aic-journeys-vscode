@@ -1,4 +1,4 @@
-import type { Journey } from "../../domain/types";
+import type { Journey, NodePayload } from "../../domain/types";
 import { mapConcurrent } from "../../paic/concurrency";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
@@ -35,6 +35,15 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
   const payloads = await mapConcurrent(entries, CONCURRENCY, ([nodeId, ref]) =>
     client.getNode(realm, ref.nodeType, nodeId),
   );
+
+  // Stash the per-node payloads on the parent so the inspector can build the
+  // journey-diagram's nodeIndex for click-to-drill. Structural check avoids
+  // a value-cycle with `journey.ts` / `inner-journey.ts`.
+  if (parent && "payloadsByNodeId" in parent) {
+    (parent as { payloadsByNodeId?: ReadonlyMap<string, NodePayload> }).payloadsByNodeId = new Map(
+      payloads.map((p, i) => [entries[i][0], p]),
+    );
+  }
 
   const seenScripts = new Set<string>();
   const seenInners = new Set<string>();
@@ -85,8 +94,12 @@ export async function expandInnerJourney(args: {
   if (args.visited.includes(args.id)) {
     return [new MessageNode(`[cycle: ${args.id}]`, "cycle")];
   }
-  const client = await args.cache.get(args.host);
-  const journey = await client.getJourney(args.realm, args.id);
+  // Reuse `parent.ensureJourney()` when available so the inspector's
+  // toSelectPayload fetch and the tree's expansion fetch share one request.
+  const journey =
+    args.parent && "ensureJourney" in args.parent
+      ? await (args.parent as { ensureJourney: () => Promise<Journey> }).ensureJourney()
+      : await (await args.cache.get(args.host)).getJourney(args.realm, args.id);
   return expandJourney({
     host: args.host,
     realm: args.realm,

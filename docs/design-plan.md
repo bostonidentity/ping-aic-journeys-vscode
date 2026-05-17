@@ -172,6 +172,31 @@ One stack for all webviews (locked in by ReactFlow's React requirement for the g
 
 ~250 lines total across `src/paic/http.ts`, `src/paic/errors.ts`, `src/paic/pagination.ts`, `src/paic/realm-path.ts`, `src/paic/concurrency.ts`. Borrows ideas from frodo (axios-retry, 429 Retry-After, X-ForgeRock-TransactionId header, scope fallback) without taking frodo as a dependency. **One thing frodo doesn't do that we must:** cap parallelism (frodo `Promise.all`s without limits; we cap at ~10 to avoid stressing customer tenants on 1,000-call scans).
 
+### D17 — Script body: VS Code `FileSystemProvider`, not in-webview renderer
+
+For M2 (and beyond), scripts open in a real VS Code editor tab via a `paic-script://` URI scheme backed by `vscode.FileSystemProvider`. Inspector `ScriptCard` stays metadata-only (id, name, language, outcomes, referenced-by) and exposes an **Open body in editor** action. Read-only is enforced at M2 by `writeFile` throwing `FileSystemError.NoPermissions`.
+
+**Why FileSystemProvider, not TextDocumentContentProvider:** both APIs surface as a real editor tab with full editor features (find, fold, multi-cursor, themes, minimap, language tokenizer). `FileSystemProvider` is the *read-write capable* surface — flipping to edit later is removing a single one-line refusal, not a re-architecture. Same URI scheme, same editor UX, strict superset of capability.
+
+**Why not Monaco-in-webview:** ~1.5 MB bundle hit and a custom save/dirty/diff lifecycle that duplicates what the host editor already gives us for free. **Why not `react-syntax-highlighter`:** display-only — no find, no fold, no minimap, no future edit. Dead end.
+
+**Bonus capabilities for free**, on top of D17's base shape:
+- Diff scripts across tenants: `vscode.diff paic-script://tenantA/realm/x.js paic-script://tenantB/realm/x.js`
+- Custom hover / code-lens / definition providers attach to any URI scheme — natural insertion point for "find all references" / "go to caller-journey" (M5+)
+- Realm-as-folder browsing via `readDirectory` becomes a viable surface (M5+)
+
+URI shape: `paic-script://<host>/<realm>/<scriptId>.<ext>` with `<ext>` ∈ {`js`, `groovy`} so the language-id auto-detects. Retires Q-16.
+
+### D18 — Journey diagram: ReactFlow + dagre at M2
+
+The per-journey node-flow diagram in the inspector renders via **ReactFlow** (graph-as-React-components) with **dagre** for auto-layout. Each AIC node kind has its own custom React node component; M3 expands the set.
+
+**Considered and rejected: Mermaid.** Mermaid's declarative "describe-and-render" model is excellent for static diagrams but closes the door on every node-level interaction the product will plausibly want — hover-for-schema, right-click context menus, click-to-drill-into-referenced-script, custom node shapes per AIC kind, drag-to-rearrange, eventual inline-edit gestures (when D6 lifts). ReactFlow's "node = React component" model is the only one that doesn't paint us into a corner.
+
+**Bundle cost:** ~+200 KB into `out/webview.js` (ReactFlow ~150 + dagre ~50). React + ReactDOM are already paid for. Comfortable.
+
+**Reuse path:** the M6 realm-wide graph (D14 surface) and any M3 widening of node kinds both compose on top of this — same library, same custom-node pattern. Strengthens D15's framework lock.
+
 ## Architecture (M2 target state)
 
 ```
@@ -328,15 +353,15 @@ Foundation built in this milestone — minimum to ship the slice, shaped to abso
 
 ### M2 — Fill the detail panel: real content
 
-**User-facing outcome:** *"When I click a script, the detail panel shows the actual script body with syntax highlighting. When I click a journey, the panel shows a small diagram of its internal node flow."*
+**User-facing outcome:** *"When I click a script in the tree, its body opens in a real editor tab beside the inspector — full find, fold, themes, syntax highlighting, multi-cursor. When I click a journey, the inspector shows an interactive diagram of its node flow; clicking a node in the diagram navigates the tree to the underlying script."*
 
-Bring in off-the-shelf renderers so we don't hand-roll either of these:
+Two locked off-the-shelf bets, both with extensibility headroom (see D17, D18):
 
-- **Script body rendering** — read-only code viewer. Choice between Monaco (~1.5 MB, future-proof if we ever add edit) and `react-syntax-highlighter` (~50 KB, display-only). See open question Q-16 below. M2 picks one and ships.
-- **Journey diagram** — per-journey node-flow visualization built on **ReactFlow** (~150 KB). Same library that M6's realm-wide graph will use. Introducing it at M2 means M6 inherits the wiring.
-- **Hover tooltips on tree items** — Markdown-formatted, structured metadata. Cheap, no webview.
+- **Script body via `FileSystemProvider`** (D17). Register the `paic-script://` scheme; clicking a script (or "Open body in editor" from the inspector / a right-click on a `ScriptNode`) opens the body in a real editor tab via `workspace.openTextDocument`. Read-only enforced at M2 — `writeFile` throws `NoPermissions`. The architecture is write-capable; the flip lives behind D6.
+- **Per-journey diagram via ReactFlow + dagre** (D18). Custom node components per AIC kind (M3 widens the set). Click-a-node → posts a `navigate` message → existing cross-nav handler reveals the target tree row and re-renders the inspector. Hover-a-node → tooltip with inputs / outputs / outcomes.
+- **Hover tooltips on tree items** — Markdown-formatted metadata via `TreeItem.tooltip = new vscode.MarkdownString(...)`. No webview.
 - **Persist tree collapse state** to `globalState` keyed by node `uid` (UX win we lifted from the database-extension audit).
-- "Open in Editor" right-click action on script nodes — still useful when a user wants VS Code's full editor (find, multi-cursor) on a script. Secondary to panel rendering.
+- **"Open in Diff Editor"** — once two `paic-script://` URIs exist for the same script (e.g., across two connections), `vscode.diff` gives us a tenant-vs-tenant diff editor for free (free side-effect of D17).
 
 ### M3 — Wider dependency kinds
 
@@ -406,7 +431,7 @@ Still no UI for queries — that's M5.
 - Q-10 — Connection form rewrite to React: still a template string after M1 — when does it earn the rewrite?
 - Q-11 — React state mgmt: plain React vs Zustand vs Redux Toolkit?
 - Q-12 — Hot reload during webview dev: Vite HMR vs `npm run watch` + reload?
-- Q-16 — M2 script renderer: **Monaco** (~1.5 MB, future-proof for edit) vs **`react-syntax-highlighter`** (~50 KB, display only)? Picked in M2.
+- ~~Q-16~~ — Retired by D17 (FileSystemProvider).
 
 **Resolver**
 - Q-13 — ESV reference detection: regex over script bodies vs AST (M3+)?

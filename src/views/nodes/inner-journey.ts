@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { Journey, NodePayload } from "../../domain/types";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { PaicNode } from "./base";
@@ -10,6 +11,13 @@ import { expandInnerJourney } from "./journey-expand";
  */
 export class InnerJourneyNode extends PaicNode {
   readonly uid: string;
+  /** Populated by `expandJourney` after fetching per-node payloads (see
+   * `JourneyNode.payloadsByNodeId` for the rationale). */
+  payloadsByNodeId?: ReadonlyMap<string, NodePayload>;
+
+  /** Shared promise for the journey-skeleton fetch — see `ensureJourney`. */
+  private journeyPromise?: Promise<Journey>;
+
   constructor(
     public readonly host: string,
     public readonly realm: string,
@@ -22,9 +30,36 @@ export class InnerJourneyNode extends PaicNode {
     super(id, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
     this.uid = `inner:${host}:${realm}:${id}:${visited.join(",")}`;
+    // NOTE: we deliberately do NOT set `this.id = this.uid` here. The
+    // constructor's `id` parameter is the AIC inner-journey id (e.g.
+    // "PasswordReset") and shadows TreeItem's `id`; overwriting it would
+    // break the `node.id` domain accessor everywhere. Collapse-state
+    // persistence on inner-journey rows is a nice-to-have, not a must-have.
     this.contextValue = "innerJourney";
     this.iconPath = new vscode.ThemeIcon("type-hierarchy-sub");
-    this.tooltip = `Inner journey "${id}" in realm ${realm}`;
+    this.tooltip = buildInnerJourneyTooltip(host, realm, id, visited);
+  }
+
+  /**
+   * Lazy-fetch the inner journey's full skeleton from PAIC. Shared by the
+   * inspector (which needs the skeleton to render the diagram) and by
+   * `expandInnerJourney` during tree expansion (which needs it to fetch
+   * node payloads). Concurrent callers get the same in-flight Promise; a
+   * fetch failure clears the cache so a subsequent call retries.
+   */
+  ensureJourney(): Promise<Journey> {
+    if (!this.journeyPromise) {
+      this.journeyPromise = this.fetchJourney().catch((err) => {
+        this.journeyPromise = undefined;
+        throw err;
+      });
+    }
+    return this.journeyPromise;
+  }
+
+  private async fetchJourney(): Promise<Journey> {
+    const client = await this.cache.get(this.host);
+    return client.getJourney(this.realm, this.id);
   }
 
   protected loadChildren(): Promise<PaicNode[]> {
@@ -38,4 +73,19 @@ export class InnerJourneyNode extends PaicNode {
       parent: this,
     });
   }
+}
+
+function buildInnerJourneyTooltip(
+  host: string,
+  realm: string,
+  id: string,
+  visited: readonly string[],
+): vscode.MarkdownString {
+  const md = new vscode.MarkdownString(undefined, true);
+  md.appendMarkdown(`### Inner journey: \`${id}\`\n\n`);
+  md.appendMarkdown(`**Host:** \`${host}\` · **Realm:** \`${realm}\`\n\n`);
+  if (visited.length > 0) {
+    md.appendMarkdown(`**Ancestor chain:** ${visited.map((v) => `\`${v}\``).join(" → ")}\n`);
+  }
+  return md;
 }

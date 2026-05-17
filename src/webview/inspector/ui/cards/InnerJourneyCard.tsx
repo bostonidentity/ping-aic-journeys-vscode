@@ -1,13 +1,15 @@
-import type { NodeRef, SelectPayload } from "../../../messages";
-import { DepsBlock } from "./JourneyCard";
+import type { SelectPayload } from "../../../messages";
+import { JourneyDiagram } from "../diagram/JourneyDiagram";
+import { DepsBlock, type JourneyCardDeps } from "./JourneyCard";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "innerJourney" }>;
-  deps: { scripts: NodeRef[]; inners: NodeRef[] } | null;
+  deps: JourneyCardDeps | null;
   onNavigate: (uid: string) => void;
+  onOpenBody: (host: string, realm: string, scriptId: string, language?: string) => void;
 }
 
-export function InnerJourneyCard({ payload, deps, onNavigate }: Props) {
+export function InnerJourneyCard({ payload, deps, onNavigate, onOpenBody }: Props) {
   const { journey, realmName, host, visited } = payload;
   const nodeCount = Object.keys(journey.nodes).length;
   return (
@@ -44,6 +46,16 @@ export function InnerJourneyCard({ payload, deps, onNavigate }: Props) {
           </>
         ) : null}
       </dl>
+      {deps?.nodeIndex && nodeCount > 0 ? (
+        <JourneyDiagram
+          journey={journey}
+          nodeIndex={deps.nodeIndex}
+          host={host}
+          realm={realmName}
+          onNavigate={onNavigate}
+          onOpenBody={onOpenBody}
+        />
+      ) : null}
       <DepsBlock deps={deps} onNavigate={onNavigate} />
     </article>
   );

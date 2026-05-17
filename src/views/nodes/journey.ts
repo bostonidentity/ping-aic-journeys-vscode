@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { Journey } from "../../domain/types";
+import type { Journey, NodePayload } from "../../domain/types";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { PaicNode } from "./base";
@@ -11,6 +11,10 @@ import { expandJourney } from "./journey-expand";
  */
 export class JourneyNode extends PaicNode {
   readonly uid: string;
+  /** Populated by `expandJourney` after fetching per-node payloads. The
+   * inspector reads this to build the journey-diagram's node-id index for
+   * click-to-drill. Undefined until the journey has been expanded once. */
+  payloadsByNodeId?: ReadonlyMap<string, NodePayload>;
   constructor(
     public readonly host: string,
     public readonly realm: string,
@@ -23,8 +27,9 @@ export class JourneyNode extends PaicNode {
     super(journey.id, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
     this.uid = `journey:${host}:${realm}:${journey.id}`;
+    this.id = this.uid;
     this.description = journey.enabled ? undefined : "(disabled)";
-    this.tooltip = journey.description ?? `Journey ${journey.id}`;
+    this.tooltip = buildJourneyTooltip(host, realm, journey);
     this.contextValue = "journey";
     this.iconPath = new vscode.ThemeIcon("symbol-class");
   }
@@ -40,4 +45,17 @@ export class JourneyNode extends PaicNode {
       parent: this,
     });
   }
+}
+
+function buildJourneyTooltip(host: string, realm: string, journey: Journey): vscode.MarkdownString {
+  const md = new vscode.MarkdownString(undefined, true);
+  md.appendMarkdown(`### Journey: \`${journey.id}\`\n\n`);
+  md.appendMarkdown(`**Host:** \`${host}\` · **Realm:** \`${realm}\`\n\n`);
+  md.appendMarkdown(`**Status:** ${journey.enabled ? "Enabled" : "Disabled"}\n\n`);
+  if (journey.description) md.appendMarkdown(`**Description:** ${journey.description}\n\n`);
+  if (journey.identityResource)
+    md.appendMarkdown(`**Identity Resource:** \`${journey.identityResource}\`\n\n`);
+  md.appendMarkdown(`**Entry node:** \`${journey.entryNodeId}\`\n\n`);
+  md.appendMarkdown(`**Node count:** ${Object.keys(journey.nodes).length}\n`);
+  return md;
 }

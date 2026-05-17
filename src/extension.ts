@@ -1,12 +1,18 @@
 import type { Level } from "pino";
 import * as vscode from "vscode";
 import type { Connection } from "./domain/types";
+import {
+  makeScriptUri,
+  PaicScriptFileSystemProvider,
+  SCRIPT_URI_SCHEME,
+} from "./providers/script-fs-provider";
 import { type ClientCache, makeClientCache } from "./tenants/client-cache";
 import { makeProductionDeps, makeTenantsRegistry, type TenantsRegistry } from "./tenants/registry";
 import { type Logger, makeLogger } from "./util/logger";
 import { openConnectionForm } from "./views/connection-form";
 import type { PaicNode } from "./views/nodes/base";
 import { ConnectionNode } from "./views/nodes/connection";
+import { ScriptNode } from "./views/nodes/script";
 import { PaicTreeProvider } from "./views/paic-tree-provider";
 import { InspectorPanel } from "./webview/inspector/panel";
 
@@ -49,6 +55,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const inspector = new InspectorPanel({ context, cache: clientCache, log, treeView });
   context.subscriptions.push(inspector);
 
+  // Register the FileSystemProvider that surfaces script bodies as
+  // `paic-script://<host>/<realm>/<scriptId>.<ext>` editor tabs (D17).
+  const scriptFs = new PaicScriptFileSystemProvider(clientCache, log);
+  context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider(SCRIPT_URI_SCHEME, scriptFs, {
+      isReadonly: true,
+      isCaseSensitive: true,
+    }),
+  );
+
   context.subscriptions.push(
     treeView.onDidChangeSelection((ev) => {
       const node = ev.selection[0];
@@ -79,6 +95,79 @@ export function activate(context: vscode.ExtensionContext): void {
       log.info({ event: "inspector.open" }, "Opening inspector");
       inspector.reveal();
     }),
+
+    vscode.commands.registerCommand("paicJourneys.openScriptBody", async (arg: unknown) => {
+      const parsed = parseOpenScriptArg(arg);
+      if (!parsed) {
+        log.warn(
+          { event: "openScriptBody.badArg" },
+          "openScriptBody invoked without host / realm / scriptId",
+        );
+        return;
+      }
+      const uri = makeScriptUri(parsed.host, parsed.realm, parsed.scriptId, parsed.language);
+      log.info(
+        {
+          event: "openScriptBody",
+          host: parsed.host,
+          realm: parsed.realm,
+          script_id: parsed.scriptId,
+        },
+        "Opening script body in editor",
+      );
+      await vscode.commands.executeCommand("vscode.open", uri, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Beside,
+      });
+    }),
+
+    vscode.commands.registerCommand(
+      "paicJourneys.diffScriptAcrossConnections",
+      async (arg: unknown) => {
+        const parsed = parseOpenScriptArg(arg);
+        if (!parsed) {
+          log.warn(
+            { event: "diffScript.badArg" },
+            "diffScriptAcrossConnections invoked without host / realm / scriptId",
+          );
+          return;
+        }
+        const others = registry.list().filter((c) => c.host !== parsed.host);
+        if (others.length === 0) {
+          vscode.window.showInformationMessage(
+            "No other connections to diff against. Add a second connection in the PAIC Journeys sidebar.",
+          );
+          return;
+        }
+        let peer = others[0];
+        if (others.length > 1) {
+          const pick = await vscode.window.showQuickPick(
+            others.map((c) => ({
+              label: c.name ?? c.host,
+              description: c.host,
+              host: c.host,
+            })),
+            { placeHolder: `Diff "${parsed.scriptId}" with which connection?` },
+          );
+          if (!pick) return;
+          peer = others.find((c) => c.host === pick.host) ?? peer;
+        }
+        const left = makeScriptUri(parsed.host, parsed.realm, parsed.scriptId, parsed.language);
+        const right = makeScriptUri(peer.host, parsed.realm, parsed.scriptId, parsed.language);
+        const title = `Script Diff: ${parsed.host} ↔ ${peer.host} · ${parsed.scriptId}`;
+        log.info(
+          {
+            event: "diffScript",
+            host_left: parsed.host,
+            host_right: peer.host,
+            realm: parsed.realm,
+            script_id: parsed.scriptId,
+          },
+          "Opening cross-tenant script diff",
+        );
+        await vscode.commands.executeCommand("vscode.diff", left, right, title);
+      },
+    ),
 
     vscode.commands.registerCommand("paicJourneys.refreshNode", (node: PaicNode) => {
       if (!node || typeof node.refresh !== "function") return;
@@ -155,4 +244,36 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   // nothing to clean up — disposables are managed via context.subscriptions
+}
+
+interface OpenScriptArgs {
+  host: string;
+  realm: string;
+  scriptId: string;
+  language?: string;
+}
+
+/** Accepts a `ScriptNode` (tree right-click handed us the tree item) or a
+ * plain `{host, realm, scriptId, language?}` payload (from the inspector
+ * webview's `openScriptBody` message). */
+function parseOpenScriptArg(arg: unknown): OpenScriptArgs | null {
+  if (arg instanceof ScriptNode) {
+    return { host: arg.host, realm: arg.realm, scriptId: arg.scriptId };
+  }
+  if (arg && typeof arg === "object") {
+    const a = arg as Record<string, unknown>;
+    if (
+      typeof a.host === "string" &&
+      typeof a.realm === "string" &&
+      typeof a.scriptId === "string"
+    ) {
+      return {
+        host: a.host,
+        realm: a.realm,
+        scriptId: a.scriptId,
+        language: typeof a.language === "string" ? a.language : undefined,
+      };
+    }
+  }
+  return null;
 }

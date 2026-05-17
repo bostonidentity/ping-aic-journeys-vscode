@@ -101,14 +101,41 @@
 - [x] vitest + esbuild wired for JSX: `esbuild.jsx: "automatic"`, `include` widened to `**/*.test.{ts,tsx}`; `.tsx` tests routed through `tsconfig.webview.json` for DOM + JSX type-check
 - [ ] Captured AIC responses scrubbed and committed under `tests/fixtures/` — deferred. Current tests use inline synthetic-but-realistic payloads; promotion to fixture files waits until we have a clean tenant capture to import.
 
-## M2 — Fill the detail panel: real content ⏳
+## M2 — Fill the detail panel: real content ✅
 
-- [ ] Pick M2 script renderer (Q-16): Monaco vs react-syntax-highlighter
-- [ ] Wire script-card → render body with picked renderer
-- [ ] Add ReactFlow to the bundle; render per-journey node-flow diagram in the journey card
-- [ ] Hover tooltips on tree items (Markdown-formatted metadata)
-- [ ] Persist tree collapse state to `globalState` keyed by node `uid`
-- [ ] "Open in Editor" right-click action on script nodes (opens script body as a regular editor tab — `vscode.workspace.openTextDocument`)
+Tech locked: **D17** (script body via `vscode.FileSystemProvider`) and **D18** (journey diagram via ReactFlow + dagre).
+
+### Script body (D17) ✅
+
+- [x] `src/providers/script-fs-provider.ts` — `PaicScriptFileSystemProvider implements vscode.FileSystemProvider` + `parseScriptUri` / `makeScriptUri` helpers + `SCRIPT_URI_SCHEME` const. Resolves `paic-script://<host>/<realm>/<scriptId>.<ext>` → `ClientCache.get(host).getScript(realm, id)`. Read-only enforced: `writeFile` / `delete` / `rename` / `readDirectory` / `createDirectory` all throw `FileSystemError.NoPermissions`. 5 s stat-then-read dedupe cache to avoid the double-fetch on open.
+- [x] `extension.ts` wires `workspace.registerFileSystemProvider(SCRIPT_URI_SCHEME, …, { isReadonly: true, isCaseSensitive: true })` and registers a new `paicJourneys.openScriptBody` command (accepts a `ScriptNode` from tree right-click or a plain `{host, realm, scriptId, language?}` from the inspector webview).
+- [x] Inspector `ScriptCard`: "Open body in editor" button → `postMessage({ type: "openScriptBody", … })`; `InspectorPanel.onMessage` routes that to the `paicJourneys.openScriptBody` command.
+- [x] Tree right-click on `ScriptNode` rows: inline `$(go-to-file)` icon + context-menu entry → same command. `commandPalette` `when: false` hides the command from the palette since it requires args.
+- [x] 14 unit tests in `tests/providers/script-fs-provider.test.ts` (URI parsing including sub-realms, `makeScriptUri` for JAVASCRIPT/GROOVY, `readFile`, `stat`, dedupe-cache, every mutating method's `NoPermissions` refusal, missing-script → `FileNotFound`, unavailable-client → `Unavailable`, `watch` no-op).
+- [x] `src/providers/` introduced as a new architectural slot for VS Code provider implementations; `.claude/rules/conventions.md` + `CLAUDE.md` updated accordingly.
+- [x] `tests/util/vscode-mock.ts` extended with `Uri.parse`, `FileSystemError.{NoPermissions,FileNotFound,Unavailable}`, `FileType`, `FilePermission`, `commands.executeCommand`, `workspace.registerFileSystemProvider`.
+
+### Journey diagram (D18) ✅
+
+- [x] Added `reactflow ^11.11.4` + `dagre ^0.8.5` (deps) + `@types/dagre` (devDep).
+- [x] `src/webview/inspector/ui/diagram/layout.ts` — pure dagre auto-layout (TB rankdir, 30/48 node/rank spacing). Drops orphan edges. Flags the entry node.
+- [x] `src/webview/inspector/ui/diagram/JourneyDiagram.tsx` — ReactFlow viewport with `Background` + `Controls`, `nodesDraggable={false}`, `fitView`, `hideAttribution`. Memoizes layout; routes `onNodeClick` to either `onOpenBody` (script kind) or `onNavigate` (inner kind).
+- [x] One custom node component per AIC kind: `ScriptedDecisionNodeView`, `InnerTreeEvaluatorNodeView`, `OtherNodeView` (handles `PageNode`, `ConfigProviderNode`, etc. via a `prettyKind` formatter — M3 will split into per-kind components).
+- [x] `JourneyCard` embeds `<JourneyDiagram>` below the metadata when `deps.nodeIndex` is present; threading host/realm/onNavigate/onOpenBody from `App.tsx`.
+- [x] Inner-journey nodes carry their `payloadsByNodeId` (added to `JourneyNode` + `InnerJourneyNode`); `expandJourney` populates the map after `mapConcurrent` resolves so we don't double-fetch. Inspector reads it in `sendJourneyDeps` to build `nodeIndex` for diagram click handling.
+- [x] `messages.ts` extended: `NodeInfo` interface + `journeyDeps.nodeIndex` field. `isE2W` guard unchanged (still discriminates by `type`).
+- [x] esbuild emits `out/webview.css` from `import "reactflow/dist/style.css"` inside `JourneyDiagram.tsx`; webview HTML loads it via `<link rel="stylesheet">` ahead of our inline shell CSS. CSP `style-src` already allowed `webview.cspSource`.
+- [x] Diagram CSS (`.diag-node`, `.entry`, `.script`/`.inner`/`.other`) added to the inline `INSPECTOR_CSS` in `panel.ts`; uses VSCode CSS variables for color and `--vscode-charts-*` for kind-coloring.
+- [x] 11 new tests: 5 layout-function unit tests in `tests/webview/inspector/ui/diagram/layout.test.ts`; 5 component tests in `tests/webview/inspector/ui/diagram/journey-diagram.test.tsx` (ReactFlow stubbed via `vi.mock`); 1 JourneyCard test verifying diagram embedding; panel test extended with `nodeIndex` assertion. Total 122 → 133.
+
+### Polish (M2 follow-up)
+
+- [x] InnerJourneyCard diagram — `InnerJourneyNode.ensureJourney()` lazy-fetches + caches the inner journey's full skeleton (shared with tree expansion to dedupe the request). `InspectorPanel.toSelectPayload` is now async and awaits `ensureJourney()` so the diagram has real nodes to render. `InnerJourneyCard.tsx` embeds `<JourneyDiagram>` when both `journey.nodes` and `deps.nodeIndex` are present. Fetch failure falls back to a placeholder + warns.
+- [x] Hover tooltips on tree items — every `PaicNode` subclass now sets `this.tooltip = vscode.MarkdownString` with kind-specific structured metadata (host / realm / status / entry-node / ancestor chain / etc.). `isTrusted: false` (no commands), `supportThemeIcons: true` for future icon embedding.
+- [x] Tree collapse + selection state persistence — `TreeItem.id` set to `this.uid` on Connection/Realm/Journey/Script nodes. VS Code automatically persists collapse state per-id across reloads. Skipped on `InnerJourneyNode` because the class's domain `id` field (inner-journey AIC id like `PasswordReset`) shadows `TreeItem.id`; trade documented inline.
+- [x] "Open in Diff Editor" command (`paicJourneys.diffScriptAcrossConnections`) — right-click a ScriptNode → optional peer-connection QuickPick (auto-picks when there's only one other connection) → `vscode.diff` opens the two `paic-script://` URIs side-by-side. Cross-tenant script diff is the headline use-case; free side-effect of D17.
+- [x] Diagram node hover → full schema tooltip — `NodeInfo` extended with `outcomes` / `inputs` / `outputs` / `rawNodeType`; populated by `panel.ts:sendJourneyDeps`; rendered as native browser `title` attribute via the new shared `buildNodeTooltip` helper. Browser tooltip is dependency-free and keyboard-accessible.
+
 
 ## M3 — Wider dependency kinds ⏳
 

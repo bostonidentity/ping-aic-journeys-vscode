@@ -59,19 +59,76 @@ export class MockThemeColor {
 }
 
 export class MockMarkdownString {
-  constructor(public value = "") {}
+  isTrusted: boolean;
+  supportThemeIcons: boolean;
+  constructor(
+    public value = "",
+    supportThemeIcons = false,
+  ) {
+    this.isTrusted = false;
+    this.supportThemeIcons = supportThemeIcons;
+  }
+  appendText(value: string): this {
+    this.value += value;
+    return this;
+  }
+  appendMarkdown(value: string): this {
+    this.value += value;
+    return this;
+  }
+  appendCodeblock(value: string, lang?: string): this {
+    this.value += `\n\`\`\`${lang ?? ""}\n${value}\n\`\`\`\n`;
+    return this;
+  }
 }
 
-/** Mock for `vscode.Uri` — only the methods our panel uses. */
+/** Mock for `vscode.Uri` — covers the parsing / joining / stringifying that
+ * the FileSystemProvider, inspector panel, and tree nodes exercise. */
 export class MockUri {
-  constructor(public readonly path: string) {}
+  constructor(
+    public readonly path: string,
+    public readonly scheme: string = "file",
+    public readonly authority: string = "",
+  ) {}
+  static parse(s: string): MockUri {
+    const m = /^([^:]+):\/\/([^/?#]*)(\/[^?#]*)?/.exec(s);
+    if (!m) return new MockUri(s);
+    return new MockUri(m[3] ?? "", m[1], m[2] ?? "");
+  }
   static joinPath(base: MockUri, ...segments: string[]): MockUri {
-    return new MockUri([base.path, ...segments].join("/"));
+    const sep = base.path.endsWith("/") ? "" : "/";
+    return new MockUri([base.path, segments.join("/")].join(sep), base.scheme, base.authority);
   }
   toString(): string {
-    return this.path;
+    if (!this.scheme) return this.path;
+    return `${this.scheme}://${this.authority}${this.path}`;
   }
 }
+
+/** Mock for `vscode.FileSystemError`. Mirrors the static-factory shape; tests
+ * assert on `.code` or `instanceof MockFileSystemError`. */
+export class MockFileSystemError extends Error {
+  constructor(
+    message: string,
+    public readonly code:
+      | "FileNotFound"
+      | "FileExists"
+      | "NoPermissions"
+      | "FileNotADirectory"
+      | "FileIsADirectory"
+      | "Unavailable",
+  ) {
+    super(message);
+    this.name = "FileSystemError";
+  }
+}
+export const MockFileSystemErrorFactory = {
+  NoPermissions: (u: unknown) =>
+    new MockFileSystemError(`NoPermissions: ${String(u)}`, "NoPermissions"),
+  FileNotFound: (u: unknown) =>
+    new MockFileSystemError(`FileNotFound: ${String(u)}`, "FileNotFound"),
+  Unavailable: (u: unknown) => new MockFileSystemError(`Unavailable: ${String(u)}`, "Unavailable"),
+};
 
 /** Minimal `WebviewPanel`/`Webview` stand-in. Records `postMessage` calls and
  * exposes a hook for the test to simulate `onDidReceiveMessage`. */
@@ -165,7 +222,11 @@ export function makeVscodeMock(): Record<string, unknown> {
         get: vi.fn(),
         update: vi.fn(),
       })),
+      registerFileSystemProvider: vi.fn(() => ({ dispose: () => undefined })),
     },
+    FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+    FilePermission: { Readonly: 1 },
+    FileSystemError: MockFileSystemErrorFactory,
     window: {
       createWebviewPanel,
       createTreeView,
@@ -185,6 +246,7 @@ export function makeVscodeMock(): Record<string, unknown> {
     },
     commands: {
       registerCommand: vi.fn(() => ({ dispose: () => undefined })),
+      executeCommand: vi.fn(() => Promise.resolve(undefined)),
     },
     /** Test helpers — not part of the real API. */
     __mockState: {

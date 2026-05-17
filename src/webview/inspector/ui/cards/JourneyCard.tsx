@@ -1,12 +1,20 @@
-import type { NodeRef, SelectPayload } from "../../../messages";
+import type { NodeInfo, NodeRef, SelectPayload } from "../../../messages";
+import { JourneyDiagram } from "../diagram/JourneyDiagram";
+
+export interface JourneyCardDeps {
+  scripts: NodeRef[];
+  inners: NodeRef[];
+  nodeIndex: Record<string, NodeInfo>;
+}
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "journey" }>;
-  deps: { scripts: NodeRef[]; inners: NodeRef[] } | null;
+  deps: JourneyCardDeps | null;
   onNavigate: (uid: string) => void;
+  onOpenBody: (host: string, realm: string, scriptId: string, language?: string) => void;
 }
 
-export function JourneyCard({ payload, deps, onNavigate }: Props) {
+export function JourneyCard({ payload, deps, onNavigate, onOpenBody }: Props) {
   const { journey, realmName, host } = payload;
   const nodeCount = Object.keys(journey.nodes).length;
   return (
@@ -45,13 +53,23 @@ export function JourneyCard({ payload, deps, onNavigate }: Props) {
         <dt>Node count</dt>
         <dd>{nodeCount}</dd>
       </dl>
+      {deps?.nodeIndex ? (
+        <JourneyDiagram
+          journey={journey}
+          nodeIndex={deps.nodeIndex}
+          host={host}
+          realm={realmName}
+          onNavigate={onNavigate}
+          onOpenBody={onOpenBody}
+        />
+      ) : null}
       <DepsBlock deps={deps} onNavigate={onNavigate} />
     </article>
   );
 }
 
 interface DepsProps {
-  deps: { scripts: NodeRef[]; inners: NodeRef[] } | null;
+  deps: JourneyCardDeps | null;
   onNavigate: (uid: string) => void;
 }
 

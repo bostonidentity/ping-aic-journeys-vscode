@@ -58,9 +58,33 @@
         "command": "paicJourneys.openInspector",
         "title": "Open Inspector",
         "icon": "$(preview)"
+      },
+      {
+        "command": "paicJourneys.openScriptBody",
+        "title": "Open Script Body",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "paicJourneys.diffScriptAcrossConnections",
+        "title": "Diff with Another Connection…",
+        "icon": "$(diff)"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "paicJourneys.openScriptBody",
+          "when": "false"
+        },
+        {
+          "command": "paicJourneys.refreshNode",
+          "when": "false"
+        },
+        {
+          "command": "paicJourneys.diffScriptAcrossConnections",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "paicJourneys.addConnection",
@@ -83,6 +107,21 @@
           "command": "paicJourneys.refreshNode",
           "when": "view == paicJourneys.connections && viewItem =~ /^(connection|realm|journey|innerJourney)$/",
           "group": "inline@1"
+        },
+        {
+          "command": "paicJourneys.openScriptBody",
+          "when": "view == paicJourneys.connections && viewItem == script",
+          "group": "inline@1"
+        },
+        {
+          "command": "paicJourneys.openScriptBody",
+          "when": "view == paicJourneys.connections && viewItem == script",
+          "group": "1@1"
+        },
+        {
+          "command": "paicJourneys.diffScriptAcrossConnections",
+          "when": "view == paicJourneys.connections && viewItem == script",
+          "group": "1@2"
         },
         {
           "command": "paicJourneys.editConnection",
@@ -166,6 +205,7 @@
     "@biomejs/biome": "^2.4.0",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
+    "@types/dagre": "^0.7.54",
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
@@ -179,9 +219,11 @@
   "dependencies": {
     "axios": "^1.16.1",
     "axios-retry": "^4.5.0",
+    "dagre": "^0.8.5",
     "jose": "^6.2.3",
     "pino": "^10.3.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "reactflow": "^11.11.4"
   }
 }

@@ -61,7 +61,13 @@ describe("messages protocol", () => {
       type: "select",
       payload: { kind: "connection", uid: "u1", connection: CONN },
     };
-    const deps: E2W = { type: "journeyDeps", uid: "u3", scripts: [], inners: [] };
+    const deps: E2W = {
+      type: "journeyDeps",
+      uid: "u3",
+      scripts: [],
+      inners: [],
+      nodeIndex: {},
+    };
     const err: E2W = { type: "error", message: "boom" };
     expect(isE2W(select)).toBe(true);
     expect(isE2W(deps)).toBe(true);
@@ -91,15 +97,22 @@ describe("messages protocol", () => {
     expect(isE2W(withoutUid)).toBe(true);
   });
 
-  it("journeyDeps carries arrays of NodeRefs", () => {
+  it("journeyDeps carries arrays of NodeRefs plus a nodeIndex", () => {
     const m: E2W = {
       type: "journeyDeps",
       uid: "u3",
       scripts: [{ uid: "script:h:alpha:s-1", label: "s-1", kind: "script" }],
       inners: [{ uid: "inner:h:alpha:Inner:Login", label: "Inner", kind: "innerJourney" }],
+      nodeIndex: {
+        n1: { kind: "script", scriptId: "s-1", uid: "script:h:alpha:s-1" },
+        n2: { kind: "inner", innerTreeId: "Inner", uid: "inner:h:alpha:Inner:Login" },
+      },
     };
+    if (m.type !== "journeyDeps") throw new Error("narrowing failed");
     expect(m.scripts).toHaveLength(1);
     expect(m.scripts[0].kind).toBe("script");
     expect(m.inners[0].kind).toBe("innerJourney");
+    expect(m.nodeIndex.n1?.scriptId).toBe("s-1");
+    expect(m.nodeIndex.n2?.innerTreeId).toBe("Inner");
   });
 });

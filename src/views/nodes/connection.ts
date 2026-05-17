@@ -17,8 +17,12 @@ export class ConnectionNode extends PaicNode {
     super(connection.name || connection.host, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
     this.uid = `connection:${connection.host}`;
+    // `id` powers VS Code's per-row collapse-state persistence + selection
+    // identity across tree refreshes. `uid` is already stable (derived from
+    // user-owned config, not random), so reusing it is safe.
+    this.id = this.uid;
     this.description = connection.name ? connection.host : undefined;
-    this.tooltip = `${connection.host}\nsaId: ${connection.saId}`;
+    this.tooltip = buildConnectionTooltip(connection);
     this.contextValue = "connection";
     this.iconPath = new vscode.ThemeIcon("plug");
   }
@@ -31,4 +35,12 @@ export class ConnectionNode extends PaicNode {
     }
     return realms.map((r) => new RealmNode(this.connection.host, r, this.cache, this.log, this));
   }
+}
+
+function buildConnectionTooltip(c: Connection): vscode.MarkdownString {
+  const md = new vscode.MarkdownString(undefined, true);
+  md.appendMarkdown(`### ${c.name ?? c.host}\n\n`);
+  md.appendMarkdown(`**Host:** \`${c.host}\`\n\n`);
+  md.appendMarkdown(`**Service Account ID:** \`${c.saId}\`\n`);
+  return md;
 }

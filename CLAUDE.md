@@ -15,6 +15,7 @@ VS Code Extension API (Node.js extension host) | TypeScript | `esbuild` bundling
   - `resolver/` (planned, M4) — dependency graph builder + RealmIndex. No VS Code imports.
   - `tenants/` — connection registry (`registry.ts`) + per-host PaicClient cache (`client-cache.ts`); wraps settings + SecretStorage.
   - `views/` — `PaicTreeProvider` + node class hierarchy under `nodes/` (`base`, `connection`, `realm`, `journey`, `inner-journey`, `script`, `journey-expand`) + connection form.
+  - `providers/` — VS Code provider-interface implementations (`script-fs-provider.ts` exposes `paic-script://` script bodies as a real editor tab; future home for `HoverProvider`, `CodeLensProvider`, `DefinitionProvider`, `DiagnosticCollection`).
   - `webview/` — inspector panel: extension-side singleton (`inspector/panel.ts`), typed `messages.ts` protocol, React UI under `inspector/ui/` (`main.tsx`, `App.tsx`, 5 cards). Built as a separate esbuild bundle to `out/webview.js`. M5/M6 will add query + graph panels reusing the same framework.
   - `util/` — `logger.ts` (pino multistream wrapper).
 - `out/` — built output (`extension.js`, `webview.js`); produced by `npm run build`, gitignored

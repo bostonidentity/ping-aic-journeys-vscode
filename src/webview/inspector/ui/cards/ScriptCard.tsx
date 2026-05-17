@@ -2,9 +2,10 @@ import type { SelectPayload } from "../../../messages";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "script" }>;
+  onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
 }
 
-export function ScriptCard({ payload }: Props) {
+export function ScriptCard({ payload, onOpenBody }: Props) {
   const { scriptId, host, realmName, script } = payload;
   return (
     <article className="card">
@@ -30,7 +31,17 @@ export function ScriptCard({ payload }: Props) {
           </>
         ) : null}
       </dl>
-      <p className="hint">Script body rendering arrives in M2.</p>
+      {onOpenBody ? (
+        <div className="card-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={() => onOpenBody(host, realmName, scriptId, script?.language)}
+          >
+            Open body in editor
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }
