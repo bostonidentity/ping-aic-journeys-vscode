@@ -75,7 +75,9 @@ Token cache, resolver memo, RealmIndex — all in session memory. No `globalStor
 
 ### D9 — Logging: structured NDJSON via pino, fanned out to file + Output panel
 
-**Library:** [`pino`](https://github.com/pinojs/pino) (same choice as llm-gateway) + `pino-roll` for size-based rotation. Pino gives us ISO timestamps, level filtering, child loggers, error auto-serialization, and built-in `redact` paths for secrets. Boring, fast, well-known.
+**Library:** [`pino`](https://github.com/pinojs/pino) (same choice as llm-gateway) + a small in-process `RotatingFileStream` for size-based rotation. Pino gives us ISO timestamps, level filtering, child loggers, error auto-serialization, and built-in `redact` paths for secrets. Boring, fast, well-known.
+
+Rationale for in-process rotation (not `pino-roll`): pino-roll is implemented as a pino transport, which runs on a worker thread. `pino.multistream` — which we use to fan out to both the file and the Output panel — accepts only synchronous streams in its array, not worker-based transports. So pino-roll can't sit in the multistream. The ~50-line `RotatingFileStream` (`fs.openSync` + `fs.writeSync` + `fs.renameSync`) composes cleanly with multistream and avoids worker-thread fragility inside the Extension Host.
 
 **Two sinks via `pino.multistream`:**
 - **File:** `globalStorageUri/logs/paic-journeys.ndjson` — one JSON object per line, size-rotated at 5 MB × 5 files. This is what log shippers (Vector / Filebeat / Promtail / Loki / Datadog) tail.
@@ -137,9 +139,11 @@ src/webview/    ┘
 
 Translation lives in mappers — `src/paic/mappers.ts` (open question: could move to `src/domain/from-paic.ts` later if "domain knows nothing about PAIC" purity matters more than locality).
 
-### D12 — Tree-node class hierarchy at M2
+### D12 — Tree-node class hierarchy at M1 (shipped)
 
-While the tree has only one level (connections, today), a plain interface + flat provider is correct. When M2 introduces realms → journeys → script/inner-journey leaves, refactor to `abstract class PaicNode` with one subclass per kind, each implementing `getChildren()` + tree-item rendering. Mirrors the database extension's `model/interface/node.ts` pattern.
+Rationale at original lock-in: while the tree had only one level (connections), a plain interface + flat provider was correct. When the second level lands, refactor to `abstract class PaicNode` with one subclass per kind, each implementing `getChildren()` + tree-item rendering. Mirrors the database extension's `model/interface/node.ts` pattern.
+
+**Shipped in M1**: cutover landed alongside the L2-L4 tree task. `src/views/nodes/{base,connection,realm,journey,inner-journey,script,journey-expand}.ts` implements the hierarchy; `PaicTreeProvider` delegates `getChildren` to each node and implements `getParent` so `TreeView.reveal()` can be driven from the inspector.
 
 ### D13 — RealmIndex: background skeleton scan on realm-expand
 

@@ -26,6 +26,8 @@ export interface MintTokenInput {
 
 export interface MintTokenSuccess {
   ok: true;
+  /** Bearer token to send as `Authorization: Bearer <accessToken>`. */
+  accessToken: string;
   expiresIn: number;
   scope: string;
   tokenType: string;
@@ -154,6 +156,7 @@ async function postToken(
   if (resp.ok && typeof parsed.access_token === "string") {
     return {
       ok: true,
+      accessToken: parsed.access_token,
       expiresIn: typeof parsed.expires_in === "number" ? parsed.expires_in : 0,
       scope: typeof parsed.scope === "string" ? parsed.scope : "",
       tokenType: typeof parsed.token_type === "string" ? parsed.token_type : "Bearer",

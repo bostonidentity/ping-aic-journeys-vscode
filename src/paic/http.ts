@@ -1,0 +1,179 @@
+import { randomUUID } from "node:crypto";
+import axios, {
+  AxiosHeaders,
+  type AxiosInstance,
+  type AxiosRequestConfig,
+  type AxiosResponse,
+  type InternalAxiosRequestConfig,
+} from "axios";
+import axiosRetry from "axios-retry";
+import type { Logger } from "../util/logger";
+import { PaicError } from "./errors";
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_RETRIES = 3;
+const USER_AGENT = "paic-journeys-vscode";
+
+export interface PaicRequestConfig extends AxiosRequestConfig {
+  /** Value for the `Accept-API-Version` header (e.g. `"protocol=2.1,resource=1.0"`). */
+  apiVersion?: string;
+}
+
+export interface HttpClient {
+  get<T>(url: string, config?: PaicRequestConfig): Promise<AxiosResponse<T>>;
+  /** Hatch for AIC's `_action=` POSTs. We're a read-only product but the
+   * action semantics are technically POSTs. */
+  post<T>(url: string, data?: unknown, config?: PaicRequestConfig): Promise<AxiosResponse<T>>;
+}
+
+export interface HttpClientOptions {
+  host: string;
+  log: Logger;
+  /** Returns a fresh Bearer token. `forceRefresh: true` means caller MUST re-mint. */
+  getToken: (opts?: { forceRefresh?: boolean }) => Promise<string>;
+  /** Per-request timeout (ms). Default 30_000. */
+  timeoutMs?: number;
+  /** Retry count for network errors / 5xx / 429. Default 3. */
+  retries?: number;
+  /** Injected axios instance — for tests only. */
+  axiosInstance?: AxiosInstance;
+}
+
+// Per-request annotations stashed on the InternalAxiosRequestConfig for the
+// response interceptor to read.
+interface RequestState {
+  paicReqId?: string;
+  paicStart?: number;
+  paicRetried401?: boolean;
+  /** Set by the 401 handler so the next pass of the request interceptor
+   * skips its own getToken() call and uses this forced-refresh token. */
+  paicFreshToken?: string;
+}
+
+type AnnotatedConfig = InternalAxiosRequestConfig & RequestState;
+
+/**
+ * Build an HTTP client bound to one PAIC tenant. Every outgoing request gets:
+ *   - `Authorization: Bearer <token>` minted via the injected `getToken` callback
+ *   - `X-ForgeRock-TransactionId: <uuid>` — per-request, for tenant-side log correlation
+ *   - `Accept-API-Version` when the caller specified one
+ *
+ * Retries network errors, 5xx, and 429 (honoring `Retry-After`). On 401, the
+ * client re-mints the token once and retries the same request.
+ *
+ * Every request emits structured logs (`http.request`, `http.error`,
+ * `http.retry`, `http.unauthorized`) via the injected logger.
+ */
+export function makeHttpClient(opts: HttpClientOptions): HttpClient {
+  const log = opts.log.child({ component: "paic.http" });
+  const instance =
+    opts.axiosInstance ??
+    axios.create({
+      baseURL: opts.host.startsWith("http") ? opts.host : `https://${opts.host}`,
+      timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      headers: { "User-Agent": USER_AGENT },
+    });
+
+  axiosRetry(instance, {
+    retries: opts.retries ?? DEFAULT_RETRIES,
+    retryCondition: (err) =>
+      axiosRetry.isNetworkOrIdempotentRequestError(err) || err.response?.status === 429,
+    retryDelay: (count, err) => {
+      const retryAfter = err.response?.headers?.["retry-after"];
+      if (retryAfter !== undefined) {
+        const sec = Number.parseInt(String(retryAfter), 10);
+        // Add a 100 ms safety margin so we comfortably clear the server's window.
+        if (Number.isFinite(sec)) return sec * 1000 + 100;
+      }
+      return axiosRetry.exponentialDelay(count, err);
+    },
+    onRetry: (count, err, req) => {
+      log.warn(
+        {
+          event: "http.retry",
+          attempt: count,
+          status: err.response?.status,
+          url: req.url,
+        },
+        "Retrying PAIC request",
+      );
+    },
+  });
+
+  instance.interceptors.request.use(async (cfg: InternalAxiosRequestConfig) => {
+    const config = cfg as AnnotatedConfig;
+    // On a 401-retry pass, the response interceptor has already minted a fresh
+    // token via getToken({forceRefresh}) and stashed it on the config. Use it
+    // verbatim — re-calling getToken() would be redundant and could mask the
+    // forced-refresh by returning the still-cached stale token.
+    const token = config.paicFreshToken ?? (await opts.getToken());
+    const reqId = randomUUID();
+
+    const headers =
+      config.headers instanceof AxiosHeaders ? config.headers : new AxiosHeaders(config.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    headers.set("X-ForgeRock-TransactionId", reqId);
+    headers.set("Accept", "application/json");
+
+    const apiVersion = (config as PaicRequestConfig).apiVersion;
+    if (apiVersion) headers.set("Accept-API-Version", apiVersion);
+    config.headers = headers;
+
+    config.paicReqId = reqId;
+    config.paicStart = Date.now();
+    return config;
+  });
+
+  instance.interceptors.response.use(
+    (resp) => {
+      const cfg = resp.config as AnnotatedConfig;
+      log.info(
+        {
+          event: "http.request",
+          method: cfg.method?.toUpperCase(),
+          url: cfg.url,
+          status: resp.status,
+          duration_ms: cfg.paicStart === undefined ? undefined : Date.now() - cfg.paicStart,
+          req_id: cfg.paicReqId,
+        },
+        "PAIC request completed",
+      );
+      return resp;
+    },
+    async (error: unknown) => {
+      // axios attaches the config to AxiosError; fall back to undefined if absent.
+      const errCfg = (error as { config?: AnnotatedConfig })?.config;
+      const status = (error as { response?: { status?: number } })?.response?.status;
+
+      // 401 → re-mint token once and retry the same request.
+      if (status === 401 && errCfg && !errCfg.paicRetried401) {
+        errCfg.paicRetried401 = true;
+        log.warn(
+          { event: "http.unauthorized", url: errCfg.url, req_id: errCfg.paicReqId },
+          "Token rejected — re-minting and retrying once",
+        );
+        errCfg.paicFreshToken = await opts.getToken({ forceRefresh: true });
+        return instance.request(errCfg);
+      }
+
+      log.error(
+        {
+          event: "http.error",
+          method: errCfg?.method?.toUpperCase(),
+          url: errCfg?.url,
+          status,
+          req_id: errCfg?.paicReqId,
+          duration_ms: errCfg?.paicStart === undefined ? undefined : Date.now() - errCfg.paicStart,
+        },
+        "PAIC request failed",
+      );
+      throw PaicError.from(error);
+    },
+  );
+
+  return {
+    get: <T>(url: string, config?: PaicRequestConfig) => instance.get<T>(url, config),
+    post: <T>(url: string, data?: unknown, config?: PaicRequestConfig) =>
+      instance.post<T>(url, data, config),
+  };
+}

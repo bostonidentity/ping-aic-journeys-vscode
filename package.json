@@ -43,6 +43,21 @@
         "command": "paicJourneys.removeConnection",
         "title": "Remove Connection",
         "icon": "$(trash)"
+      },
+      {
+        "command": "paicJourneys.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "paicJourneys.refreshNode",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "paicJourneys.openInspector",
+        "title": "Open Inspector",
+        "icon": "$(preview)"
       }
     ],
     "menus": {
@@ -50,19 +65,34 @@
         {
           "command": "paicJourneys.addConnection",
           "when": "view == paicJourneys.connections",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "paicJourneys.refresh",
+          "when": "view == paicJourneys.connections",
+          "group": "navigation@2"
+        },
+        {
+          "command": "paicJourneys.openInspector",
+          "when": "view == paicJourneys.connections",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
+          "command": "paicJourneys.refreshNode",
+          "when": "view == paicJourneys.connections && viewItem =~ /^(connection|realm|journey|innerJourney)$/",
+          "group": "inline@1"
+        },
+        {
           "command": "paicJourneys.editConnection",
           "when": "view == paicJourneys.connections && viewItem == connection",
-          "group": "inline@1"
+          "group": "inline@2"
         },
         {
           "command": "paicJourneys.removeConnection",
           "when": "view == paicJourneys.connections && viewItem == connection",
-          "group": "inline@2"
+          "group": "inline@3"
         },
         {
           "command": "paicJourneys.editConnection",
@@ -97,29 +127,61 @@
               }
             }
           }
+        },
+        "paicJourneys.logging.level": {
+          "type": "string",
+          "enum": [
+            "fatal",
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "info",
+          "description": "Minimum log level emitted by the extension."
+        },
+        "paicJourneys.logging.fileEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write structured NDJSON logs to globalStorageUri/logs/paic-journeys.ndjson for log shippers (Vector, Filebeat, Promtail, etc.). The VS Code Output panel always reflects logs regardless of this setting."
         }
       }
     }
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs",
-    "watch": "npm run build -- --watch",
+    "build:ext": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs",
+    "build:webview": "esbuild src/webview/inspector/ui/main.tsx --bundle --outfile=out/webview.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
+    "build": "npm run build:ext && npm run build:webview",
+    "watch": "npm run build:ext -- --watch",
+    "watch:webview": "npm run build:webview -- --watch",
     "lint": "biome check",
     "lint:fix": "biome check --write",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.webview.json --noEmit",
     "test": "vitest run",
     "test:fast": "vitest run --exclude '**/*.integration.test.ts'",
     "vscode:prepublish": "npm run build"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^20.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.85.0",
+    "axios-mock-adapter": "^2.1.0",
     "esbuild": "^0.21.0",
+    "happy-dom": "^20.9.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
   },
   "dependencies": {
-    "jose": "^6.2.3"
+    "axios": "^1.16.1",
+    "axios-retry": "^4.5.0",
+    "jose": "^6.2.3",
+    "pino": "^10.3.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

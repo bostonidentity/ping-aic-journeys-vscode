@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import { mintToken } from "../paic/auth";
+import type { Logger } from "../util/logger";
 
 export interface ConnectionFormData {
   host: string;
@@ -19,7 +20,7 @@ export interface ConnectionFormOptions {
   mode: "add" | "edit";
   initial?: ConnectionFormInitial;
   existingHosts: string[];
-  log: vscode.LogOutputChannel;
+  log: Logger;
   // Edit mode: returns the JWK currently stored in SecretStorage for this host,
   // so the user can validate without re-pasting it. Undefined if not stored.
   getExistingJwk?: (host: string) => Thenable<string | undefined>;
@@ -30,6 +31,7 @@ export function openConnectionForm(
   opts: ConnectionFormOptions,
 ): Promise<ConnectionFormData | undefined> {
   const { mode, initial, existingHosts, log, getExistingJwk } = opts;
+  const formLog = log.child({ component: "webview.form" });
   const title = mode === "add" ? "Add Connection" : `Edit Connection — ${initial?.host ?? ""}`;
 
   const panel = vscode.window.createWebviewPanel(
@@ -57,10 +59,10 @@ export function openConnectionForm(
     panel.webview.onDidReceiveMessage(
       async (msg: { type: string; data?: ConnectionFormData; requestId?: number }) => {
         if (msg.type === "save" && msg.data) {
-          log.debug(`connectionForm: save host=${msg.data.host}`);
+          formLog.debug({ event: "webview.form.save", host: msg.data.host }, "Form save submitted");
           finish(msg.data);
         } else if (msg.type === "cancel") {
-          log.debug("connectionForm: cancel");
+          formLog.debug({ event: "webview.form.cancel" }, "Form cancelled");
           finish(undefined);
         } else if (msg.type === "validate" && msg.data) {
           await handleValidate(msg.data, msg.requestId, panel.webview, log, getExistingJwk);
@@ -402,10 +404,10 @@ async function handleValidate(
   data: ConnectionFormData,
   requestId: number | undefined,
   webview: vscode.Webview,
-  log: vscode.LogOutputChannel,
+  log: Logger,
   getExistingJwk?: (host: string) => Thenable<string | undefined>,
 ): Promise<void> {
-  log.debug(`connectionForm: validate host=${data.host}`);
+  log.debug({ event: "connection.test.start", host: data.host }, "Validating connection");
   let jwk = data.jwk;
   if (!jwk && getExistingJwk) {
     jwk = await getExistingJwk(data.host);
@@ -423,7 +425,13 @@ async function handleValidate(
   const result = await mintToken({ host: data.host, saId: data.saId, jwk });
   if (result.ok) {
     log.info(
-      `validateConnection: ok host=${data.host} expiresIn=${result.expiresIn} droppedScopes=${result.droppedScopes.length}`,
+      {
+        event: "connection.test.ok",
+        host: data.host,
+        expires_in: result.expiresIn,
+        dropped_scopes: result.droppedScopes.length,
+      },
+      "Test Connection succeeded",
     );
     webview.postMessage({
       type: "validateResult",
@@ -434,7 +442,13 @@ async function handleValidate(
     });
   } else {
     log.error(
-      `validateConnection: failed host=${data.host} status=${result.status ?? "?"} error=${result.error ?? "?"}`,
+      {
+        event: "connection.test.failed",
+        host: data.host,
+        status: result.status,
+        error_code: result.error,
+      },
+      "Test Connection failed",
     );
     webview.postMessage({
       type: "validateResult",

@@ -10,7 +10,7 @@ The contract for log output from the PAIC Journeys extension. Pinned here so the
 - **Library: `pino`.** Modern Node default, fast, structured by design. Same as llm-gateway. Locked in via [D9 in design-plan.md](design-plan.md).
 - **Universal shape** that every major log system ingests without re-mapping.
 - **Migration in M1:** ~10 existing `log.info(...)` call sites in `extension.ts` + `connection-form.ts` convert to typed `log.info({fields}, "msg")` calls. New code in `src/paic/*` and `src/resolver/*` uses the structured shape from day one.
-- **Out of scope:** rotation policy beyond size, alerting, log shipping. Those are the user's platform's job (or `pino-roll` handles size-rotation transparently).
+- **Out of scope:** rotation policy beyond size, alerting, log shipping. Those are the user's platform's job (size rotation is done in-process by a small `RotatingFileStream` Writable that composes into `pino.multistream`).
 
 ## Goals
 
@@ -139,7 +139,7 @@ Matching values are replaced with `"[Redacted]"` before serialization. Recursive
 src/util/logger.ts
   ├── pino instance (top-level, lazy-init on first activate())
   ├── multistream:
-  │     - file sink:    rotating NDJSON via pino-roll
+  │     - file sink:    rotating NDJSON via in-process RotatingFileStream
   │     - channel sink: tiny Writable adapter → LogOutputChannel
   ├── base fields:  { service: "paic-journeys", version: PKG_VERSION }
   ├── redact paths

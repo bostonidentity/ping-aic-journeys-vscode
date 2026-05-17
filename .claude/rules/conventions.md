@@ -105,6 +105,7 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 - Use service-account JWT-bearer auth only. No cookie auth, no admin-user flow.
 - Cookie name (for any diagnostic call that needs the SSO cookie) discovered via `GET /am/json/serverinfo/*` → `cookieName`. Never hardcode `iPlanetDirectoryPro`.
 - Pagination: read the `pagedResultsCookie` from each response; if present, send it back as `_pagedResultsCookie` on the next request. Stop when absent.
+- **Naming exception for AIC wire-protocol fields.** PAIC's REST API uses leading-underscore field names (`_id`, `_rev`, `_type`, `_queryFilter`, `_pagedResultsCookie`). Our `Raw*` interfaces in `src/paic/mappers.ts` and the URL params in `src/paic/client.ts` mirror these names verbatim so the data layer is a faithful translation. Biome's `useNamingConvention` rule warns on these; the warnings are intentional and accepted. Domain types (`src/domain/types.ts`) use clean camelCase — the mappers translate.
 
 ## Commits
 

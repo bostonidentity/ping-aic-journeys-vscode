@@ -9,13 +9,15 @@ VS Code Extension API (Node.js extension host) | TypeScript | `esbuild` bundling
 ## Structure
 
 - `src/` — everything that ships
-  - `extension.ts` — `activate()`, command registration, tree provider wiring
-  - `paic/` — raw PAIC REST client (auth, http, types, client). No VS Code imports.
-  - `resolver/` — dependency graph builder. No VS Code imports.
-  - `tenants/` (planned) — connection registry, wraps settings + SecretStorage
-  - `views/` (planned) — `TreeDataProvider`s for the sidebar
-  - `webview/` (planned) — graph visualizer, separate esbuild bundle
-- `out/` — built output (`extension.js`); produced by `npm run build`, gitignored
+  - `extension.ts` — `activate()`, command registration, tree + inspector wiring
+  - `paic/` — raw PAIC REST client (`auth`, `http`, `client`, `mappers`, `errors`, `realm-path`, `pagination`, `concurrency`). No VS Code imports.
+  - `domain/` — clean TS types (`Connection`, `Realm`, `Journey`, `NodePayload`, `Script`). Pure types.
+  - `resolver/` (planned, M4) — dependency graph builder + RealmIndex. No VS Code imports.
+  - `tenants/` — connection registry (`registry.ts`) + per-host PaicClient cache (`client-cache.ts`); wraps settings + SecretStorage.
+  - `views/` — `PaicTreeProvider` + node class hierarchy under `nodes/` (`base`, `connection`, `realm`, `journey`, `inner-journey`, `script`, `journey-expand`) + connection form.
+  - `webview/` — inspector panel: extension-side singleton (`inspector/panel.ts`), typed `messages.ts` protocol, React UI under `inspector/ui/` (`main.tsx`, `App.tsx`, 5 cards). Built as a separate esbuild bundle to `out/webview.js`. M5/M6 will add query + graph panels reusing the same framework.
+  - `util/` — `logger.ts` (pino multistream wrapper).
+- `out/` — built output (`extension.js`, `webview.js`); produced by `npm run build`, gitignored
 - `tests/` — non-shipped test infrastructure (fixtures, integration tests)
 - `docs/` — design docs and decision log
 - `.claude/` — agents, hooks, rules, skills for this project
@@ -26,7 +28,9 @@ VS Code Extension API (Node.js extension host) | TypeScript | `esbuild` bundling
 
 ## Commands
 
-- `npm run build` — esbuild bundle to `out/extension.js`
+- `npm run build` — esbuild bundles to `out/extension.js` + `out/webview.js`
+- `npm run build:ext` / `npm run build:webview` — build just one
+- `npm run watch` — watches the extension bundle. For inspector UI iteration, run `npm run watch:webview` in a second terminal.
 - `npm run watch` — esbuild watch mode (rebuilds on save)
 - `npm run lint` / `npm run lint:fix` — Biome check / auto-fix
 - `npm run typecheck` — `tsc --noEmit`

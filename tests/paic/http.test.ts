@@ -1,0 +1,263 @@
+import axios from "axios";
+import MockAdapter from "axios-mock-adapter";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PaicError } from "@/paic/errors";
+import { type HttpClientOptions, makeHttpClient } from "@/paic/http";
+
+interface LogCall {
+  level: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+  fields: Record<string, unknown>;
+  msg: string;
+}
+
+interface FakeLogger {
+  calls: LogCall[];
+  trace(fields: Record<string, unknown>, msg: string): void;
+  debug(fields: Record<string, unknown>, msg: string): void;
+  info(fields: Record<string, unknown>, msg: string): void;
+  warn(fields: Record<string, unknown>, msg: string): void;
+  error(fields: Record<string, unknown>, msg: string): void;
+  fatal(fields: Record<string, unknown>, msg: string): void;
+  child(_b: Record<string, unknown>): FakeLogger;
+}
+
+function makeFakeLogger(): FakeLogger {
+  const calls: LogCall[] = [];
+  const make = (level: LogCall["level"]) => (fields: Record<string, unknown>, msg: string) => {
+    calls.push({ level, fields, msg });
+  };
+  const self: FakeLogger = {
+    calls,
+    trace: make("trace"),
+    debug: make("debug"),
+    info: make("info"),
+    warn: make("warn"),
+    error: make("error"),
+    fatal: make("fatal"),
+    child: () => self,
+  };
+  return self;
+}
+
+function makeFakeGetToken(tokens: string[] = ["tok-1", "tok-2"]): {
+  fn: HttpClientOptions["getToken"];
+  calls: Array<{ forceRefresh: boolean }>;
+} {
+  const calls: Array<{ forceRefresh: boolean }> = [];
+  let idx = 0;
+  const fn: HttpClientOptions["getToken"] = (opts) => {
+    calls.push({ forceRefresh: !!opts?.forceRefresh });
+    return Promise.resolve(tokens[Math.min(idx++, tokens.length - 1)]);
+  };
+  return { fn, calls };
+}
+
+let logger: FakeLogger;
+let mock: MockAdapter;
+let instance: ReturnType<typeof axios.create>;
+
+beforeEach(() => {
+  logger = makeFakeLogger();
+  instance = axios.create();
+  mock = new MockAdapter(instance);
+});
+
+afterEach(() => {
+  mock.reset();
+  vi.useRealTimers();
+});
+
+describe("makeHttpClient", () => {
+  it("injects Authorization, X-ForgeRock-TransactionId, Accept-API-Version on every request", async () => {
+    mock.onGet("/x").reply(200, { ok: true });
+    const { fn: getToken } = makeFakeGetToken(["my-token"]);
+    const client = makeHttpClient({
+      host: "openam.example.com",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+    });
+
+    await client.get("/x", { apiVersion: "protocol=2.1,resource=1.0" });
+
+    const headers = mock.history.get[0].headers ?? {};
+    expect(headers.Authorization).toBe("Bearer my-token");
+    expect(headers["X-ForgeRock-TransactionId"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(headers["Accept-API-Version"]).toBe("protocol=2.1,resource=1.0");
+    expect(headers.Accept).toBe("application/json");
+  });
+
+  it("generates a fresh transaction ID per request", async () => {
+    mock.onGet("/x").reply(200, {});
+    const { fn: getToken } = makeFakeGetToken();
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+    });
+
+    await client.get("/x");
+    await client.get("/x");
+
+    const id1 = mock.history.get[0].headers?.["X-ForgeRock-TransactionId"];
+    const id2 = mock.history.get[1].headers?.["X-ForgeRock-TransactionId"];
+    expect(id1).toBeTruthy();
+    expect(id2).toBeTruthy();
+    expect(id1).not.toBe(id2);
+  });
+
+  it("retries on 502 and eventually succeeds", async () => {
+    mock
+      .onGet("/x")
+      .replyOnce(502)
+      .onGet("/x")
+      .replyOnce(502)
+      .onGet("/x")
+      .replyOnce(200, { ok: true });
+    const { fn: getToken } = makeFakeGetToken();
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+      // Tighten exponential delay for test speed by using retries=3 with default delay
+      // (~100ms, 200ms). Tests typically take <500ms total.
+    });
+
+    const resp = await client.get<{ ok: boolean }>("/x");
+
+    expect(resp.status).toBe(200);
+    expect(resp.data.ok).toBe(true);
+    expect(mock.history.get).toHaveLength(3);
+    // Two retry warnings were logged.
+    const retryLogs = logger.calls.filter((c) => c.fields.event === "http.retry");
+    expect(retryLogs).toHaveLength(2);
+  });
+
+  it("retries on 429 honoring Retry-After header", async () => {
+    mock.onGet("/x").replyOnce(429, "", { "retry-after": "1" }).onGet("/x").replyOnce(200, {});
+    const { fn: getToken } = makeFakeGetToken();
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+    });
+
+    const start = Date.now();
+    await client.get("/x");
+    const elapsed = Date.now() - start;
+
+    expect(mock.history.get).toHaveLength(2);
+    // Retry-After: 1 → wait at least ~1000 ms (we add 100 ms safety, so ≥1000).
+    expect(elapsed).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("refreshes token and retries once on 401", async () => {
+    mock.onGet("/x").replyOnce(401).onGet("/x").replyOnce(200, { ok: true });
+    const { fn: getToken, calls: tokenCalls } = makeFakeGetToken(["stale", "fresh"]);
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+    });
+
+    const resp = await client.get("/x");
+
+    expect(resp.status).toBe(200);
+    expect(mock.history.get).toHaveLength(2);
+    expect(tokenCalls).toEqual([{ forceRefresh: false }, { forceRefresh: true }]);
+    // Second request used the refreshed token.
+    expect(mock.history.get[1].headers?.Authorization).toBe("Bearer fresh");
+    // We logged the unauthorized event.
+    expect(
+      logger.calls.some((c) => c.level === "warn" && c.fields.event === "http.unauthorized"),
+    ).toBe(true);
+  });
+
+  it("throws PaicError on second 401 (no infinite loop)", async () => {
+    mock.onGet("/x").reply(401);
+    const { fn: getToken, calls: tokenCalls } = makeFakeGetToken();
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+    });
+
+    await expect(client.get("/x")).rejects.toBeInstanceOf(PaicError);
+    // First request + one retry after force-refresh = 2 attempts total.
+    expect(mock.history.get).toHaveLength(2);
+    expect(tokenCalls).toHaveLength(2);
+    expect(tokenCalls[1].forceRefresh).toBe(true);
+  });
+
+  it("wraps non-401 4xx errors in PaicError without retry", async () => {
+    mock.onGet("/x").reply(404, { error: "not_found", error_description: "Tree X not found" });
+    const { fn: getToken } = makeFakeGetToken();
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+    });
+
+    let caught: unknown;
+    try {
+      await client.get("/x");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(PaicError);
+    const err = caught as PaicError;
+    expect(err.status).toBe(404);
+    expect(err.errorText).toBe("not_found");
+    expect(err.description).toBe("Tree X not found");
+    expect(mock.history.get).toHaveLength(1);
+  });
+
+  it("logs http.request on success at info level with duration and req_id", async () => {
+    mock.onGet("/x").reply(200, {});
+    const { fn: getToken } = makeFakeGetToken();
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+    });
+
+    await client.get("/x");
+
+    const successLogs = logger.calls.filter(
+      (c) => c.level === "info" && c.fields.event === "http.request",
+    );
+    expect(successLogs).toHaveLength(1);
+    expect(successLogs[0].fields.status).toBe(200);
+    expect(typeof successLogs[0].fields.duration_ms).toBe("number");
+    expect(typeof successLogs[0].fields.req_id).toBe("string");
+  });
+
+  it("logs http.error on terminal failure with status", async () => {
+    // Use retries=0 so a single 500 surfaces immediately.
+    mock.onGet("/x").reply(500, { boom: true });
+    const { fn: getToken } = makeFakeGetToken();
+    const client = makeHttpClient({
+      host: "h",
+      log: logger as unknown as HttpClientOptions["log"],
+      getToken,
+      axiosInstance: instance,
+      retries: 0,
+    });
+
+    await expect(client.get("/x")).rejects.toBeInstanceOf(PaicError);
+    const errorLogs = logger.calls.filter(
+      (c) => c.level === "error" && c.fields.event === "http.error",
+    );
+    expect(errorLogs).toHaveLength(1);
+    expect(errorLogs[0].fields.status).toBe(500);
+  });
+});
