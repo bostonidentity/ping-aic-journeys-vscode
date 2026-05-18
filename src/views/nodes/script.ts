@@ -12,6 +12,10 @@ import { expandScript } from "./script-expand";
  */
 export class ScriptNode extends PaicNode {
   readonly uid: string;
+  /** Resolved script name — populated by `journey-expand`'s eager fetch. Used
+   * for the tree label + inspector deps lists. Falls back to `scriptId` when
+   * the eager fetch failed (network / 404). */
+  readonly scriptName?: string;
   private bodyPromise?: Promise<string>;
 
   constructor(
@@ -25,14 +29,29 @@ export class ScriptNode extends PaicNode {
      * as a recursive child of another script's expansion. Top-level scripts
      * (discovered via journey-expand) pass `[]`. */
     public readonly visited: readonly string[] = [],
+    /** Pre-resolved name + body, supplied by `journey-expand` to avoid the
+     * round-trip on first expansion + put the script's name (not its UUID)
+     * on the tree label. Optional for backwards compatibility (direct test
+     * construction, future callers). */
+    resolved?: { name: string; body: string },
   ) {
-    super(scriptId, vscode.TreeItemCollapsibleState.Collapsed);
+    super(resolved?.name || scriptId, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
     this.uid = `script:${host}:${realm}:${scriptId}`;
     this.id = this.uid;
     this.contextValue = "script";
     this.iconPath = new vscode.ThemeIcon("symbol-method");
-    this.tooltip = buildScriptTooltip(host, realm, scriptId);
+    this.scriptName = resolved?.name || undefined;
+    this.tooltip = buildScriptTooltip(host, realm, scriptId, this.scriptName);
+    if (resolved?.body !== undefined) {
+      // Stash the body so ensureBody() short-circuits — no extra fetch on
+      // first expansion.
+      this.bodyPromise = Promise.resolve(resolved.body);
+    }
+    // Tree-item description (secondary text shown beside the label) — show
+    // the scriptId when we have a name, so the UUID stays discoverable
+    // without dominating the label.
+    if (this.scriptName) this.description = scriptId;
   }
 
   /** Lazy-fetch + cache the script body. Shared in-flight Promise so
@@ -74,9 +93,14 @@ export class ScriptNode extends PaicNode {
   }
 }
 
-function buildScriptTooltip(host: string, realm: string, scriptId: string): vscode.MarkdownString {
+function buildScriptTooltip(
+  host: string,
+  realm: string,
+  scriptId: string,
+  name?: string,
+): vscode.MarkdownString {
   const md = new vscode.MarkdownString(undefined, true);
-  md.appendMarkdown(`### Script\n\n`);
+  md.appendMarkdown(`### Script${name ? `: \`${name}\`` : ""}\n\n`);
   md.appendMarkdown(`**Host:** \`${host}\` · **Realm:** \`${realm}\`\n\n`);
   md.appendMarkdown(`**Script ID:** \`${scriptId}\`\n`);
   return md;

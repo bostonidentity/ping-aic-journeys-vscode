@@ -18,7 +18,9 @@ export function ScriptedDecisionNodeView({ data }: NodeProps<DiagramNodeData>) {
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <div className="kind">Scripted Decision</div>
       <div className="label">{data.displayName ?? "(unnamed)"}</div>
-      {data.info?.scriptId ? <div className="hint">{data.info.scriptId}</div> : null}
+      {data.info?.scriptName || data.info?.scriptId ? (
+        <div className="hint">{data.info?.scriptName ?? data.info?.scriptId}</div>
+      ) : null}
       <Handle type="source" position={Position.Bottom} isConnectable={false} />
     </div>
   );

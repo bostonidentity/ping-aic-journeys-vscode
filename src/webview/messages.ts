@@ -48,6 +48,9 @@ export interface NodeInfo {
    * kinds (Config/Device/PingOneVerify) when their `useScript` flag is on,
    * plus on `SocialProviderHandler*` (script wins over its IdPs for clicks). */
   scriptId?: string;
+  /** Resolved script name (when journey-expand's eager fetch succeeded).
+   * Diagram views prefer this over `scriptId` for clarity. */
+  scriptName?: string;
   /** For InnerTreeEvaluatorNode → the inner journey's id (informational). */
   innerTreeId?: string;
   /** Schema slices for hover tooltips. Populated for ScriptedDecisionNode. */

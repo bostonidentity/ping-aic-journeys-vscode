@@ -74,6 +74,51 @@ describe("JourneyNode", () => {
     expect(inner.visited).toEqual(["Login"]);
   });
 
+  it("eager-fetches scripts during journey-expand → ScriptNode carries scriptName + label uses name", async () => {
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n0",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: {
+        "alpha:ScriptedDecisionNode:n1": scriptedDecisionPayload("n1", "s-1"),
+      },
+      scriptsByKey: {
+        "alpha:s-1": {
+          id: "s-1",
+          name: "AuthHelper",
+          language: "JAVASCRIPT",
+          body: "// body",
+        },
+      },
+    });
+    const cache = makeFakeCache(client);
+    const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
+    const kids = await node.getChildren();
+    const script = kids.find((k) => k instanceof ScriptNode) as ScriptNode;
+    expect(script.scriptName).toBe("AuthHelper");
+    expect(script.label).toBe("AuthHelper");
+    // description is the scriptId — keeps the UUID discoverable beside the label.
+    expect(script.description).toBe("s-1");
+    // Body is pre-stashed → ensureBody() short-circuits (no second getScript call).
+    expect(await script.ensureBody()).toBe("// body");
+    expect((client.getScript as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it("falls back to scriptId on tree label when eager getScript fails", async () => {
+    const { node } = makeFixture("Login", {
+      n1: { nodeType: "ScriptedDecisionNode", payload: scriptedDecisionPayload("n1", "s-1") },
+    });
+    const kids = await node.getChildren();
+    const script = kids.find((k) => k instanceof ScriptNode) as ScriptNode;
+    // No scriptsByKey fixture → getScript rejected → ScriptNode falls back.
+    expect(script.scriptName).toBeUndefined();
+    expect(script.label).toBe("s-1");
+    expect(script.description).toBeUndefined();
+  });
+
   it("dedupes a shared script (two nodes → one ScriptNode)", async () => {
     const { node } = makeFixture("Login", {
       n1: { nodeType: "ScriptedDecisionNode", payload: scriptedDecisionPayload("n1", "s-1") },

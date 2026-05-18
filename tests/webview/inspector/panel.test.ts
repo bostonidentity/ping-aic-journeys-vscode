@@ -149,6 +149,59 @@ describe("InspectorPanel", () => {
     expect(depsMsg?.nodeIndex.n1?.uid).toBe("script:h.example.com:alpha:s-1");
   });
 
+  it("journeyDeps uses the resolved script NAME (not the UUID) for the scripts deps list label + the nodeIndex entry", async () => {
+    const state = await getVscodeMockState();
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: {
+        "alpha:ScriptedDecisionNode:n1": {
+          id: "n1",
+          nodeType: "ScriptedDecisionNode",
+          scriptId: "s-1",
+          outcomes: [],
+          inputs: [],
+          outputs: [],
+        },
+      },
+      scriptsByKey: {
+        "alpha:s-1": { id: "s-1", name: "AuthHelper", language: "JAVASCRIPT", body: "" },
+      },
+    });
+    const cache = makeFakeCache(client);
+    const log = makeFakeLogger();
+    const { treeView } = makeTreeView();
+    const panel = new InspectorPanel({
+      context: makeMockContext(),
+      cache,
+      log,
+      treeView,
+    });
+    const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
+
+    await panel.show(node);
+
+    const post = state.createdPanels[0].webview.postMessage;
+    const calls = post.mock.calls.map((c: unknown[]) => c[0]);
+    const depsMsg = calls.find(
+      (
+        m,
+      ): m is {
+        type: "journeyDeps";
+        scripts: Array<{ label: string; uid: string }>;
+        nodeIndex: Record<string, { kind: string; scriptName?: string; scriptId?: string }>;
+      } => Boolean(m) && (m as { type?: unknown }).type === "journeyDeps",
+    );
+    expect(depsMsg).toBeDefined();
+    expect(depsMsg?.scripts[0].label).toBe("AuthHelper");
+    expect(depsMsg?.nodeIndex.n1?.scriptName).toBe("AuthHelper");
+    expect(depsMsg?.nodeIndex.n1?.scriptId).toBe("s-1");
+  });
+
   it("on `navigate` message reveals the cached node in the tree view", async () => {
     const state = await getVscodeMockState();
     const fake = makeFakeCache(makeFakePaicClient({}));

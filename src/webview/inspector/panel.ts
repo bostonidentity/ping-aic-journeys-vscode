@@ -108,6 +108,7 @@ export class InspectorPanel implements vscode.Disposable {
       const emailTemplates: NodeRef[] = [];
       const socialIdps: NodeRef[] = [];
       const scriptUidById = new Map<string, string>();
+      const scriptNameById = new Map<string, string>();
       const innerUidById = new Map<string, string>();
       const themeUidById = new Map<string, string>();
       const emailUidByName = new Map<string, string>();
@@ -115,8 +116,9 @@ export class InspectorPanel implements vscode.Disposable {
       for (const k of kids) {
         this.uidIndex.set(k.uid, k);
         if (k instanceof ScriptNode) {
-          scripts.push({ uid: k.uid, label: k.scriptId, kind: "script" });
+          scripts.push({ uid: k.uid, label: k.scriptName ?? k.scriptId, kind: "script" });
           scriptUidById.set(k.scriptId, k.uid);
+          if (k.scriptName) scriptNameById.set(k.scriptId, k.scriptName);
         } else if (k instanceof InnerJourneyNode) {
           inners.push({ uid: k.uid, label: k.id, kind: "innerJourney" });
           innerUidById.set(k.id, k.uid);
@@ -137,6 +139,7 @@ export class InspectorPanel implements vscode.Disposable {
         for (const [nodeId, p] of payloads) {
           nodeIndex[nodeId] = buildNodeInfo(p, {
             scriptUidById,
+            scriptNameById,
             innerUidById,
             themeUidById,
             emailUidByName,
@@ -436,6 +439,7 @@ function errMsg(err: unknown): string {
 
 interface UidMaps {
   scriptUidById: ReadonlyMap<string, string>;
+  scriptNameById: ReadonlyMap<string, string>;
   innerUidById: ReadonlyMap<string, string>;
   themeUidById: ReadonlyMap<string, string>;
   emailUidByName: ReadonlyMap<string, string>;
@@ -451,6 +455,7 @@ function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
     return {
       kind: "script",
       scriptId: p.scriptId,
+      scriptName: uids.scriptNameById.get(p.scriptId),
       uid: uids.scriptUidById.get(p.scriptId),
       outcomes: p.outcomes,
       inputs: p.inputs,
@@ -461,11 +466,21 @@ function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
     return { kind: "inner", innerTreeId: p.tree, uid: uids.innerUidById.get(p.tree) };
   }
   if (p.nodeType === "ClientScriptNode" && p.scriptId) {
-    return { kind: "script", scriptId: p.scriptId, uid: uids.scriptUidById.get(p.scriptId) };
+    return {
+      kind: "script",
+      scriptId: p.scriptId,
+      scriptName: uids.scriptNameById.get(p.scriptId),
+      uid: uids.scriptUidById.get(p.scriptId),
+    };
   }
   if (p.nodeType === "ConfigProviderNode") {
     if (p.scriptId) {
-      return { kind: "script", scriptId: p.scriptId, uid: uids.scriptUidById.get(p.scriptId) };
+      return {
+        kind: "script",
+        scriptId: p.scriptId,
+        scriptName: uids.scriptNameById.get(p.scriptId),
+        uid: uids.scriptUidById.get(p.scriptId),
+      };
     }
     return { kind: "other", rawNodeType: "ConfigProviderNode" };
   }
@@ -474,6 +489,7 @@ function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
       return {
         kind: "script",
         scriptId: p.scriptId,
+        scriptName: uids.scriptNameById.get(p.scriptId),
         uid: uids.scriptUidById.get(p.scriptId),
         useScript: true,
       };
@@ -486,6 +502,7 @@ function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
       return {
         kind: "script",
         scriptId: p.scriptId,
+        scriptName: uids.scriptNameById.get(p.scriptId),
         uid: uids.scriptUidById.get(p.scriptId),
         useScript: true,
       };
@@ -503,6 +520,7 @@ function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
       return {
         kind: "script",
         scriptId: p.scriptId,
+        scriptName: uids.scriptNameById.get(p.scriptId),
         uid: uids.scriptUidById.get(p.scriptId),
         socialIdpNames,
       };

@@ -9,6 +9,7 @@ export function buildNodeTooltip(data: DiagramNodeData): string {
   lines.push(`${prettyKind(data.nodeType)}${data.isEntry ? " (entry)" : ""}`);
   if (data.displayName) lines.push(`Name: ${data.displayName}`);
   if (info?.kind === "script" && info.scriptId) {
+    if (info.scriptName) lines.push(`Script: ${info.scriptName}`);
     lines.push(`Script ID: ${info.scriptId}`);
     if (info.outcomes?.length) lines.push(`Outcomes: ${info.outcomes.join(", ")}`);
     if (info.inputs?.length) lines.push(`Inputs: ${info.inputs.join(", ")}`);

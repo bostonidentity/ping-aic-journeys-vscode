@@ -1,4 +1,4 @@
-import type { Journey, NodePayload } from "../../domain/types";
+import type { Journey, NodePayload, Script } from "../../domain/types";
 import { mapConcurrent } from "../../paic/concurrency";
 import { getScriptIdIfRef } from "../../paic/script-ref-predicates";
 import type { ClientCache } from "../../tenants/client-cache";
@@ -93,6 +93,42 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
       payloadById;
   }
 
+  // M3 polish — eagerly resolve every unique scriptId discovered in this
+  // journey's payloads. Lets ScriptNode label with the script NAME (not the
+  // UUID), and pre-stashes the body so first-expansion is fetch-free.
+  // Failures fall back to id-only labels; journey expansion never blocks on
+  // a script fetch.
+  const uniqueScriptIds = new Set<string>();
+  for (const p of payloadById.values()) {
+    const sid = getScriptIdIfRef(p);
+    if (sid) uniqueScriptIds.add(sid);
+  }
+  const scriptIds = [...uniqueScriptIds];
+  const scriptResults = await mapConcurrent(scriptIds, CONCURRENCY, async (sid) => {
+    try {
+      const s = await client.getScript(realm, sid);
+      return s;
+    } catch (err) {
+      childLog.warn(
+        {
+          event: "journey.expand.scriptFetchFailed",
+          host,
+          realm,
+          journey: journey.id,
+          script_id: sid,
+          message: err instanceof Error ? err.message : String(err),
+        },
+        "Script eager-fetch failed — tree label falls back to id",
+      );
+      return null;
+    }
+  });
+  const scriptById = new Map<string, Script>(
+    scriptResults
+      .map((s, i) => (s ? ([scriptIds[i], s] as const) : null))
+      .filter((e): e is readonly [string, Script] => e !== null),
+  );
+
   const seenScripts = new Set<string>();
   const seenInners = new Set<string>();
   const seenThemes = new Set<string>();
@@ -104,7 +140,19 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
     const scriptId = getScriptIdIfRef(p);
     if (scriptId && !seenScripts.has(scriptId)) {
       seenScripts.add(scriptId);
-      children.push(new ScriptNode(host, realm, scriptId, cache, log, parent));
+      const resolved = scriptById.get(scriptId);
+      children.push(
+        new ScriptNode(
+          host,
+          realm,
+          scriptId,
+          cache,
+          log,
+          parent,
+          [],
+          resolved ? { name: resolved.name, body: resolved.body } : undefined,
+        ),
+      );
     }
 
     // Inner-tree edge.
