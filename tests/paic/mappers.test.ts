@@ -322,33 +322,49 @@ describe("mapTheme + mapEmailTemplate + mapSocialIdp + mapEsv*", () => {
     });
   });
 
-  it("mapEsvVariable carries description + expressionType + lastChangeDate", () => {
+  it("mapEsvVariable carries the full field set including new audit + value fields", () => {
     const raw: RawEsvVariable = {
       description: "Public URL",
       expressionType: "string",
       lastChangeDate: "2026-05-01T00:00:00Z",
+      lastChangedBy: "alice@example.com",
+      loaded: true,
+      valueBase64: "aHR0cHM6Ly9leGFtcGxlLmNvbQ==",
     };
-    expect(mapEsvVariable("PUBLIC_URL", raw)).toEqual({
+    expect(mapEsvVariable("esv.public.url", raw)).toEqual({
       kind: "variable",
-      name: "PUBLIC_URL",
+      name: "esv.public.url",
       description: "Public URL",
       expressionType: "string",
       lastChangeDate: "2026-05-01T00:00:00Z",
+      lastChangedBy: "alice@example.com",
+      loaded: true,
+      valueBase64: "aHR0cHM6Ly9leGFtcGxlLmNvbQ==",
     });
   });
 
-  it("mapEsvSecret carries description + encoding + lastChangeDate", () => {
+  it("mapEsvSecret carries the full field set including versions + useInPlaceholders", () => {
     const raw: RawEsvSecret = {
       description: "Signing key",
-      encoding: "base64",
+      encoding: "generic",
       lastChangeDate: "2026-05-01T00:00:00Z",
+      lastChangedBy: "bob@example.com",
+      loaded: true,
+      activeVersion: "2",
+      loadedVersion: "2",
+      useInPlaceholders: true,
     };
-    expect(mapEsvSecret("SIGNING_KEY", raw)).toEqual({
+    expect(mapEsvSecret("esv.signing.key", raw)).toEqual({
       kind: "secret",
-      name: "SIGNING_KEY",
+      name: "esv.signing.key",
       description: "Signing key",
-      encoding: "base64",
+      encoding: "generic",
       lastChangeDate: "2026-05-01T00:00:00Z",
+      lastChangedBy: "bob@example.com",
+      loaded: true,
+      activeVersion: "2",
+      loadedVersion: "2",
+      useInPlaceholders: true,
     });
   });
 });

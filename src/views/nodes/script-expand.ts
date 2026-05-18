@@ -1,9 +1,10 @@
+import type { Esv } from "../../domain/types";
 import { mapConcurrent } from "../../paic/concurrency";
 import { extractScriptBodyRefs } from "../../resolver/script-body-parser";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { MessageNode, type PaicNode } from "./base";
-import { EsvNode } from "./esv";
+import { type EsvKind, EsvNode } from "./esv";
 import { LibraryScriptNode } from "./library-script";
 
 /** Concurrency cap for `getScriptByName` lookups when resolving multiple
@@ -83,8 +84,48 @@ export async function expandScript(args: ScriptExpandArgs): Promise<PaicNode[]> 
     }
   }
 
-  for (const name of refs.esvs) {
-    children.push(new EsvNode(host, realm, name, parent));
+  if (refs.esvs.length > 0) {
+    // D22 — once-per-expansion eager batch: fetch the realm's full ESV index
+    // (variables + secrets in parallel) and classify each ref by-kind before
+    // emitting nodes. The tree is otherwise lazy/fresh; this is the only
+    // scoped eagerness per D21. On fetch failure, fall back to emitting nodes
+    // without kind labels so we don't lose visibility.
+    const client = await cache.get(host);
+    let varByDottedName: Map<string, Esv> | null = null;
+    let secByDottedName: Map<string, Esv> | null = null;
+    try {
+      const [variables, secrets] = await Promise.all([
+        client.listVariables(realm),
+        client.listSecrets(realm),
+      ]);
+      varByDottedName = new Map(variables.map((v) => [v.name, v as Esv]));
+      secByDottedName = new Map(secrets.map((s) => [s.name, s as Esv]));
+    } catch (err) {
+      childLog.warn(
+        {
+          event: "script.expand.esvListFailed",
+          host,
+          realm,
+          self_key: selfKey,
+          message: err instanceof Error ? err.message : String(err),
+        },
+        "ESV list fetch failed — emitting EsvNodes without kind labels",
+      );
+    }
+
+    for (const name of refs.esvs) {
+      let kind: EsvKind | undefined;
+      let resolved: Esv | undefined;
+      if (varByDottedName && secByDottedName) {
+        const v = varByDottedName.get(name);
+        const s = v ? undefined : secByDottedName.get(name);
+        resolved = v ?? s;
+        if (v) kind = "variable";
+        else if (s) kind = "secret";
+        else kind = "missing";
+      }
+      children.push(new EsvNode(host, realm, name, parent, kind, resolved));
+    }
   }
 
   childLog.debug(

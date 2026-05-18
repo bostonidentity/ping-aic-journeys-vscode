@@ -216,16 +216,81 @@ const SCRIPT_REF_PREDICATES: Record<string, ScriptRefPredicate> = {
 
 Same table powers the tree's child-discovery, the diagram's click-to-drill, and (later) the RealmIndex's edge build. Lifted from frodo's `scriptedNodesConditions` shape (`ref/frodo-lib/src/ops/JourneyOps.ts:546`); we use ideas, not the library (per D2).
 
-### D20 — Script-body parsing: regex first, AST upgrade if false-positives bite
+### D20 — Script-body parsing: loose-regex with "declared" semantics
 
-Library-script references (`require('<name>')`) and ESV references (`&{esv.X}` / `systemEnv.X`) live in script-body text, not in node payloads. M3's resolver extracts them via straightforward regex over the fetched JS/Groovy body:
+Library-script references (`require('<name>')`) and ESV references live in script-body text, not in node payloads. M3's resolver extracts them via regex over the fetched JS/Groovy body. POC against sb3 (1,159 scripts) refined the original design:
 
 ```ts
-const REQUIRE = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
-const ESV     = /&\{esv\.([A-Za-z0-9_]+)\}|systemEnv\.([A-Za-z0-9_]+)/g;
+const REQUIRE = /require\s*\(\s*['"]([^'"\\]+)['"]\s*\)/g;
+const ESV     = /['"](esv\.[A-Za-z0-9_.-]+?)['"]/g;
 ```
 
-Regex is correct for >99% of real AIC scripts (which are short, single-file, idiomatic). Pathological false-positives (e.g. `require()` calls embedded in string literals or comments) are accepted at M3 — they'd surface as harmless extra edges. If a customer reports a meaningful false-positive or false-negative, **we upgrade to a tiny AST parse via `acorn`** (~150 KB tree-shakeable JS parser) for the JS dialect; Groovy fallback stays regex. Retires Q-13.
+**ESV regex rationale (POC-validated, see `poc/FINDINGS-esv.md`):**
+
+- The original `&{esv.X}` syntax is an IDM config-string form, **never used inside JavaScript bodies** (0 hits across 1,159 scripts). Dropped.
+- The original `systemEnv.X` syntax captured method names (`"getProperty"`) as false positives 435 times. Dropped.
+- The dominant pattern is `systemEnv.getProperty("esv.x.y.z")` (383 scripts, 779 refs). The string literal IS the ESV name in dotted form.
+- A broader class of scripts (442 total, 915 refs) declare ESV names as **string-literal config object fields** without calling `getProperty()` in the same body — the actual lookup happens in a downstream library that reads `nodeConfig.<field>`. The broad string-literal regex catches both call patterns and these config declarators.
+- All 226 unique ESV refs in sb3 begin with `esv.` — safe to require the prefix.
+
+**Semantics — "declared", not "used at runtime":** the parser reports every `esv.X` string literal that appears in source. This may include dead code or commented-out alternatives. We accept these phantom deps for two reasons: (1) we follow the npm / pip / maven convention of "all declared deps shown, dead-dep detection is a separate tool"; (2) **false negatives are more dangerous than false positives** for a dependency tool — missing a real dep could lead a user to delete an ESV that's actually live in prod.
+
+**Comment stripping** runs before the regex to remove the largest false-positive class (`//` line + `/* */` block comments). Preserves URLs by not stripping `//` after `:`.
+
+**Acorn-AST fallback** still available as Plan B if customers report meaningful false-positives the comment-stripped regex can't handle. Retires Q-13.
+
+### D21 — Tree (lazy/fresh) and back-search (eager/cached) are separate data systems
+
+Two completely decoupled data subsystems, each owning its own freshness:
+
+| Layer | Mode | Cache scope | Refresh trigger |
+|---|---|---|---|
+| **Tree / inspector** | Lazy, always-fresh | Per-expansion, throwaway | Each tree expansion fetches fresh |
+| **Back-search panel** (M5+) | Eager, persistent | Realm-wide index | Own TTL / explicit refresh button |
+
+The two systems **never share cache state**. The back-search index never serves the tree. The tree's per-expansion data never populates the back-search index. Even when the back-search cache is warm, the tree still issues fresh HTTP calls.
+
+Rationale:
+- Tree = "show what's there *right now*" → freshness wins
+- Back-search = "give me everything to query against" → completeness wins; staleness acceptable
+- Coupling them would make refresh behavior unpredictable
+
+Within the tree's lazy model, **per-expansion eager batching is allowed** (and used for ESV kind pre-labeling, see D22). That batching is scoped to one expansion event, fetched fresh, discarded on refresh — it does not leak into the back-search subsystem.
+
+### D22 — ESV resolution: REST id translation, kind pre-labeling, card field set
+
+Three locked aspects of ESV handling (validated against sb3 — see `poc/FINDINGS-esv.md`):
+
+**1. Dotted ↔ hyphenated id translation.** Scripts reference ESVs in dotted form (`esv.kyid.portal.name`); the PAIC REST API requires hyphenated ids (`esv-kyid-portal-name`). The dotted form returns 400; only hyphenated returns 200. Translation lives inside `PaicClient.getEsv()` and the resolver-side list-then-filter; the dotted form remains the canonical display name everywhere else.
+
+**2. Per-script-expansion kind pre-labeling.** When a `ScriptNode` expansion emits any `EsvNode`, the tree fires `listVariables(realm)` + `listSecrets(realm)` once per expansion to label each emitted node as `variable` / `secret` / `missing`. This is "small eager" inside the otherwise-lazy tree (per D21 — scoped to the expansion event, not shared with back-search). Tree icons differ by kind (variable vs secret vs `?` for missing). Cost: 2 list calls per script-expand; ESV lists are small (sb3 had 409 vars + 58 secrets — a few KB each paged). Missing entries stay in the tree with a "Not found in tenant" hint — we can't always distinguish a regex false-positive from a recently-deleted ESV.
+
+**3. Card field set.** EsvCard renders the full REST-returned metadata for each kind. ESV variables are **not secrets**; decode `valueBase64` and display in the card.
+
+| Field | Variable card | Secret card |
+|---|---|---|
+| Host / Realm / Name | ✓ | ✓ |
+| Kind ("Variable" / "Secret") | ✓ | ✓ |
+| Description | ✓ | ✓ |
+| `expressionType` | ✓ (`string` / `int` / `bool` / `list` / `object`) | — |
+| `encoding` | — | ✓ (`generic` / `pem` / `base64hmac` / `base64aes` / …) |
+| Decoded value | ✓ (UTF-8 decode of `valueBase64`; `<code>` block + Copy button) | — (API never returns the value) |
+| `activeVersion` / `loadedVersion` | — | ✓ |
+| `useInPlaceholders` | — | ✓ |
+| `loaded` | ✓ ("Yes (live)" / "No (staged)") | ✓ |
+| `lastChangeDate` / `lastChangedBy` | ✓ | ✓ |
+
+Value decoding (webview-side, no `Buffer`):
+
+```ts
+function decodeEsvValue(b64: string): string {
+  const bin = atob(b64);
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+```
+
+Display the decoded string as-is regardless of `expressionType` — users interpret per type. No pretty-print / coercion at M3; JSON pretty-print on `list`/`object` is a future polish if requested.
 
 ## Architecture (M2 target state)
 

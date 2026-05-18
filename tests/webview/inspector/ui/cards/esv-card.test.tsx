@@ -1,53 +1,127 @@
 // @vitest-environment happy-dom
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { EsvCard } from "@/webview/inspector/ui/cards/EsvCard";
 import type { SelectPayload } from "@/webview/messages";
 
-const payload: Extract<SelectPayload, { kind: "esv" }> = {
+const baseline: Extract<SelectPayload, { kind: "esv" }> = {
   kind: "esv",
-  uid: "esv:h:alpha:PUBLIC_URL",
+  uid: "esv:h:alpha:esv.kyid.portal.name",
   host: "openam-tenant.example.forgeblocks.com",
   realmName: "alpha",
-  name: "PUBLIC_URL",
+  name: "esv.kyid.portal.name",
 };
 
 describe("EsvCard", () => {
-  it("renders the ESV name in the heading when unresolved + shows the failure hint", () => {
-    render(<EsvCard payload={payload} />);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("PUBLIC_URL");
-    expect(screen.getByText(/resolution failed/i)).toBeTruthy();
+  it("renders the unresolved-fallback hint when no esv payload is attached", () => {
+    render(<EsvCard payload={baseline} />);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("esv.kyid.portal.name");
+    expect(screen.getByText(/not found in this tenant/i)).toBeTruthy();
   });
 
-  it("renders variable kind + expression type when resolved", () => {
+  it("renders variable kind + expressionType + decoded value with a Copy button", async () => {
+    const value = "https://portal.example.com";
+    const valueBase64 = Buffer.from(value, "utf-8").toString("base64");
+    // jsdom/happy-dom may not provide navigator.clipboard by default — stub it.
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
     render(
       <EsvCard
         payload={{
-          ...payload,
+          ...baseline,
           esv: {
             kind: "variable",
-            name: "PUBLIC_URL",
-            description: "Public URL",
+            name: "esv.kyid.portal.name",
+            description: "Portal URL",
+            expressionType: "string",
+            lastChangeDate: "2025-09-01T12:24:49Z",
+            lastChangedBy: "alice@example.com",
+            loaded: true,
+            valueBase64,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("ESV · Variable")).toBeTruthy();
+    expect(screen.getByText("Variable")).toBeTruthy();
+    expect(screen.getByText("string")).toBeTruthy();
+    expect(screen.getByText("Portal URL")).toBeTruthy();
+    expect(screen.getByText(value)).toBeTruthy();
+    expect(screen.getByText("Yes (live)")).toBeTruthy();
+    expect(screen.getByText("alice@example.com")).toBeTruthy();
+
+    const copyBtn = screen.getByRole("button", { name: /copy/i });
+    fireEvent.click(copyBtn);
+    // Allow the async clipboard write + state update to flush.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(writeText).toHaveBeenCalledWith(value);
+  });
+
+  it("renders (empty) placeholder for variable with no valueBase64", () => {
+    render(
+      <EsvCard
+        payload={{
+          ...baseline,
+          esv: {
+            kind: "variable",
+            name: "esv.kyid.portal.name",
             expressionType: "string",
           },
         }}
       />,
     );
-    expect(screen.getByText("Variable")).toBeTruthy();
-    expect(screen.getByText("string")).toBeTruthy();
-    expect(screen.getByText("Public URL")).toBeTruthy();
+    expect(screen.getByText(/\(empty\)/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
   });
 
-  it("renders secret kind + encoding when resolved as a secret", () => {
+  it("renders secret kind with versions + placeholder flag + encoding", () => {
     render(
       <EsvCard
         payload={{
-          ...payload,
-          esv: { kind: "secret", name: "PUBLIC_URL", encoding: "base64" },
+          ...baseline,
+          name: "esv.ad.creds",
+          esv: {
+            kind: "secret",
+            name: "esv.ad.creds",
+            encoding: "generic",
+            activeVersion: "2",
+            loadedVersion: "2",
+            useInPlaceholders: true,
+            loaded: true,
+            lastChangedBy: "bob@example.com",
+          },
         }}
       />,
     );
+    expect(screen.getByText("ESV · Secret")).toBeTruthy();
     expect(screen.getByText("Secret")).toBeTruthy();
-    expect(screen.getByText("base64")).toBeTruthy();
+    expect(screen.getByText("generic")).toBeTruthy();
+    // Both Active version + Loaded version render "2" → expect two matches.
+    expect(screen.getAllByText("2", { selector: "code" })).toHaveLength(2);
+    expect(screen.getByText("Yes")).toBeTruthy(); // useInPlaceholders
+    // No Value field exists on a secret card — the REST API never returns it.
+    expect(screen.queryByText(/^Value$/)).toBeNull();
+  });
+
+  it("decodes UTF-8 multibyte values correctly", () => {
+    const value = "héllo wörld";
+    const valueBase64 = Buffer.from(value, "utf-8").toString("base64");
+    render(
+      <EsvCard
+        payload={{
+          ...baseline,
+          esv: {
+            kind: "variable",
+            name: "esv.kyid.portal.name",
+            valueBase64,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText(value)).toBeTruthy();
   });
 });

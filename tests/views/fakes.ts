@@ -2,6 +2,8 @@ import { vi } from "vitest";
 import type {
   EmailTemplate,
   Esv,
+  EsvSecret,
+  EsvVariable,
   Journey,
   NodePayload,
   Realm,
@@ -31,6 +33,10 @@ export interface FakePaicClientData {
   socialIdpsByRealm?: Record<string, SocialIdp[]>;
   /** Key = ESV name. */
   esvsByName?: Record<string, Esv>;
+  /** Full tenant ESV-variable list returned by `listVariables()`. */
+  variables?: EsvVariable[];
+  /** Full tenant ESV-secret list returned by `listSecrets()`. */
+  secrets?: EsvSecret[];
 }
 
 export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
@@ -75,6 +81,12 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
     }),
     getEsv: vi.fn((name: string) => {
       return Promise.resolve(data.esvsByName?.[name] ?? null);
+    }),
+    listVariables: vi.fn((_realm: string) => {
+      return Promise.resolve(data.variables ?? []);
+    }),
+    listSecrets: vi.fn((_realm: string) => {
+      return Promise.resolve(data.secrets ?? []);
     }),
   };
 }

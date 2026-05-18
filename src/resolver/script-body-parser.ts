@@ -37,12 +37,31 @@ export interface ScriptBodyRefs {
   esvs: string[];
 }
 
+/** Strip JS line + block comments before regex scanning. Eliminates the
+ * largest false-positive class for ESV detection (commented-out
+ * alternatives like `// var x = "esv.dead.code";`).
+ *
+ * URL preservation: only matches `//` not preceded by `:` so that
+ * `http://example.com` stays intact (the regex captures the character
+ * before `//` and re-emits it via `$1`).
+ *
+ * Known limitation: this is regex-only, not AST-aware. A `//` or `/*`
+ * appearing inside a string literal is treated as a comment start and the
+ * rest of the line/block is stripped. Acceptable for our purposes — the
+ * ESV regex only matches `'esv.X'` literals, which don't contain `//`
+ * or `/*` sequences. */
+function stripComments(body: string): string {
+  return body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
 export function extractScriptBodyRefs(body: string): ScriptBodyRefs {
+  const stripped = stripComments(body);
+
   const libs = new Set<string>();
-  for (const m of body.matchAll(REQUIRE)) libs.add(m[1]);
+  for (const m of stripped.matchAll(REQUIRE)) libs.add(m[1]);
 
   const esvs = new Set<string>();
-  for (const m of body.matchAll(ESV)) esvs.add(m[1]);
+  for (const m of stripped.matchAll(ESV)) esvs.add(m[1]);
 
   return {
     libraryScripts: [...libs].sort(),

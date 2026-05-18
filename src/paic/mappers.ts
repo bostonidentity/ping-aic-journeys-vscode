@@ -311,6 +311,9 @@ export interface RawEsvVariable {
   description?: string;
   expressionType?: string;
   lastChangeDate?: string;
+  lastChangedBy?: string;
+  loaded?: boolean;
+  valueBase64?: string;
 }
 
 export interface RawEsvSecret {
@@ -318,6 +321,11 @@ export interface RawEsvSecret {
   description?: string;
   encoding?: string;
   lastChangeDate?: string;
+  lastChangedBy?: string;
+  loaded?: boolean;
+  activeVersion?: string;
+  loadedVersion?: string;
+  useInPlaceholders?: boolean;
 }
 
 export function mapEsvVariable(name: string, raw: RawEsvVariable): EsvVariable {
@@ -327,6 +335,9 @@ export function mapEsvVariable(name: string, raw: RawEsvVariable): EsvVariable {
     description: raw.description,
     expressionType: raw.expressionType,
     lastChangeDate: raw.lastChangeDate,
+    lastChangedBy: raw.lastChangedBy,
+    loaded: raw.loaded,
+    valueBase64: raw.valueBase64,
   };
 }
 
@@ -337,5 +348,10 @@ export function mapEsvSecret(name: string, raw: RawEsvSecret): EsvSecret {
     description: raw.description,
     encoding: raw.encoding,
     lastChangeDate: raw.lastChangeDate,
+    lastChangedBy: raw.lastChangedBy,
+    loaded: raw.loaded,
+    activeVersion: raw.activeVersion,
+    loadedVersion: raw.loadedVersion,
+    useInPlaceholders: raw.useInPlaceholders,
   };
 }

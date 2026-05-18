@@ -216,11 +216,27 @@ Tech locked: **D19** (conditional script-ref predicate table) + **D20** (regex s
 - [x] Diagram custom-node components replace the `Other` fallback for: `PageNode`, `EmailSuspendNode`/`EmailTemplateNode`, `SocialProviderHandlerNode*`, `SelectIdPNode`, `DeviceMatchNode`, `ConfigProviderNode`, `ClientScriptNode`, `PingOneVerifyCompletionDecisionNode` — Slice 4.
 - [x] `panel.ts:sendJourneyDeps` — `nodeIndex` extended with the new kinds (`emailTemplate`, `socialIdp`, `theme`) via the `buildNodeInfo` helper — Slice 4.
 
-### Notes / non-goals for M3
+#### ESV polish — bug fix shipped + follow-ups queued
+
+Bug fix shipped in commit `b41ad21` (parser was capturing `"getProperty"` as ESV names + the dotted/hyphenated REST id mismatch returned 400). POC against sb3 (1,159 scripts) validated the new approach — see D20 + D22 in design-plan.md.
+
+- [x] **D20 parser fix** — `['"](esv\.X)['"]` string-literal regex; dropped the broken `&{esv.X}` (0 hits in 1,159 scripts) and `systemEnv.X` (435 false-positive method-name captures); requires the `esv.` prefix (226/226 unique sb3 refs match)
+- [x] **D22 dotted↔hyphenated translation** — `getEsv()` now translates `esv.x.y` → `esv-x-y` before the URL; canonical display name stays dotted; verified against `esv-kyid-portal-name` (200) vs `esv.kyid.portal.name` (400)
+- [x] **Comment stripping** — `stripComments(body)` in `script-body-parser.ts` runs before the regex; removes `/* ... */` blocks + `//` EOL; preserves `://` URLs by lookbehind-via-capture
+- [x] **D22 kind pre-labeling on script-expand** — `script-expand.ts` fires `listVariables(realm)` + `listSecrets(realm)` in parallel per expansion; pre-labels each `EsvNode` as `variable` / `secret` / `missing`; tree icons differ by kind. Specifically:
+  - [x] `PaicClient.listVariables(realm)` + `listSecrets(realm)` added (paged, mirrors `listJourneys`; tenant-scoped — `realm` accepted for API symmetry); names translated dot↔hyphen at the mapper boundary so consumers see dotted form
+  - [x] `EsvNode` widened with `kind?: "variable" | "secret" | "missing"` + optional `resolved?: Esv`; icon switches via `iconFor(kind)`; missing nodes carry a "(not in tenant)" description + `esvMissing` contextValue
+  - [x] `panel.ts:toSelectPayload` reads `node.resolved` directly — no per-click fetch
+- [x] **D22 EsvCard field expansion** — full REST metadata rendered for variables AND secrets:
+  - [x] `EsvVariable` domain type widened with `lastChangedBy?`, `loaded?`, `valueBase64?`; `EsvSecret` widened with `lastChangedBy?`, `loaded?`, `activeVersion?`, `loadedVersion?`, `useInPlaceholders?`
+  - [x] Mappers + `Raw*` shapes thread the new fields through
+  - [x] `EsvCard.tsx` rewritten — kind-discriminated rendering (`VariableFields` / `SecretFields` / `SharedAuditFields`); `decodeEsvValue` UTF-8 round-trip via `atob` + `TextDecoder`; Copy button uses `navigator.clipboard.writeText`
+
+#### Other M3 notes / non-goals
 
 - [ ] First-click latency on journey expansion grows (PageNode container walk adds one extra `getNode` per child ref). Needs a live-tenant measurement pass against sb3 to record the actual range — not blocking the M3 commit; will be recorded here once captured.
 - **Deferred** to a later milestone: `product-Saml2Node` (SAML2 entities + circles of trust — narrower customer segment, needs two-fetch resolution); `designer-*` custom marketplace nodes (minority of customers).
-- **Deferred to M4**: `listEsvs()` for the realm-index scan — only the RealmIndex needs it; inspector cards already use `getEsv(name)`.
+- **Deferred to M4** per D21: `listEsvs()` for the realm-index scan stays out of the tree's per-expansion path; the RealmIndex owns its own ESV index with its own refresh cycle. M5 back-search will consume that index, not the tree's per-expansion data.
 
 ## M4 — RealmIndex background scan ⏳
 

@@ -252,24 +252,15 @@ export class InspectorPanel implements vscode.Disposable {
       };
     }
     if (node instanceof EsvNode) {
-      // Try to resolve ESV metadata; fall back to a name-only payload on miss.
-      let esv;
-      try {
-        const client = await this.deps.cache.get(node.host);
-        esv = (await client.getEsv(node.name)) ?? undefined;
-      } catch (err) {
-        this.childLog.warn(
-          { event: "inspector.esv.fetchFailed", uid: node.uid, message: errMsg(err) },
-          "ESV resolution failed — showing name only",
-        );
-      }
+      // EsvNode is pre-labeled at construction by script-expand (D22) — read
+      // the cached resolved metadata directly. No extra fetch on click.
       return {
         kind: "esv",
         uid: node.uid,
         host: node.host,
         realmName: node.realm,
         name: node.name,
-        esv,
+        esv: node.resolved,
       };
     }
     if (node instanceof ThemeNode) {

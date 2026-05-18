@@ -87,6 +87,49 @@ describe("ScriptNode expansion", () => {
     expect(kids.filter((k) => k instanceof EsvNode)).toHaveLength(1);
   });
 
+  it("pre-labels EsvNodes per kind (variable / secret / missing) via the per-expansion list fetch", async () => {
+    const body = `
+      var a = systemEnv.getProperty("esv.kyid.portal.name");
+      var b = systemEnv.getProperty("esv.ad.creds");
+      var c = systemEnv.getProperty("esv.phantom.ref");
+    `;
+    const client = makeFakePaicClient({
+      scriptsByKey: { [`${REALM}:s-1`]: script({ id: "s-1", body }) },
+      variables: [
+        {
+          kind: "variable",
+          name: "esv.kyid.portal.name",
+          expressionType: "string",
+        },
+      ],
+      secrets: [
+        {
+          kind: "secret",
+          name: "esv.ad.creds",
+          encoding: "generic",
+        },
+      ],
+    });
+    const node = new ScriptNode(HOST, REALM, "s-1", makeFakeCache(client), makeFakeLogger());
+    const kids = await node.getChildren();
+    const esvKids = kids.filter((k) => k instanceof EsvNode) as EsvNode[];
+    expect(esvKids.map((e) => e.name).sort()).toEqual([
+      "esv.ad.creds",
+      "esv.kyid.portal.name",
+      "esv.phantom.ref",
+    ]);
+    const byName = new Map(esvKids.map((e) => [e.name, e] as const));
+    expect(byName.get("esv.kyid.portal.name")?.kind).toBe("variable");
+    expect(byName.get("esv.kyid.portal.name")?.resolved?.kind).toBe("variable");
+    expect(byName.get("esv.ad.creds")?.kind).toBe("secret");
+    expect(byName.get("esv.ad.creds")?.resolved?.kind).toBe("secret");
+    expect(byName.get("esv.phantom.ref")?.kind).toBe("missing");
+    expect(byName.get("esv.phantom.ref")?.resolved).toBeUndefined();
+    // The pre-labeling fetched both list endpoints exactly once.
+    expect((client.listVariables as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((client.listSecrets as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
   it("refresh() clears the cached body — next getChildren() re-fetches via getScript", async () => {
     const { node } = makeNode(`var x = 1;`);
     await node.getChildren();

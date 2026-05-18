@@ -1,6 +1,8 @@
 import type {
   EmailTemplate,
   Esv,
+  EsvSecret,
+  EsvVariable,
   Journey,
   NodePayload,
   Realm,
@@ -69,6 +71,13 @@ export interface PaicClient {
    * falls through to `/environment/secrets/<name>` on 404. Returns null on
    * double-miss. */
   getEsv(name: string): Promise<Esv | null>;
+  /** List all ESV variables in the tenant (paged). `realm` arg accepted for
+   * API symmetry but the endpoint is tenant-scoped. Returned `name`s are in
+   * canonical dotted form (REST `_id`s are hyphenated; translated here). */
+  listVariables(realm: string): Promise<EsvVariable[]>;
+  /** List all ESV secrets in the tenant (paged). Same scope + naming notes
+   * as `listVariables`. */
+  listSecrets(realm: string): Promise<EsvSecret[]>;
 }
 
 export interface PaicClientOptions {
@@ -205,6 +214,34 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
         return null;
       }
       return found;
+    },
+
+    async listVariables(_realm: string): Promise<EsvVariable[]> {
+      // ESV endpoints are tenant-scoped, not realm-scoped. _realm accepted for
+      // API symmetry. Returned names are dotted (translated from hyphenated _id).
+      const all = await listAllPaged<RawEsvVariable>(async (cookie) => {
+        const params = new URLSearchParams({ _queryFilter: "true" });
+        if (cookie) params.set("_pagedResultsCookie", cookie);
+        const resp = await http.get<PagedResponse<RawEsvVariable>>(
+          `/environment/variables?${params.toString()}`,
+          { apiVersion: ESV_API_VERSION },
+        );
+        return resp.data;
+      });
+      return all.map((raw) => mapEsvVariable((raw._id ?? "").replaceAll("-", "."), raw));
+    },
+
+    async listSecrets(_realm: string): Promise<EsvSecret[]> {
+      const all = await listAllPaged<RawEsvSecret>(async (cookie) => {
+        const params = new URLSearchParams({ _queryFilter: "true" });
+        if (cookie) params.set("_pagedResultsCookie", cookie);
+        const resp = await http.get<PagedResponse<RawEsvSecret>>(
+          `/environment/secrets?${params.toString()}`,
+          { apiVersion: ESV_API_VERSION },
+        );
+        return resp.data;
+      });
+      return all.map((raw) => mapEsvSecret((raw._id ?? "").replaceAll("-", "."), raw));
     },
 
     async getEsv(name: string): Promise<Esv | null> {

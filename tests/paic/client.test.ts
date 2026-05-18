@@ -321,6 +321,52 @@ describe("PaicClient", () => {
     });
   });
 
+  it("listVariables pages /environment/variables and translates hyphenated _ids to dotted names", async () => {
+    fake.enqueueGet({
+      result: [
+        { _id: "esv-kyid-portal-name", expressionType: "string", loaded: true },
+        { _id: "esv-tenant-fqdn", expressionType: "string", loaded: true },
+      ],
+      pagedResultsCookie: null,
+    });
+    const vars = await client.listVariables("alpha");
+    expect(fake.calls[0].url).toBe("/environment/variables?_queryFilter=true");
+    expect(fake.calls[0].apiVersion).toBe("protocol=1.0,resource=1.0");
+    expect(vars.map((v) => v.name)).toEqual(["esv.kyid.portal.name", "esv.tenant.fqdn"]);
+    expect(vars[0].kind).toBe("variable");
+    expect(vars[0].loaded).toBe(true);
+  });
+
+  it("listSecrets pages /environment/secrets and returns dotted-name secrets with version fields", async () => {
+    fake.enqueueGet({
+      result: [
+        {
+          _id: "esv-ad-creds",
+          encoding: "generic",
+          loaded: true,
+          activeVersion: "1",
+          loadedVersion: "1",
+          useInPlaceholders: true,
+        },
+      ],
+      pagedResultsCookie: null,
+    });
+    const secs = await client.listSecrets("alpha");
+    expect(fake.calls[0].url).toBe("/environment/secrets?_queryFilter=true");
+    expect(secs[0]).toEqual({
+      kind: "secret",
+      name: "esv.ad.creds",
+      description: undefined,
+      encoding: "generic",
+      lastChangeDate: undefined,
+      lastChangedBy: undefined,
+      loaded: true,
+      activeVersion: "1",
+      loadedVersion: "1",
+      useInPlaceholders: true,
+    });
+  });
+
   it("getScriptByName queries by name and returns the first mapped result (or null)", async () => {
     const source = "exports.help = function(){};";
     // First call — hit.

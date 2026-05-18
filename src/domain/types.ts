@@ -225,18 +225,39 @@ export type Esv = EsvVariable | EsvSecret;
 
 export interface EsvVariable {
   kind: "variable";
+  /** Canonical dotted name (e.g. `esv.kyid.portal.name`). The REST API
+   * exposes hyphenated `_id`s; mappers translate to dotted for consistency
+   * with how scripts reference ESVs. */
   name: string;
   description?: string;
   /** "string" | "int" | "bool" | "array" | "object" | "list" | "keyvaluelist"
    * | "number" | "base64encodedinlined". */
   expressionType?: string;
   lastChangeDate?: string;
+  lastChangedBy?: string;
+  /** Whether the variable has been pushed to runtime (`true` = live,
+   * `false` = staged). */
+  loaded?: boolean;
+  /** Base64-encoded value. The webview decodes for display; variables are
+   * not sensitive per D22. */
+  valueBase64?: string;
 }
 
 export interface EsvSecret {
   kind: "secret";
+  /** Canonical dotted name (see EsvVariable.name). */
   name: string;
   description?: string;
   encoding?: string;
   lastChangeDate?: string;
+  lastChangedBy?: string;
+  /** Whether the secret has been pushed to runtime. */
+  loaded?: boolean;
+  /** Active version PAIC is currently serving. */
+  activeVersion?: string;
+  /** Version pushed to runtime — can differ from active during a rollout. */
+  loadedVersion?: string;
+  /** Whether the secret can be referenced via `${esv.x}` placeholder
+   * substitution in config strings. */
+  useInPlaceholders?: boolean;
 }

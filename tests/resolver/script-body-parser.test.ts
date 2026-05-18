@@ -80,6 +80,35 @@ describe("extractScriptBodyRefs", () => {
     expect(extractScriptBodyRefs(body).esvs).toEqual([]);
   });
 
+  // ─── Comment stripping ────────────────────────────────────────────────────
+
+  it("strips line comments before scanning — commented-out ESV refs are NOT emitted", () => {
+    const body = `
+      // var dead = systemEnv.getProperty("esv.dead.code");
+      var live = systemEnv.getProperty("esv.live.code");
+    `;
+    expect(extractScriptBodyRefs(body).esvs).toEqual(["esv.live.code"]);
+  });
+
+  it("strips block comments before scanning", () => {
+    const body = `
+      /* var commented = "esv.commented.out";
+         var alsoDead = "esv.also.dead"; */
+      var real = "esv.real.one";
+    `;
+    expect(extractScriptBodyRefs(body).esvs).toEqual(["esv.real.one"]);
+  });
+
+  it("preserves URLs by not treating `://` as a comment marker", () => {
+    // Confirms `http://...` doesn't get truncated, even though `//` follows
+    // a colon. The ESV after the URL must still be picked up.
+    const body = `
+      var url = "http://example.com/foo";
+      var esv = "esv.kyid.portal.name";
+    `;
+    expect(extractScriptBodyRefs(body).esvs).toEqual(["esv.kyid.portal.name"]);
+  });
+
   it("handles a realistic mixed body — require + multiple ESV refs", () => {
     const body = `
       // Auth decision script
