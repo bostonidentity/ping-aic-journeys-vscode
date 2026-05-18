@@ -13,10 +13,21 @@ export function buildNodeTooltip(data: DiagramNodeData): string {
     if (info.outcomes?.length) lines.push(`Outcomes: ${info.outcomes.join(", ")}`);
     if (info.inputs?.length) lines.push(`Inputs: ${info.inputs.join(", ")}`);
     if (info.outputs?.length) lines.push(`Outputs: ${info.outputs.join(", ")}`);
+    if (info.socialIdpNames?.length) lines.push(`IdPs: ${info.socialIdpNames.join(", ")}`);
   } else if (info?.kind === "inner" && info.innerTreeId) {
     lines.push(`Inner tree: ${info.innerTreeId}`);
+  } else if (info?.kind === "theme" && info.themeId) {
+    lines.push(`Theme: ${info.themeId}`);
+  } else if (info?.kind === "emailTemplate" && info.emailTemplateName) {
+    lines.push(`Template: ${info.emailTemplateName}`);
+  } else if (info?.kind === "socialIdp" && info.socialIdpNames?.length) {
+    lines.push(`IdPs: ${info.socialIdpNames.join(", ")}`);
   } else if (info?.kind === "other" && info.rawNodeType) {
     lines.push(`AIC type: ${info.rawNodeType}`);
+  }
+  if (info?.useScript === false) {
+    // biome-ignore lint/security/noSecrets: tooltip text, not a secret
+    lines.push("Script: inactive (useScript=false)");
   }
   return lines.join("\n");
 }

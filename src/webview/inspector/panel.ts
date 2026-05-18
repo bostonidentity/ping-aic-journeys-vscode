@@ -1,13 +1,19 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
+import type { NodePayload } from "../../domain/types";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import type { PaicNode } from "../../views/nodes/base";
 import { ConnectionNode } from "../../views/nodes/connection";
+import { EmailTemplateNode } from "../../views/nodes/email-template";
+import { EsvNode } from "../../views/nodes/esv";
 import { InnerJourneyNode } from "../../views/nodes/inner-journey";
 import { JourneyNode } from "../../views/nodes/journey";
+import { LibraryScriptNode } from "../../views/nodes/library-script";
 import { RealmNode } from "../../views/nodes/realm";
 import { ScriptNode } from "../../views/nodes/script";
+import { SocialIdpNode } from "../../views/nodes/social-idp";
+import { ThemeNode } from "../../views/nodes/theme";
 import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../messages";
 
 export interface InspectorPanelDeps {
@@ -47,6 +53,8 @@ export class InspectorPanel implements vscode.Disposable {
 
     if (node instanceof JourneyNode || node instanceof InnerJourneyNode) {
       await this.sendJourneyDeps(node);
+    } else if (node instanceof ScriptNode || node instanceof LibraryScriptNode) {
+      await this.sendScriptDeps(node);
     }
   }
 
@@ -96,8 +104,14 @@ export class InspectorPanel implements vscode.Disposable {
       const kids = await node.getChildren();
       const scripts: NodeRef[] = [];
       const inners: NodeRef[] = [];
+      const themes: NodeRef[] = [];
+      const emailTemplates: NodeRef[] = [];
+      const socialIdps: NodeRef[] = [];
       const scriptUidById = new Map<string, string>();
       const innerUidById = new Map<string, string>();
+      const themeUidById = new Map<string, string>();
+      const emailUidByName = new Map<string, string>();
+      const idpUidByName = new Map<string, string>();
       for (const k of kids) {
         this.uidIndex.set(k.uid, k);
         if (k instanceof ScriptNode) {
@@ -106,41 +120,69 @@ export class InspectorPanel implements vscode.Disposable {
         } else if (k instanceof InnerJourneyNode) {
           inners.push({ uid: k.uid, label: k.id, kind: "innerJourney" });
           innerUidById.set(k.id, k.uid);
+        } else if (k instanceof ThemeNode) {
+          themes.push({ uid: k.uid, label: k.themeId, kind: "theme" });
+          themeUidById.set(k.themeId, k.uid);
+        } else if (k instanceof EmailTemplateNode) {
+          emailTemplates.push({ uid: k.uid, label: k.name, kind: "emailTemplate" });
+          emailUidByName.set(k.name, k.uid);
+        } else if (k instanceof SocialIdpNode) {
+          socialIdps.push({ uid: k.uid, label: k.name, kind: "socialIdp" });
+          idpUidByName.set(k.name, k.uid);
         }
       }
       const nodeIndex: Record<string, NodeInfo> = {};
       const payloads = node.payloadsByNodeId;
       if (payloads) {
         for (const [nodeId, p] of payloads) {
-          if (p.nodeType === "ScriptedDecisionNode" && p.scriptId) {
-            nodeIndex[nodeId] = {
-              kind: "script",
-              scriptId: p.scriptId,
-              uid: scriptUidById.get(p.scriptId),
-              outcomes: p.outcomes,
-              inputs: p.inputs,
-              outputs: p.outputs,
-            };
-          } else if (p.nodeType === "InnerTreeEvaluatorNode" && p.tree) {
-            nodeIndex[nodeId] = {
-              kind: "inner",
-              innerTreeId: p.tree,
-              uid: innerUidById.get(p.tree),
-            };
-          } else {
-            nodeIndex[nodeId] = {
-              kind: "other",
-              rawNodeType: p.nodeType === "other" ? p.rawNodeType : p.nodeType,
-            };
-          }
+          nodeIndex[nodeId] = buildNodeInfo(p, {
+            scriptUidById,
+            innerUidById,
+            themeUidById,
+            emailUidByName,
+            idpUidByName,
+          });
         }
       }
-      this.post({ type: "journeyDeps", uid: node.uid, scripts, inners, nodeIndex });
+      this.post({
+        type: "journeyDeps",
+        uid: node.uid,
+        scripts,
+        inners,
+        themes,
+        emailTemplates,
+        socialIdps,
+        nodeIndex,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.childLog.error(
         { event: "inspector.depsFailed", uid: node.uid, message },
         "Dep fetch failed",
+      );
+      this.post({ type: "error", uid: node.uid, message });
+    }
+  }
+
+  private async sendScriptDeps(node: ScriptNode | LibraryScriptNode): Promise<void> {
+    try {
+      const kids = await node.getChildren();
+      const libraryScripts: NodeRef[] = [];
+      const esvs: NodeRef[] = [];
+      for (const k of kids) {
+        this.uidIndex.set(k.uid, k);
+        if (k instanceof LibraryScriptNode) {
+          libraryScripts.push({ uid: k.uid, label: k.name, kind: "libraryScript" });
+        } else if (k instanceof EsvNode) {
+          esvs.push({ uid: k.uid, label: k.name, kind: "esv" });
+        }
+      }
+      this.post({ type: "scriptDeps", uid: node.uid, libraryScripts, esvs });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.childLog.error(
+        { event: "inspector.scriptDepsFailed", uid: node.uid, message },
+        "Script dep fetch failed",
       );
       this.post({ type: "error", uid: node.uid, message });
     }
@@ -194,6 +236,97 @@ export class InspectorPanel implements vscode.Disposable {
         host: node.host,
         realmName: node.realm,
         scriptId: node.scriptId,
+      };
+    }
+    if (node instanceof LibraryScriptNode) {
+      return {
+        kind: "libraryScript",
+        uid: node.uid,
+        host: node.host,
+        realmName: node.realm,
+        scriptId: node.scriptId,
+        name: node.name,
+      };
+    }
+    if (node instanceof EsvNode) {
+      // Try to resolve ESV metadata; fall back to a name-only payload on miss.
+      let esv;
+      try {
+        const client = await this.deps.cache.get(node.host);
+        esv = (await client.getEsv(node.name)) ?? undefined;
+      } catch (err) {
+        this.childLog.warn(
+          { event: "inspector.esv.fetchFailed", uid: node.uid, message: errMsg(err) },
+          "ESV resolution failed — showing name only",
+        );
+      }
+      return {
+        kind: "esv",
+        uid: node.uid,
+        host: node.host,
+        realmName: node.realm,
+        name: node.name,
+        esv,
+      };
+    }
+    if (node instanceof ThemeNode) {
+      let theme;
+      try {
+        const client = await this.deps.cache.get(node.host);
+        theme = (await client.getTheme(node.realm, node.themeId)) ?? undefined;
+      } catch (err) {
+        this.childLog.warn(
+          { event: "inspector.theme.fetchFailed", uid: node.uid, message: errMsg(err) },
+          "Theme resolution failed — showing id only",
+        );
+      }
+      return {
+        kind: "theme",
+        uid: node.uid,
+        host: node.host,
+        realmName: node.realm,
+        themeId: node.themeId,
+        theme,
+      };
+    }
+    if (node instanceof EmailTemplateNode) {
+      let template;
+      try {
+        const client = await this.deps.cache.get(node.host);
+        template = (await client.getEmailTemplate(node.name)) ?? undefined;
+      } catch (err) {
+        this.childLog.warn(
+          { event: "inspector.emailTemplate.fetchFailed", uid: node.uid, message: errMsg(err) },
+          "Email-template resolution failed — showing name only",
+        );
+      }
+      return {
+        kind: "emailTemplate",
+        uid: node.uid,
+        host: node.host,
+        realmName: node.realm,
+        name: node.name,
+        template,
+      };
+    }
+    if (node instanceof SocialIdpNode) {
+      let idp;
+      try {
+        const client = await this.deps.cache.get(node.host);
+        idp = (await client.getSocialIdp(node.realm, node.name)) ?? undefined;
+      } catch (err) {
+        this.childLog.warn(
+          { event: "inspector.socialIdp.fetchFailed", uid: node.uid, message: errMsg(err) },
+          "Social-IdP resolution failed — showing name only",
+        );
+      }
+      return {
+        kind: "socialIdp",
+        uid: node.uid,
+        host: node.host,
+        realmName: node.realm,
+        name: node.name,
+        idp,
       };
     }
     return { kind: "message", uid: node.uid, label: String(node.label ?? "") };
@@ -297,6 +430,117 @@ function makeNonce(): string {
     .replace(/[^A-Za-z0-9]/g, "");
 }
 
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+interface UidMaps {
+  scriptUidById: ReadonlyMap<string, string>;
+  innerUidById: ReadonlyMap<string, string>;
+  themeUidById: ReadonlyMap<string, string>;
+  emailUidByName: ReadonlyMap<string, string>;
+  idpUidByName: ReadonlyMap<string, string>;
+}
+
+/** Translate a fetched NodePayload into the NodeInfo the diagram + tooltip
+ * consume. The `kind` discriminator decides what clicking does — see
+ * `JourneyDiagram.onNodeClick`. Conditional-script kinds with `useScript=false`
+ * fall through to `kind: "other"` so they don't trigger an open-body. */
+function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
+  if (p.nodeType === "ScriptedDecisionNode" && p.scriptId) {
+    return {
+      kind: "script",
+      scriptId: p.scriptId,
+      uid: uids.scriptUidById.get(p.scriptId),
+      outcomes: p.outcomes,
+      inputs: p.inputs,
+      outputs: p.outputs,
+    };
+  }
+  if (p.nodeType === "InnerTreeEvaluatorNode" && p.tree) {
+    return { kind: "inner", innerTreeId: p.tree, uid: uids.innerUidById.get(p.tree) };
+  }
+  if (p.nodeType === "ClientScriptNode" && p.scriptId) {
+    return { kind: "script", scriptId: p.scriptId, uid: uids.scriptUidById.get(p.scriptId) };
+  }
+  if (p.nodeType === "ConfigProviderNode") {
+    if (p.scriptId) {
+      return { kind: "script", scriptId: p.scriptId, uid: uids.scriptUidById.get(p.scriptId) };
+    }
+    return { kind: "other", rawNodeType: "ConfigProviderNode" };
+  }
+  if (p.nodeType === "DeviceMatchNode") {
+    if (p.useScript && p.scriptId) {
+      return {
+        kind: "script",
+        scriptId: p.scriptId,
+        uid: uids.scriptUidById.get(p.scriptId),
+        useScript: true,
+      };
+    }
+    return { kind: "other", rawNodeType: "DeviceMatchNode", useScript: p.useScript };
+  }
+  // biome-ignore lint/security/noSecrets: AIC node type name, not a secret
+  if (p.nodeType === "PingOneVerifyCompletionDecisionNode") {
+    if (p.useFilterScript && p.scriptId) {
+      return {
+        kind: "script",
+        scriptId: p.scriptId,
+        uid: uids.scriptUidById.get(p.scriptId),
+        useScript: true,
+      };
+    }
+    return {
+      kind: "other",
+      // biome-ignore lint/security/noSecrets: AIC node type name, not a secret
+      rawNodeType: "PingOneVerifyCompletionDecisionNode",
+      useScript: p.useFilterScript,
+    };
+  }
+  if (p.nodeType === "SocialProviderHandlerNode" || p.nodeType === "SocialProviderHandlerNodeV2") {
+    const socialIdpNames = [...p.filteredProviders];
+    if (p.scriptId) {
+      return {
+        kind: "script",
+        scriptId: p.scriptId,
+        uid: uids.scriptUidById.get(p.scriptId),
+        socialIdpNames,
+      };
+    }
+    if (socialIdpNames.length > 0) {
+      return { kind: "socialIdp", socialIdpNames, uid: uids.idpUidByName.get(socialIdpNames[0]) };
+    }
+    return { kind: "other", rawNodeType: p.nodeType };
+  }
+  if (p.nodeType === "PageNode") {
+    if (p.themeId) {
+      return { kind: "theme", themeId: p.themeId, uid: uids.themeUidById.get(p.themeId) };
+    }
+    return { kind: "other", rawNodeType: "PageNode" };
+  }
+  if (p.nodeType === "EmailSuspendNode" || p.nodeType === "EmailTemplateNode") {
+    if (p.emailTemplateName) {
+      return {
+        kind: "emailTemplate",
+        emailTemplateName: p.emailTemplateName,
+        uid: uids.emailUidByName.get(p.emailTemplateName),
+      };
+    }
+    return { kind: "other", rawNodeType: p.nodeType };
+  }
+  if (p.nodeType === "SelectIdPNode") {
+    const socialIdpNames = [...p.filteredProviders];
+    if (socialIdpNames.length > 0) {
+      return { kind: "socialIdp", socialIdpNames, uid: uids.idpUidByName.get(socialIdpNames[0]) };
+    }
+    return { kind: "other", rawNodeType: "SelectIdPNode" };
+  }
+  return {
+    kind: "other",
+    rawNodeType: p.nodeType === "other" ? p.rawNodeType : p.nodeType,
+  };
+}
+
 // Inlined to avoid a separate static asset + extra `localResourceRoots` entry.
 // Keep in sync with `src/webview/inspector/ui/styles.css` (which exists for
 // editor + esbuild's CSS-import path; this constant is what the host actually
@@ -341,6 +585,14 @@ button.link:hover { text-decoration: underline; color: var(--vscode-textLink-act
 .diag-node.script { border-left: 3px solid var(--vscode-charts-purple, #b180d7); }
 .diag-node.inner { border-left: 3px solid var(--vscode-charts-blue, #4f8cc9); }
 .diag-node.other { border-left: 3px solid var(--vscode-charts-foreground, #8c8c8c); opacity: 0.85; }
+.diag-node.page { border-left: 3px solid var(--vscode-charts-orange, #d18616); }
+.diag-node.email { border-left: 3px solid var(--vscode-charts-yellow, #c9b73a); }
+.diag-node.social { border-left: 3px solid var(--vscode-charts-red, #c93636); }
+.diag-node.select-idp { border-left: 3px solid var(--vscode-charts-red, #c93636); opacity: 0.9; }
+.diag-node.device-match { border-left: 3px solid var(--vscode-charts-blue, #4f8cc9); opacity: 0.95; }
+.diag-node.config-provider { border-left: 3px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
+.diag-node.client-script { border-left: 3px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
+.diag-node.verify { border-left: 3px solid var(--vscode-charts-green, #3c9c3c); opacity: 0.9; }
 .diag-node.entry { box-shadow: 0 0 0 2px var(--vscode-charts-green, #3c9c3c); }
 .diag-node:hover { background: var(--vscode-list-hoverBackground); }
 `;

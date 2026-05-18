@@ -197,6 +197,36 @@ The per-journey node-flow diagram in the inspector renders via **ReactFlow** (gr
 
 **Reuse path:** the M6 realm-wide graph (D14 surface) and any M3 widening of node kinds both compose on top of this — same library, same custom-node pattern. Strengthens D15's framework lock.
 
+### D19 — Conditional script-ref pattern: per-type predicate, not boolean type-membership
+
+M1's resolver assumed *"if the node type is X, it has a script ref."* M3 introduces node types where the script ref's presence depends on a flag in the payload: `DeviceMatchNode` carries a script only when `payload.useScript === true`, `PingOneVerifyCompletionDecisionNode` only when `payload.useFilterScript === true`. We codify this as:
+
+```ts
+type ScriptRefPredicate = (payload: NodePayload) => boolean;
+const SCRIPT_REF_PREDICATES: Record<string, ScriptRefPredicate> = {
+  ScriptedDecisionNode: () => true,
+  ClientScriptNode: () => true,
+  ConfigProviderNode: () => true,
+  SocialProviderHandlerNode: () => true,
+  SocialProviderHandlerNodeV2: () => true,
+  DeviceMatchNode: (p) => p.useScript === true,
+  PingOneVerifyCompletionDecisionNode: (p) => p.useFilterScript === true,
+};
+```
+
+Same table powers the tree's child-discovery, the diagram's click-to-drill, and (later) the RealmIndex's edge build. Lifted from frodo's `scriptedNodesConditions` shape (`ref/frodo-lib/src/ops/JourneyOps.ts:546`); we use ideas, not the library (per D2).
+
+### D20 — Script-body parsing: regex first, AST upgrade if false-positives bite
+
+Library-script references (`require('<name>')`) and ESV references (`&{esv.X}` / `systemEnv.X`) live in script-body text, not in node payloads. M3's resolver extracts them via straightforward regex over the fetched JS/Groovy body:
+
+```ts
+const REQUIRE = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
+const ESV     = /&\{esv\.([A-Za-z0-9_]+)\}|systemEnv\.([A-Za-z0-9_]+)/g;
+```
+
+Regex is correct for >99% of real AIC scripts (which are short, single-file, idiomatic). Pathological false-positives (e.g. `require()` calls embedded in string literals or comments) are accepted at M3 — they'd surface as harmless extra edges. If a customer reports a meaningful false-positive or false-negative, **we upgrade to a tiny AST parse via `acorn`** (~150 KB tree-shakeable JS parser) for the JS dialect; Groovy fallback stays regex. Retires Q-13.
+
 ## Architecture (M2 target state)
 
 ```
@@ -365,14 +395,40 @@ Two locked off-the-shelf bets, both with extensibility headroom (see D17, D18):
 
 ### M3 — Wider dependency kinds
 
-**User-facing outcome:** *"My tree and detail panel show not just scripts and inner-journeys, but themes, ESVs, and library scripts (via `require()`). Expanding a journey now shows the full picture."*
+**User-facing outcome:** *"My tree, diagram, and detail panel show every meaningful dependency: themes, email templates, social IdPs, library scripts (via `require()`), and ESVs (via `&{esv...}` / `systemEnv.X`). When I click a script in the tree, I can drill into its library-script and ESV references."*
 
-- Resolver extensions: parse script bodies for `require()` (library scripts), `&{esv...}` and `systemEnv.X` (ESVs).
-- Node-type table expands beyond `ScriptedDecisionNode + InnerTreeEvaluatorNode` to include `ConfigProviderNode`, `ClientScriptNode`, `SocialProviderHandlerNode(V2)`, `PageNode` (for theme refs and child nodes).
-- Tree provider grows new node kinds: theme, ESV, library-script.
-- Detail panel grows kind-specific cards for each new node type.
-- Journey expansion now fetches more (script bodies are needed to extract ESV and library-script refs). Lazy per-journey-click stays the contract; expect first-click latency to grow modestly.
-- **Done here on purpose**: ship breadth before the index, so when M4 lands the indexable graph is already complete.
+Two distinct widenings — node-level (more payload fields → more journey edges) and script-level (parsing the fetched body → script edges).
+
+**Node-level edges added** (per D19's predicate table where applicable)
+- `ClientScriptNode` → script
+- `ConfigProviderNode` → script
+- `SocialProviderHandlerNode` / `SocialProviderHandlerNodeV2` → script *and* social-IdP list (`payload.filteredProviders: string[]`)
+- `DeviceMatchNode` → script — **only if `payload.useScript === true`** (D19 conditional pattern)
+- `PingOneVerifyCompletionDecisionNode` → script — **only if `payload.useFilterScript === true`** (D19)
+- `PageNode` → child nodes (walk `payload.nodes[]` inline) + theme (parse `payload.stage` for `themeId`)
+- `EmailSuspendNode` / `EmailTemplateNode` → email template (resolved against IDM managed-templates)
+- `SelectIdPNode` → social-IdP list (`payload.filteredProviders`, no script)
+
+**Script-level edges added** (per D20 — regex over fetched bodies)
+- script → library-script via `require('<name>')`
+- script → ESV via `&{esv.X}` or `systemEnv.X`
+- library-script → library-script / ESV (recursive; reuses M1's cycle-guard pattern keyed on `(kind, id)`)
+
+**Tree / inspector / diagram surface grows**
+- `ScriptNode` stops being a leaf — gains `loadChildren()` that fetches the script body and emits `LibraryScriptNode` + `EsvNode` children.
+- New node classes in `src/views/nodes/`: `library-script.ts`, `esv.ts`, `theme.ts`, `email-template.ts`, `social-idp.ts`.
+- New inspector cards: `LibraryScriptCard` (with diagram via reused `JourneyDiagram` patterns? — TBD; library scripts don't have a tree-flow), `EsvCard`, `ThemeCard`, `EmailTemplateCard`, `SocialIdpCard`.
+- Diagram replaces the `Other` fallback for `PageNode`, `EmailSuspendNode`, `EmailTemplateNode`, `SocialProviderHandlerNode*`, `SelectIdPNode`, `DeviceMatchNode`, `ConfigProviderNode`, `ClientScriptNode`, `PingOneVerifyCompletionDecisionNode` with proper per-kind components.
+
+**Fetch growth**
+- Each journey-expand now also fetches every script body for the journey's referenced scripts. Bounded by `mapConcurrent` (cap 10). Library-script + ESV resolution happens on `ScriptNode` expansion, not on journey expansion — keeps lazy contract.
+- New PAIC client methods: `getEmailTemplate`, `getSocialIdp`, `getTheme`, `getEsv` (or `listEsvs` + lookup). Library scripts are scripts where `script.type === "library"` — reuse `getScript`.
+
+**Deferred past M3** (call out so the gap is visible)
+- `product-Saml2Node` (SAML entities + circles of trust) — narrower customer segment; needs two-fetch resolution (provider stubs + CoT list). Worth its own slice when SAML flows enter scope.
+- `designer-*` custom marketplace nodes — minority of customers; defer until requested.
+
+**Done here on purpose**: ship breadth before the index, so when M4 (RealmIndex) lands the indexable graph already covers every edge kind.
 
 ### M4 — RealmIndex background scan
 
@@ -434,7 +490,7 @@ Still no UI for queries — that's M5.
 - ~~Q-16~~ — Retired by D17 (FileSystemProvider).
 
 **Resolver**
-- Q-13 — ESV reference detection: regex over script bodies vs AST (M3+)?
+- ~~Q-13~~ — Retired by D20 (regex first, AST upgrade if needed).
 - Q-14 — `_action=nextdescendents` bulk-fetch shortcut: viable? (still to POC)
 - Q-15 — Import connections from sibling `paicLogSearch.environments`?
 

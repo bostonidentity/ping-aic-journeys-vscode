@@ -52,7 +52,9 @@ function journey(over: Partial<Journey> = {}): Journey {
     nodes: {
       n1: { nodeType: "ScriptedDecisionNode", connections: { true: "n2", false: "n3" } },
       n2: { nodeType: "InnerTreeEvaluatorNode", connections: {} },
-      n3: { nodeType: "PageNode", connections: {} },
+      // Use a kind that's not registered in nodeTypes to verify the
+      // unknown-kind → "Other" fallback path.
+      n3: { nodeType: "UsernameCollectorNode", connections: {} },
     },
     ...over,
   };
@@ -150,5 +152,72 @@ describe("JourneyDiagram", () => {
     fireEvent.click(screen.getByTestId("rf-node-n3"));
     expect(onNavigate).not.toHaveBeenCalled();
     expect(onOpenBody).not.toHaveBeenCalled();
+  });
+
+  it("maps PageNode to the PageNode rf-type (not Other)", () => {
+    render(
+      <JourneyDiagram
+        journey={{
+          id: "Login",
+          enabled: true,
+          entryNodeId: "p1",
+          nodes: { p1: { nodeType: "PageNode", connections: {} } },
+        }}
+        nodeIndex={{
+          p1: { kind: "theme", themeId: "theme-1", uid: "theme:h:alpha:theme-1" },
+        }}
+        host={HOST}
+        realm={REALM}
+        onNavigate={noop}
+        onOpenBody={noop}
+      />,
+    );
+    expect(screen.getByTestId("rf-node-p1").getAttribute("data-rf-type")).toBe("PageNode");
+  });
+
+  it("clicking a ConfigProviderNode with kind:script calls onOpenBody with its scriptId", () => {
+    const onOpenBody = vi.fn();
+    render(
+      <JourneyDiagram
+        journey={{
+          id: "Login",
+          enabled: true,
+          entryNodeId: "c1",
+          nodes: { c1: { nodeType: "ConfigProviderNode", connections: {} } },
+        }}
+        nodeIndex={{
+          c1: { kind: "script", scriptId: "s-cfg" },
+        }}
+        host={HOST}
+        realm={REALM}
+        onNavigate={noop}
+        onOpenBody={onOpenBody}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("rf-node-c1"));
+    expect(onOpenBody).toHaveBeenCalledWith(HOST, REALM, "s-cfg");
+  });
+
+  it("clicking a PageNode with kind:theme calls onNavigate with the theme uid", () => {
+    const onNavigate = vi.fn();
+    render(
+      <JourneyDiagram
+        journey={{
+          id: "Login",
+          enabled: true,
+          entryNodeId: "p1",
+          nodes: { p1: { nodeType: "PageNode", connections: {} } },
+        }}
+        nodeIndex={{
+          p1: { kind: "theme", themeId: "theme-1", uid: "theme:h:alpha:theme-1" },
+        }}
+        host={HOST}
+        realm={REALM}
+        onNavigate={onNavigate}
+        onOpenBody={noop}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("rf-node-p1"));
+    expect(onNavigate).toHaveBeenCalledWith("theme:h:alpha:theme-1");
   });
 });

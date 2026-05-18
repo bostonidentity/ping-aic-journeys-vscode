@@ -198,4 +198,133 @@ describe("PaicClient", () => {
       body: source,
     });
   });
+
+  it("getTheme fetches the whole themerealm config and filters by realm + id", async () => {
+    fake.enqueueGet({
+      realms: {
+        alpha: {
+          themes: [
+            { _id: "theme-1", name: "Default" },
+            { _id: "theme-2", name: "Custom" },
+          ],
+        },
+        beta: { themes: [{ _id: "theme-3", name: "Other" }] },
+      },
+    });
+    const found = await client.getTheme("alpha", "theme-2");
+    expect(fake.calls[0].url).toBe("/openidm/config/ui/themerealm");
+    expect(found).toEqual({ id: "theme-2", name: "Custom", realm: "alpha" });
+
+    fake.enqueueGet({
+      realms: { alpha: { themes: [{ _id: "theme-1", name: "Default" }] } },
+    });
+    const miss = await client.getTheme("alpha", "no-such-theme");
+    expect(miss).toBeNull();
+  });
+
+  it("getEmailTemplate fetches /openidm/config/emailTemplate/<name> and maps the result", async () => {
+    fake.enqueueGet({
+      _id: "emailTemplate/welcome",
+      enabled: true,
+      from: "noreply@example.com",
+      subject: { en: "Hi" },
+    });
+    const t = await client.getEmailTemplate("welcome");
+    expect(fake.calls[0].url).toBe("/openidm/config/emailTemplate/welcome");
+    expect(t).toEqual({
+      name: "welcome",
+      enabled: true,
+      from: "noreply@example.com",
+      subject: { en: "Hi" },
+      message: undefined,
+    });
+  });
+
+  it("listSocialIdps POSTs _action=nextdescendents and maps the result array", async () => {
+    fake.enqueuePost({
+      result: [
+        { _id: "google-oidc", _type: { _id: "googleSocialAuthentication" }, enabled: true },
+        { _id: "apple-oidc", _type: { _id: "appleSocialAuthentication" }, enabled: false },
+      ],
+    });
+    const idps = await client.listSocialIdps("alpha");
+    expect(fake.calls[0].method).toBe("POST");
+    expect(fake.calls[0].url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/services/SocialIdentityProviders?_action=nextdescendents",
+    );
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(idps).toEqual([
+      { name: "google-oidc", type: "googleSocialAuthentication", enabled: true, realm: "alpha" },
+      { name: "apple-oidc", type: "appleSocialAuthentication", enabled: false, realm: "alpha" },
+    ]);
+  });
+
+  it("getSocialIdp delegates to listSocialIdps and returns the matching entry", async () => {
+    fake.enqueuePost({
+      result: [
+        { _id: "google-oidc", _type: { _id: "googleSocialAuthentication" }, enabled: true },
+        { _id: "apple-oidc", _type: { _id: "appleSocialAuthentication" }, enabled: false },
+      ],
+    });
+    const idp = await client.getSocialIdp("alpha", "apple-oidc");
+    expect(idp).toEqual({
+      name: "apple-oidc",
+      type: "appleSocialAuthentication",
+      enabled: false,
+      realm: "alpha",
+    });
+  });
+
+  it("getSocialIdp returns null when no IdP with that name exists in the realm", async () => {
+    fake.enqueuePost({
+      result: [{ _id: "google-oidc", _type: { _id: "googleSocialAuthentication" }, enabled: true }],
+    });
+    const idp = await client.getSocialIdp("alpha", "nonexistent");
+    expect(idp).toBeNull();
+  });
+
+  it("getEsv tries /environment/variables/<name> first; returns mapped variable on hit", async () => {
+    fake.enqueueGet({
+      _id: "esv/variables/PUBLIC_URL",
+      description: "Public URL",
+      expressionType: "string",
+    });
+    const got = await client.getEsv("PUBLIC_URL");
+    expect(fake.calls[0].url).toBe("/environment/variables/PUBLIC_URL");
+    expect(fake.calls[0].apiVersion).toBe("protocol=1.0,resource=1.0");
+    expect(got).toEqual({
+      kind: "variable",
+      name: "PUBLIC_URL",
+      description: "Public URL",
+      expressionType: "string",
+      lastChangeDate: undefined,
+    });
+  });
+
+  it("getScriptByName queries by name and returns the first mapped result (or null)", async () => {
+    const source = "exports.help = function(){};";
+    // First call — hit.
+    fake.enqueueGet({
+      result: [
+        {
+          _id: "s-lib",
+          name: "helpers",
+          language: "JAVASCRIPT",
+          script: Buffer.from(source, "utf8").toString("base64"),
+        },
+      ],
+      pagedResultsCookie: null,
+    });
+    const hit = await client.getScriptByName("alpha", "helpers");
+    expect(fake.calls[0].url).toContain("/am/json/realms/root/realms/alpha/scripts?");
+    // URLSearchParams encodes the quotes; either `%22` or `+` between tokens is OK.
+    expect(fake.calls[0].url).toContain("name+eq+%22helpers%22");
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.0,resource=1.0");
+    expect(hit).toEqual({ id: "s-lib", name: "helpers", language: "JAVASCRIPT", body: source });
+
+    // Second call — miss (empty result array).
+    fake.enqueueGet({ result: [], pagedResultsCookie: null });
+    const miss = await client.getScriptByName("alpha", "nope");
+    expect(miss).toBeNull();
+  });
 });

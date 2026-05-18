@@ -137,15 +137,90 @@ Tech locked: **D17** (script body via `vscode.FileSystemProvider`) and **D18** (
 - [x] Diagram node hover → full schema tooltip — `NodeInfo` extended with `outcomes` / `inputs` / `outputs` / `rawNodeType`; populated by `panel.ts:sendJourneyDeps`; rendered as native browser `title` attribute via the new shared `buildNodeTooltip` helper. Browser tooltip is dependency-free and keyboard-accessible.
 
 
-## M3 — Wider dependency kinds ⏳
+## M3 — Wider dependency kinds ⏳ (current)
 
-- [ ] Resolver: `require()` extraction → library scripts
-- [ ] Resolver: `&{esv...}` and `systemEnv.X` extraction → ESVs (Q-13)
-- [ ] Node-type table expands: `ConfigProviderNode`, `ClientScriptNode`, `SocialProviderHandlerNode(V2)`, `PageNode`
-- [ ] Theme refs via `PageNode.stage`
-- [ ] Tree provider grows new node kinds (theme, ESV, library-script)
-- [ ] Detail panel grows kind-specific cards for each new node type
-- [ ] Expect first-click latency on journey expansion to grow (more script-body fetches); document acceptable bound
+Tech locked: **D19** (conditional script-ref predicate table) + **D20** (regex script-body parsing, AST upgrade if needed).
+
+### Node-payload widening (journey-level edges)
+
+#### Slice 1 — D19 predicate + script-bearing payload variants ✅
+
+- [x] `src/paic/script-ref-predicates.ts` (new) — `getScriptIdIfRef(payload): string | null`. Exhaustive switch (no `default`) over `NodePayload['nodeType']`; always-script kinds return `scriptId || null`, conditional kinds gate on the flag (`useScript` / `useFilterScript`), other kinds return null. TypeScript exhaustiveness check enforces drift-prevention as the union grows.
+- [x] `src/domain/types.ts` — `NodePayload` union extended with 6 new variants: `ClientScriptNodePayload`, `ConfigProviderNodePayload`, `SocialProviderHandlerNodePayload`, `SocialProviderHandlerNodeV2Payload`, `DeviceMatchNodePayload`, `PingOneVerifyCompletionDecisionNodePayload`. Social variants also carry `filteredProviders: string[]`. Conditional variants carry their flag + optional `scriptId` (stale values preserved; predicate gates activation).
+- [x] `src/paic/mappers.ts` — `mapNodePayload` extended with branches for all 6 new types. `RawNodePayload` interface gains `useScript`, `useFilterScript`, `filteredProviders` fields.
+- [x] `src/views/nodes/journey-expand.ts` — script-discovery branch now calls `getScriptIdIfRef(p)` instead of hard-coding `ScriptedDecisionNode`. Single behavioral change: any of the 7 script-bearing node types now emits a `ScriptNode` child in the tree.
+- [x] 15 new tests: 8 in `tests/paic/script-ref-predicates.test.ts` (every branch incl. conditional on/off + null kinds), 6 in `tests/paic/mappers.test.ts` (one per new variant + the V2 missing-field case), 1 in `tests/views/nodes/journey.test.ts` (ClientScriptNode emits a ScriptNode child).
+
+#### Slice 4 — diagram custom-node components + NodeInfo widening + PageNode container walk ✅
+
+- [x] `src/webview/messages.ts` — `NodeInfo.kind` widened to `"script" | "inner" | "theme" | "emailTemplate" | "socialIdp" | "other"`; added optional fields `themeId`, `emailTemplateName`, `socialIdpNames`, `useScript`.
+- [x] `src/webview/inspector/ui/diagram/nodes/{PageNode,EmailNode,SocialProviderHandlerNode,SelectIdPNode,DeviceMatchNode,ConfigProviderNode,ClientScriptNode,PingOneVerifyCompletionDecisionNode}View.tsx` — 8 new ReactFlow node components (the catch-all `OtherNodeView` is now reserved for genuinely unknown AIC kinds only).
+- [x] `src/webview/inspector/ui/diagram/nodes/tooltip.ts` — `buildNodeTooltip` extended for the 4 new `kind` values + the conditional-kind `useScript=false` decorator + SocialProviderHandler*-style entries (script + IdPs surface both lines).
+- [x] `src/webview/inspector/ui/diagram/JourneyDiagram.tsx` — registers all 8 new node types; `rfNodeType()` now uses a `keyof` lookup. `onNodeClick` priority chain: script → inner → theme → emailTemplate → socialIdp.
+- [x] `src/webview/inspector/panel.ts` — `sendJourneyDeps` now builds `nodeIndex` via the new `buildNodeInfo` helper (extracted at the bottom of the file). Three new uid-lookup maps (`themeUidById`, `emailUidByName`, `idpUidByName`) populated alongside the existing two; CSS rules added for 8 new view variants (`page`/`email`/`social`/`select-idp`/`device-match`/`config-provider`/`client-script`/`verify`).
+- [x] `src/views/nodes/journey-expand.ts` — single-level **PageNode container walk**: after the top-level payload fetch, scan `PageNode.childRefs` and fetch each via `getNode` (concurrency-capped at 10). Merged children's payloads land in `payloadsByNodeId` so nested ScriptedDecisionNodes / InnerTreeEvaluatorNodes surface as journey-level deps. Failures logged + skipped (no throw).
+- [x] 24 new test outcomes across 8 component smoke tests, the `tooltip.test.ts` (5 cases), 3 `JourneyDiagram` extensions, 1 panel-test extension, and 2 `journey-expand` container-walk cases. Total 204 → 228.
+- [x] `/check fast` + `/check all` green; `npm run build` → `out/webview.js` 851 KB + `out/webview.css` 8.5 KB.
+- [x] Lint clean (0 errors, 126 documented warnings — AIC wire-protocol underscore fields + biome `noSecrets` false-positives on AIC node-type name strings + cognitive complexity on the grown payload-mapping switch).
+
+#### Slice 3 — journey-level new leaves (theme / email-template / social-idp) ✅
+
+- [x] `src/paic/mappers.ts` — `PageNode` variant: `childRefs[]` (inline child-node refs preserved) + parsed `stage.themeId` (JSON + legacy `themeId=` forms).
+- [x] `src/paic/mappers.ts` — `EmailSuspendNode` / `EmailTemplateNode` variants: `emailTemplateName: string`.
+- [x] `src/paic/mappers.ts` — `SelectIdPNode` variant: `filteredProviders: string[]`.
+- [x] `src/paic/mappers.ts` — `mapTheme`, `mapEmailTemplate`, `mapSocialIdp`, `mapEsvVariable`, `mapEsvSecret` (with their `Raw*` shapes).
+- [x] `src/domain/types.ts` — 4 new payload variants + 4 new resource types (`Theme`, `EmailTemplate`, `SocialIdp`, `Esv = EsvVariable | EsvSecret`).
+- [x] `src/paic/client.ts` — `getTheme(realm, themeId)` (IDM `/openidm/config/ui/themerealm` whole-config + client filter), `getEmailTemplate(name)` (IDM `/openidm/config/emailTemplate/<name>`, 404 → null), `listSocialIdps(realm)` (AM `_action=nextdescendents` POST), `getEsv(name)` (variables-then-secrets fall-through).
+- [x] `src/views/nodes/{theme,email-template,social-idp}.ts` — three new leaf classes, each with kind-specific icon + tooltip.
+- [x] `src/views/nodes/journey-expand.ts` — 3 new emission branches (theme via PageNode.stage, email-template via EmailSuspend/Template, social-idp via SocialProviderHandler*/SelectIdP filteredProviders). All deduped per-realm.
+- [x] `src/webview/messages.ts` — `SelectPayload` widened with `theme` / `emailTemplate` / `socialIdp` kinds; `journeyDeps` E2W extended with `themes` / `emailTemplates` / `socialIdps` NodeRef arrays; `NodeRef.kind` union widened.
+- [x] `src/webview/inspector/panel.ts` — `toSelectPayload` resolves Theme / EmailTemplate / SocialIdp / Esv resources via the new client methods (graceful name-only fallback on miss); `sendJourneyDeps` emits the new NodeRef arrays.
+- [x] `src/webview/inspector/ui/App.tsx` — routes the 3 new card kinds; `JourneyDepsState` widened.
+- [x] `src/webview/inspector/ui/cards/ThemeCard.tsx`, `EmailTemplateCard.tsx`, `SocialIdpCard.tsx` (new); `EsvCard.tsx` rewritten to render resolved metadata (variable expression type, secret encoding, description, lastChangeDate).
+- [x] `JourneyCard.tsx` deps block refactored — single `DepsSection` helper now emits Scripts / Inner journeys / Themes / Email templates / Social IdPs subsections.
+- [x] 30 new test outcomes across 8 mapper + 4 client + 3 journey-expand + 3 leaf-class + 4 card + 1 panel + 7 prior fixture updates. Total 174 → 204.
+
+### New PAIC client methods
+
+- [x] `src/paic/client.ts` — `getEmailTemplate(name) → EmailTemplate | null` (IDM `/openidm/config/emailTemplate/<name>`, 404 → null). Slice 3.
+- [x] `src/paic/client.ts` — `getSocialIdp(realm, name) → SocialIdp | null` — thin wrapper around `listSocialIdps` + filter (AIC's direct lookup requires `(type, name)` which our callers don't carry). Slice 4 follow-up.
+- [x] `src/paic/client.ts` — `getTheme(realm, themeId) → Theme | null` (IDM `/openidm/config/ui/themerealm` whole-config + client filter). Slice 3.
+- [x] `src/paic/client.ts` — `getEsv(name) → Esv | null` (tries `/environment/variables/<name>`, falls back to `/environment/secrets/<name>` on 404). Slice 3.
+- [ ] `listEsvs()` for the realm-index — explicitly deferred to **M4** (RealmIndex needs it; inspector cards don't).
+- [x] Library scripts reuse `getScript`-shaped fetch — Slice 2 uses `getScriptByName(realm, name)` which returns the full `Script` via `mapScript`, including the base64-decoded body. (`script.context === "LIBRARY"` distinction is informational only — the wire shape is identical to a non-library script.)
+
+### Script-body parsing (script-level edges, D20) ✅ — Slice 2
+
+- [x] `src/resolver/script-body-parser.ts` — `extractScriptBodyRefs(body): { libraryScripts: string[]; esvs: string[] }`. Single regex set: `require('<name>')` (both quote styles, whitespace-tolerant), `&{esv.<NAME>}`, `systemEnv.<NAME>`. Returns deduped + sorted arrays. 9 unit tests cover every form + the dedup paths.
+- [x] `src/paic/client.ts` — `getScriptByName(realm, name): Promise<Script | null>`. Uses `_queryFilter=name eq "<name>"` against `/am/json/<realmPath>/scripts`. Returns first result mapped via `mapScript`, or null on miss. Frodo's `scriptQueryURLTemplate` shape verbatim.
+- [x] `src/views/nodes/script-expand.ts` — shared `expandScript({host, realm, body, selfKey, visited, cache, log, parent})` helper. Resolves `require()` names → UUIDs via concurrency-capped `getScriptByName` (cap=10), emits `LibraryScriptNode` for hits, `MessageNode("[cycle: <name>]")` when the name is in `visited`, `MessageNode("[missing library: <name>]")` for misses. Emits one `EsvNode` per unique ESV reference.
+- [x] `src/views/nodes/script.ts` — `ScriptNode` collapsible (Collapsed by default). New `ensureBody()` lazy-fetches + caches the script body (shared in-flight Promise). `loadChildren()` runs `expandScript`. `refresh()` clears the body cache. New `visited?: readonly string[]` parameter, default `[]`.
+- [x] `src/views/nodes/library-script.ts` — `LibraryScriptNode` constructed with body in hand (avoids a second `getScript` fetch since `getScriptByName` already returned it). Same `expandScript` recursion + `visited` cycle-guard pattern.
+- [x] `src/views/nodes/esv.ts` — `EsvNode` (leaf, name only). Distinct icon (`symbol-variable`) + contextValue (`esv`). M3 polish adds `getEsv` metadata fetch.
+
+### Other new tree-node classes (journey-level deps)
+
+- [x] `src/views/nodes/theme.ts` — `ThemeNode` (leaf, journey-level). Slice 3.
+- [x] `src/views/nodes/email-template.ts` — `EmailTemplateNode` (leaf, journey-level). Slice 3.
+- [x] `src/views/nodes/social-idp.ts` — `SocialIdpNode` (leaf, journey-level). Slice 3.
+
+### Inspector cards + diagram (partial — Slice 2 ships script-shaped, Slice 3 ships journey-shaped)
+
+- [x] `src/webview/messages.ts` — extended `SelectPayload` with `libraryScript` + `esv` kinds; extended `E2W` with `scriptDeps` message; `NodeRef.kind` widened. `isE2W` guard updated.
+- [x] `src/webview/inspector/panel.ts` — `toSelectPayload` handles `LibraryScriptNode` + `EsvNode`. New `sendScriptDeps(node)` mirrors `sendJourneyDeps`. `show()` routes script-shaped selections to it.
+- [x] `src/webview/inspector/ui/App.tsx` — second deps state slot (`scriptDeps`) + new card-kind routing.
+- [x] `src/webview/inspector/ui/cards/ScriptCard.tsx` — adds optional `deps` + `onNavigate` props; renders the shared `ScriptDepsBlock` (library scripts + ESVs as clickable links). `ScriptDepsBlock` exported for reuse.
+- [x] `src/webview/inspector/ui/cards/LibraryScriptCard.tsx` — new card; mirrors `ScriptCard` with the "Library script" badge + same deps block + same Open-body-in-editor action (works against the M2 `paic-script://` URI).
+- [x] `src/webview/inspector/ui/cards/EsvCard.tsx` — new card; metadata only at Slice 2 (hint about resolution coming in M3 polish).
+- [x] New cards: `ThemeCard`, `EmailTemplateCard`, `SocialIdpCard` — Slice 3.
+- [x] Diagram custom-node components replace the `Other` fallback for: `PageNode`, `EmailSuspendNode`/`EmailTemplateNode`, `SocialProviderHandlerNode*`, `SelectIdPNode`, `DeviceMatchNode`, `ConfigProviderNode`, `ClientScriptNode`, `PingOneVerifyCompletionDecisionNode` — Slice 4.
+- [x] `panel.ts:sendJourneyDeps` — `nodeIndex` extended with the new kinds (`emailTemplate`, `socialIdp`, `theme`) via the `buildNodeInfo` helper — Slice 4.
+
+### Notes / non-goals for M3
+
+- [ ] First-click latency on journey expansion grows (PageNode container walk adds one extra `getNode` per child ref). Needs a live-tenant measurement pass against sb3 to record the actual range — not blocking the M3 commit; will be recorded here once captured.
+- **Deferred** to a later milestone: `product-Saml2Node` (SAML2 entities + circles of trust — narrower customer segment, needs two-fetch resolution); `designer-*` custom marketplace nodes (minority of customers).
+- **Deferred to M4**: `listEsvs()` for the realm-index scan — only the RealmIndex needs it; inspector cards already use `getEsv(name)`.
 
 ## M4 — RealmIndex background scan ⏳
 

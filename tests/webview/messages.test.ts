@@ -66,6 +66,9 @@ describe("messages protocol", () => {
       uid: "u3",
       scripts: [],
       inners: [],
+      themes: [],
+      emailTemplates: [],
+      socialIdps: [],
       nodeIndex: {},
     };
     const err: E2W = { type: "error", message: "boom" };
@@ -103,6 +106,13 @@ describe("messages protocol", () => {
       uid: "u3",
       scripts: [{ uid: "script:h:alpha:s-1", label: "s-1", kind: "script" }],
       inners: [{ uid: "inner:h:alpha:Inner:Login", label: "Inner", kind: "innerJourney" }],
+      themes: [{ uid: "theme:h:alpha:t1", label: "t1", kind: "theme" }],
+      emailTemplates: [
+        { uid: "email-template:h:alpha:Welcome", label: "Welcome", kind: "emailTemplate" },
+      ],
+      socialIdps: [
+        { uid: "social-idp:h:alpha:google-oidc", label: "google-oidc", kind: "socialIdp" },
+      ],
       nodeIndex: {
         n1: { kind: "script", scriptId: "s-1", uid: "script:h:alpha:s-1" },
         n2: { kind: "inner", innerTreeId: "Inner", uid: "inner:h:alpha:Inner:Login" },

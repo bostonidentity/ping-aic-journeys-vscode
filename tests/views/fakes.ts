@@ -1,5 +1,14 @@
 import { vi } from "vitest";
-import type { Journey, NodePayload, Realm, Script } from "@/domain/types";
+import type {
+  EmailTemplate,
+  Esv,
+  Journey,
+  NodePayload,
+  Realm,
+  Script,
+  SocialIdp,
+  Theme,
+} from "@/domain/types";
 import type { PaicClient } from "@/paic/client";
 import type { ClientCache } from "@/tenants/client-cache";
 
@@ -12,6 +21,16 @@ export interface FakePaicClientData {
   /** Key format: `${realm}:${nodeType}:${nodeId}` */
   nodesByKey?: Record<string, NodePayload>;
   scriptsByKey?: Record<string, Script>;
+  /** Key format: `${realm}:byName:${name}` — for `getScriptByName` resolution. */
+  scriptsByName?: Record<string, Script>;
+  /** Key format: `${realm}:${themeId}`. */
+  themesByKey?: Record<string, Theme>;
+  /** Key = template name. */
+  emailTemplatesByName?: Record<string, EmailTemplate>;
+  /** Key = realm. Full list returned by `listSocialIdps(realm)`. */
+  socialIdpsByRealm?: Record<string, SocialIdp[]>;
+  /** Key = ESV name. */
+  esvsByName?: Record<string, Esv>;
 }
 
 export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
@@ -34,6 +53,28 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
       const s = data.scriptsByKey?.[key];
       if (!s) return Promise.reject(new Error(`no fixture for getScript(${key})`));
       return Promise.resolve(s);
+    }),
+    getScriptByName: vi.fn((realm: string, name: string) => {
+      const key = `${realm}:byName:${name}`;
+      // Returning null mirrors the real client's "miss" — caller emits a
+      // `[missing library: <name>]` MessageNode rather than throwing.
+      return Promise.resolve(data.scriptsByName?.[key] ?? null);
+    }),
+    getTheme: vi.fn((realm: string, themeId: string) => {
+      return Promise.resolve(data.themesByKey?.[`${realm}:${themeId}`] ?? null);
+    }),
+    getEmailTemplate: vi.fn((name: string) => {
+      return Promise.resolve(data.emailTemplatesByName?.[name] ?? null);
+    }),
+    listSocialIdps: vi.fn((realm: string) => {
+      return Promise.resolve(data.socialIdpsByRealm?.[realm] ?? []);
+    }),
+    getSocialIdp: vi.fn((realm: string, name: string) => {
+      const all = data.socialIdpsByRealm?.[realm] ?? [];
+      return Promise.resolve(all.find((i) => i.name === name) ?? null);
+    }),
+    getEsv: vi.fn((name: string) => {
+      return Promise.resolve(data.esvsByName?.[name] ?? null);
     }),
   };
 }

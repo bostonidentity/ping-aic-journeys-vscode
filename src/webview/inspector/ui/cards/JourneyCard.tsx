@@ -4,6 +4,9 @@ import { JourneyDiagram } from "../diagram/JourneyDiagram";
 export interface JourneyCardDeps {
   scripts: NodeRef[];
   inners: NodeRef[];
+  themes: NodeRef[];
+  emailTemplates: NodeRef[];
+  socialIdps: NodeRef[];
   nodeIndex: Record<string, NodeInfo>;
 }
 
@@ -81,43 +84,54 @@ export function DepsBlock({ deps, onNavigate }: DepsProps) {
       </section>
     );
   }
-  if (deps.scripts.length === 0 && deps.inners.length === 0) {
+  const total =
+    deps.scripts.length +
+    deps.inners.length +
+    deps.themes.length +
+    deps.emailTemplates.length +
+    deps.socialIdps.length;
+  if (total === 0) {
     return (
       <section className="deps-empty">
-        <em>No script or inner-tree dependencies.</em>
+        <em>No dependencies discovered.</em>
       </section>
     );
   }
   return (
     <section className="deps">
-      {deps.scripts.length > 0 ? (
-        <>
-          <h2>Scripts ({deps.scripts.length})</h2>
-          <ul>
-            {deps.scripts.map((s) => (
-              <li key={s.uid}>
-                <button type="button" className="link" onClick={() => onNavigate(s.uid)}>
-                  {s.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-      {deps.inners.length > 0 ? (
-        <>
-          <h2>Inner journeys ({deps.inners.length})</h2>
-          <ul>
-            {deps.inners.map((i) => (
-              <li key={i.uid}>
-                <button type="button" className="link" onClick={() => onNavigate(i.uid)}>
-                  {i.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+      <DepsSection title="Scripts" items={deps.scripts} onNavigate={onNavigate} />
+      <DepsSection title="Inner journeys" items={deps.inners} onNavigate={onNavigate} />
+      <DepsSection title="Themes" items={deps.themes} onNavigate={onNavigate} />
+      <DepsSection title="Email templates" items={deps.emailTemplates} onNavigate={onNavigate} />
+      <DepsSection title="Social IdPs" items={deps.socialIdps} onNavigate={onNavigate} />
     </section>
+  );
+}
+
+function DepsSection({
+  title,
+  items,
+  onNavigate,
+}: {
+  title: string;
+  items: NodeRef[];
+  onNavigate: (uid: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <>
+      <h2>
+        {title} ({items.length})
+      </h2>
+      <ul>
+        {items.map((i) => (
+          <li key={i.uid}>
+            <button type="button" className="link" onClick={() => onNavigate(i.uid)}>
+              {i.label}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

@@ -1,4 +1,15 @@
-import type { Journey, NodePayload, NodeRef, Realm, Script } from "../domain/types";
+import type {
+  EmailTemplate,
+  EsvSecret,
+  EsvVariable,
+  Journey,
+  NodePayload,
+  NodeRef,
+  Realm,
+  Script,
+  SocialIdp,
+  Theme,
+} from "../domain/types";
 
 // ─── Realm ─────────────────────────────────────────────────────────────────
 
@@ -73,6 +84,16 @@ export interface RawNodePayload {
   outcomes?: string[];
   inputs?: string[];
   outputs?: string[];
+  /** Conditional-script flags (D19). */
+  useScript?: unknown;
+  useFilterScript?: unknown;
+  /** Social-handler / SelectIdP — string array of social IdP names. */
+  filteredProviders?: unknown;
+  /** EmailSuspend / EmailTemplate node — IDM email-template id. */
+  emailTemplateName?: unknown;
+  /** PageNode — freeform string (JSON or `themeId=<id>`) encoding the
+   * page-level theme override + (we don't read it) the localized page header. */
+  stage?: unknown;
   [key: string]: unknown;
 }
 
@@ -98,12 +119,103 @@ export function mapNodePayload(raw: RawNodePayload): NodePayload {
     };
   }
 
+  // M3 Slice 1 — always-script-bearing kinds (D19).
+  if (nodeType === "ClientScriptNode" || nodeType === "ConfigProviderNode") {
+    return {
+      id: raw._id,
+      nodeType,
+      scriptId: typeof raw.script === "string" ? raw.script : "",
+    };
+  }
+  if (nodeType === "SocialProviderHandlerNode" || nodeType === "SocialProviderHandlerNodeV2") {
+    const filteredProviders = Array.isArray(raw.filteredProviders)
+      ? raw.filteredProviders.filter((s): s is string => typeof s === "string")
+      : [];
+    return {
+      id: raw._id,
+      nodeType,
+      scriptId: typeof raw.script === "string" ? raw.script : "",
+      filteredProviders,
+    };
+  }
+
+  // M3 Slice 1 — conditional-script kinds (D19).
+  if (nodeType === "DeviceMatchNode") {
+    return {
+      id: raw._id,
+      nodeType: "DeviceMatchNode",
+      useScript: raw.useScript === true,
+      scriptId: typeof raw.script === "string" ? raw.script : undefined,
+    };
+  }
+  // biome-ignore lint/security/noSecrets: AIC node type name, not a secret
+  if (nodeType === "PingOneVerifyCompletionDecisionNode") {
+    return {
+      id: raw._id,
+      // biome-ignore lint/security/noSecrets: AIC node type name, not a secret
+      nodeType: "PingOneVerifyCompletionDecisionNode",
+      useFilterScript: raw.useFilterScript === true,
+      scriptId: typeof raw.script === "string" ? raw.script : undefined,
+    };
+  }
+
+  // M3 Slice 3 — journey-level new-leaf carriers.
+  if (nodeType === "PageNode") {
+    const childRefs = Array.isArray(raw.nodes)
+      ? (raw.nodes as unknown[])
+          .filter((n): n is { _id: unknown; nodeType: unknown } => !!n && typeof n === "object")
+          .map((n) => ({ id: String(n._id ?? ""), nodeType: String(n.nodeType ?? "") }))
+          .filter((n) => n.id && n.nodeType)
+      : [];
+    return {
+      id: raw._id,
+      nodeType: "PageNode",
+      themeId: parseStageForThemeId(raw.stage),
+      childRefs,
+    };
+  }
+  if (nodeType === "EmailSuspendNode" || nodeType === "EmailTemplateNode") {
+    return {
+      id: raw._id,
+      nodeType,
+      emailTemplateName: typeof raw.emailTemplateName === "string" ? raw.emailTemplateName : "",
+    };
+  }
+  if (nodeType === "SelectIdPNode") {
+    const filteredProviders = Array.isArray(raw.filteredProviders)
+      ? raw.filteredProviders.filter((s): s is string => typeof s === "string")
+      : [];
+    return { id: raw._id, nodeType: "SelectIdPNode", filteredProviders };
+  }
+
   return {
     id: raw._id,
     nodeType: "other",
     rawNodeType: nodeType,
     raw: raw as Record<string, unknown>,
   };
+}
+
+/** Parse `PageNode.stage`. AIC stores the page's theme override as either
+ * a JSON object (`{"themeId":"<uuid>", …}`) or a legacy `themeId=<uuid>`
+ * string. Returns the themeId, or undefined if neither form is present. */
+function parseStageForThemeId(stage: unknown): string | undefined {
+  if (typeof stage !== "string" || !stage) return undefined;
+  try {
+    const parsed = JSON.parse(stage) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "themeId" in parsed &&
+      typeof (parsed as { themeId: unknown }).themeId === "string"
+    ) {
+      return (parsed as { themeId: string }).themeId;
+    }
+  } catch {
+    // not JSON — fall through to legacy form
+  }
+  if (stage.startsWith("themeId=")) return stage.slice("themeId=".length);
+  return undefined;
 }
 
 // ─── Script ────────────────────────────────────────────────────────────────
@@ -134,4 +246,96 @@ function decodeScriptBody(b64: string | undefined): string {
     // If decoding throws for any reason, fall through to raw — better than empty.
     return b64;
   }
+}
+
+// ─── Theme ─────────────────────────────────────────────────────────────────
+
+/** A single theme inside `ui/themerealm.realms.<realm>.themes[]`. */
+export interface RawTheme {
+  _id?: string;
+  name?: string;
+}
+
+/** Full `ui/themerealm` document shape — IDM stores every realm's themes
+ * in one config entity. We filter by realm + id client-side. */
+export interface RawThemeRealmConfig {
+  realms?: Record<string, { themes?: RawTheme[] }>;
+}
+
+export function mapTheme(realm: string, raw: RawTheme): Theme {
+  return { id: raw._id ?? "", name: raw.name ?? "", realm };
+}
+
+// ─── Email template ───────────────────────────────────────────────────────
+
+export interface RawEmailTemplate {
+  _id?: string;
+  enabled?: boolean;
+  from?: string;
+  /** Localized subject per locale code (`en`, `fr`, …). */
+  subject?: Record<string, string>;
+  message?: Record<string, string>;
+}
+
+export function mapEmailTemplate(name: string, raw: RawEmailTemplate): EmailTemplate {
+  return {
+    name,
+    enabled: raw.enabled ?? false,
+    from: raw.from,
+    subject: raw.subject,
+    message: raw.message,
+  };
+}
+
+// ─── Social IdP ───────────────────────────────────────────────────────────
+
+export interface RawSocialIdp {
+  _id: string;
+  _type?: { _id?: string };
+  enabled?: boolean;
+}
+
+export function mapSocialIdp(realm: string, raw: RawSocialIdp): SocialIdp {
+  return {
+    name: raw._id,
+    type: raw._type?._id ?? "",
+    enabled: raw.enabled ?? false,
+    realm,
+  };
+}
+
+// ─── ESV ──────────────────────────────────────────────────────────────────
+
+export interface RawEsvVariable {
+  _id?: string;
+  description?: string;
+  expressionType?: string;
+  lastChangeDate?: string;
+}
+
+export interface RawEsvSecret {
+  _id?: string;
+  description?: string;
+  encoding?: string;
+  lastChangeDate?: string;
+}
+
+export function mapEsvVariable(name: string, raw: RawEsvVariable): EsvVariable {
+  return {
+    kind: "variable",
+    name,
+    description: raw.description,
+    expressionType: raw.expressionType,
+    lastChangeDate: raw.lastChangeDate,
+  };
+}
+
+export function mapEsvSecret(name: string, raw: RawEsvSecret): EsvSecret {
+  return {
+    kind: "secret",
+    name,
+    description: raw.description,
+    encoding: raw.encoding,
+    lastChangeDate: raw.lastChangeDate,
+  };
 }

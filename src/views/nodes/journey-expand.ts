@@ -1,10 +1,14 @@
 import type { Journey, NodePayload } from "../../domain/types";
 import { mapConcurrent } from "../../paic/concurrency";
+import { getScriptIdIfRef } from "../../paic/script-ref-predicates";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { MessageNode, type PaicNode } from "./base";
+import { EmailTemplateNode } from "./email-template";
 import { InnerJourneyNode } from "./inner-journey";
 import { ScriptNode } from "./script";
+import { SocialIdpNode } from "./social-idp";
+import { ThemeNode } from "./theme";
 
 /** Cap on parallel `getNode` fetches per journey expansion. POC-validated
  * against sb3's 84-journey alpha realm at 10. Q-6 may bump to 20 later. */
@@ -36,27 +40,112 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
     client.getNode(realm, ref.nodeType, nodeId),
   );
 
-  // Stash the per-node payloads on the parent so the inspector can build the
-  // journey-diagram's nodeIndex for click-to-drill. Structural check avoids
+  // Merge fetched payloads into a single id→payload map. Container-walked
+  // children (PageNode.childRefs) get appended below so the inspector + tree
+  // surface nested scripts/inners as journey-level deps.
+  const payloadById = new Map<string, NodePayload>(payloads.map((p, i) => [entries[i][0], p]));
+
+  // M3 Slice 4 — single-level PageNode container walk. For each PageNode's
+  // `childRefs`, fetch the child payload via `getNode` and merge into
+  // `payloadById` so the existing emission branches discover its deps.
+  // Nested PageNodes inside PageNodes are out-of-scope (dup-id guard makes
+  // them a no-op).
+  const childRefsToFetch: Array<{ id: string; nodeType: string }> = [];
+  for (const p of payloads) {
+    if (p.nodeType !== "PageNode") continue;
+    for (const ref of p.childRefs) {
+      if (!ref.id || !ref.nodeType) continue;
+      if (payloadById.has(ref.id)) continue;
+      childRefsToFetch.push(ref);
+    }
+  }
+  if (childRefsToFetch.length > 0) {
+    const childResults = await mapConcurrent(childRefsToFetch, CONCURRENCY, async (ref) => {
+      try {
+        const cp = await client.getNode(realm, ref.nodeType, ref.id);
+        return { ref, payload: cp };
+      } catch (err) {
+        childLog.warn(
+          {
+            event: "journey.expand.pageChildFetchFailed",
+            host,
+            realm,
+            journey: journey.id,
+            id: ref.id,
+            nodeType: ref.nodeType,
+            message: err instanceof Error ? err.message : String(err),
+          },
+          "Page child fetch failed — skipping",
+        );
+        return null;
+      }
+    });
+    for (const r of childResults) {
+      if (r) payloadById.set(r.ref.id, r.payload);
+    }
+  }
+
+  // Stash the merged per-node payloads on the parent so the inspector can build
+  // the journey-diagram's nodeIndex for click-to-drill. Structural check avoids
   // a value-cycle with `journey.ts` / `inner-journey.ts`.
   if (parent && "payloadsByNodeId" in parent) {
-    (parent as { payloadsByNodeId?: ReadonlyMap<string, NodePayload> }).payloadsByNodeId = new Map(
-      payloads.map((p, i) => [entries[i][0], p]),
-    );
+    (parent as { payloadsByNodeId?: ReadonlyMap<string, NodePayload> }).payloadsByNodeId =
+      payloadById;
   }
 
   const seenScripts = new Set<string>();
   const seenInners = new Set<string>();
+  const seenThemes = new Set<string>();
+  const seenEmails = new Set<string>();
+  const seenIdps = new Set<string>();
   const children: PaicNode[] = [];
-  for (const p of payloads) {
-    if (p.nodeType === "ScriptedDecisionNode" && p.scriptId && !seenScripts.has(p.scriptId)) {
-      seenScripts.add(p.scriptId);
-      children.push(new ScriptNode(host, realm, p.scriptId, cache, log, parent));
-    } else if (p.nodeType === "InnerTreeEvaluatorNode" && p.tree && !seenInners.has(p.tree)) {
+  for (const p of payloadById.values()) {
+    // Script edges (D19 predicate handles all 7 kinds).
+    const scriptId = getScriptIdIfRef(p);
+    if (scriptId && !seenScripts.has(scriptId)) {
+      seenScripts.add(scriptId);
+      children.push(new ScriptNode(host, realm, scriptId, cache, log, parent));
+    }
+
+    // Inner-tree edge.
+    if (p.nodeType === "InnerTreeEvaluatorNode" && p.tree && !seenInners.has(p.tree)) {
       seenInners.add(p.tree);
       children.push(
         new InnerJourneyNode(host, realm, p.tree, cache, log, [...visited, journey.id], parent),
       );
+    }
+
+    // M3 Slice 3 — theme edge via PageNode.stage.
+    if (p.nodeType === "PageNode" && p.themeId && !seenThemes.has(p.themeId)) {
+      seenThemes.add(p.themeId);
+      children.push(new ThemeNode(host, realm, p.themeId, cache, log, parent));
+    }
+
+    // M3 Slice 3 — email-template edge.
+    if (
+      (p.nodeType === "EmailSuspendNode" || p.nodeType === "EmailTemplateNode") &&
+      p.emailTemplateName &&
+      !seenEmails.has(p.emailTemplateName)
+    ) {
+      seenEmails.add(p.emailTemplateName);
+      children.push(new EmailTemplateNode(host, realm, p.emailTemplateName, cache, log, parent));
+    }
+
+    // M3 Slice 3 — social-idp edges (one node may emit multiple).
+    let filtered: readonly string[] | null = null;
+    if (
+      p.nodeType === "SocialProviderHandlerNode" ||
+      p.nodeType === "SocialProviderHandlerNodeV2" ||
+      p.nodeType === "SelectIdPNode"
+    ) {
+      filtered = p.filteredProviders;
+    }
+    if (filtered) {
+      for (const name of filtered) {
+        if (!name || seenIdps.has(name)) continue;
+        seenIdps.add(name);
+        children.push(new SocialIdpNode(host, realm, name, cache, log, parent));
+      }
     }
   }
 
@@ -69,12 +158,15 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
       nodes: entries.length,
       scripts: seenScripts.size,
       inners: seenInners.size,
+      themes: seenThemes.size,
+      email_templates: seenEmails.size,
+      social_idps: seenIdps.size,
     },
     "Journey expanded",
   );
 
   if (children.length === 0) {
-    return [new MessageNode("No script or inner-tree dependencies", "info")];
+    return [new MessageNode("No dependencies discovered", "info")];
   }
   return children;
 }

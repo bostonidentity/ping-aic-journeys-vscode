@@ -10,9 +10,17 @@ import "reactflow/dist/style.css";
 import type { Journey } from "../../../../domain/types";
 import type { NodeInfo } from "../../../messages";
 import { computeLayout, NODE_H, NODE_W } from "./layout";
+import { ClientScriptNodeView } from "./nodes/ClientScriptNodeView";
+import { ConfigProviderNodeView } from "./nodes/ConfigProviderNodeView";
+import { DeviceMatchNodeView } from "./nodes/DeviceMatchNodeView";
+import { EmailNodeView } from "./nodes/EmailNodeView";
 import { InnerTreeEvaluatorNodeView } from "./nodes/InnerTreeEvaluatorNodeView";
 import { OtherNodeView } from "./nodes/OtherNodeView";
+import { PageNodeView } from "./nodes/PageNodeView";
+import { PingOneVerifyCompletionDecisionNodeView } from "./nodes/PingOneVerifyCompletionDecisionNodeView";
 import { ScriptedDecisionNodeView } from "./nodes/ScriptedDecisionNodeView";
+import { SelectIdPNodeView } from "./nodes/SelectIdPNodeView";
+import { SocialProviderHandlerNodeView } from "./nodes/SocialProviderHandlerNodeView";
 
 interface Props {
   journey: Journey;
@@ -28,11 +36,21 @@ interface Props {
 const nodeTypes = {
   ScriptedDecisionNode: ScriptedDecisionNodeView,
   InnerTreeEvaluatorNode: InnerTreeEvaluatorNodeView,
+  PageNode: PageNodeView,
+  EmailSuspendNode: EmailNodeView,
+  EmailTemplateNode: EmailNodeView,
+  SocialProviderHandlerNode: SocialProviderHandlerNodeView,
+  SocialProviderHandlerNodeV2: SocialProviderHandlerNodeView,
+  SelectIdPNode: SelectIdPNodeView,
+  DeviceMatchNode: DeviceMatchNodeView,
+  ConfigProviderNode: ConfigProviderNodeView,
+  ClientScriptNode: ClientScriptNodeView,
+  PingOneVerifyCompletionDecisionNode: PingOneVerifyCompletionDecisionNodeView,
   Other: OtherNodeView,
 };
 
 function rfNodeType(aicType: string): keyof typeof nodeTypes {
-  if (aicType === "ScriptedDecisionNode" || aicType === "InnerTreeEvaluatorNode") return aicType;
+  if (aicType in nodeTypes) return aicType as keyof typeof nodeTypes;
   return "Other";
 }
 
@@ -68,6 +86,12 @@ export function JourneyDiagram({ journey, nodeIndex, host, realm, onNavigate, on
       if (info.kind === "script" && info.scriptId) {
         onOpenBody(host, realm, info.scriptId);
       } else if (info.kind === "inner" && info.uid) {
+        onNavigate(info.uid);
+      } else if (info.kind === "theme" && info.uid) {
+        onNavigate(info.uid);
+      } else if (info.kind === "emailTemplate" && info.uid) {
+        onNavigate(info.uid);
+      } else if (info.kind === "socialIdp" && info.uid) {
         onNavigate(info.uid);
       }
     },

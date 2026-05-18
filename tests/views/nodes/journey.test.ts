@@ -101,7 +101,7 @@ describe("JourneyNode", () => {
     const kids = await node.getChildren();
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(MessageNode);
-    expect(kids[0].label).toBe("No script or inner-tree dependencies");
+    expect(kids[0].label).toBe("No dependencies discovered");
   });
 
   it("refresh() clears the cache — next getChildren re-calls getNode", async () => {
@@ -114,5 +114,129 @@ describe("JourneyNode", () => {
     node.refresh();
     await node.getChildren();
     expect((client.getNode as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+  });
+
+  it("emits a ScriptNode for a ClientScriptNode (D19 predicate widens beyond ScriptedDecisionNode)", async () => {
+    const clientScriptPayload: NodePayload = {
+      id: "n1",
+      nodeType: "ClientScriptNode",
+      scriptId: "s-client",
+    };
+    const { node } = makeFixture("Login", {
+      n1: { nodeType: "ClientScriptNode", payload: clientScriptPayload },
+    });
+    const kids = await node.getChildren();
+    expect(kids).toHaveLength(1);
+    expect(kids[0]).toBeInstanceOf(ScriptNode);
+    expect((kids[0] as ScriptNode).scriptId).toBe("s-client");
+  });
+
+  it("emits a ThemeNode when a PageNode payload carries a themeId", async () => {
+    const { ThemeNode } = await import("@/views/nodes/theme");
+    const pagePayload: NodePayload = {
+      id: "n1",
+      nodeType: "PageNode",
+      themeId: "theme-1",
+      childRefs: [],
+    };
+    const { node } = makeFixture("Login", {
+      n1: { nodeType: "PageNode", payload: pagePayload },
+    });
+    const kids = await node.getChildren();
+    expect(kids).toHaveLength(1);
+    expect(kids[0]).toBeInstanceOf(ThemeNode);
+    expect((kids[0] as InstanceType<typeof ThemeNode>).themeId).toBe("theme-1");
+  });
+
+  it("emits an EmailTemplateNode when an EmailSuspendNode payload carries emailTemplateName", async () => {
+    const { EmailTemplateNode } = await import("@/views/nodes/email-template");
+    const emailPayload: NodePayload = {
+      id: "n1",
+      nodeType: "EmailSuspendNode",
+      emailTemplateName: "PasswordResetMail",
+    };
+    const { node } = makeFixture("Login", {
+      n1: { nodeType: "EmailSuspendNode", payload: emailPayload },
+    });
+    const kids = await node.getChildren();
+    expect(kids).toHaveLength(1);
+    expect(kids[0]).toBeInstanceOf(EmailTemplateNode);
+    expect((kids[0] as InstanceType<typeof EmailTemplateNode>).name).toBe("PasswordResetMail");
+  });
+
+  it("PageNode container walk — a nested ScriptedDecisionNode emits a journey-level ScriptNode", async () => {
+    // PageNode → childRefs includes a ScriptedDecisionNode → its script
+    // surfaces as a top-level ScriptNode child of the journey.
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "p1",
+      nodes: { p1: { nodeType: "PageNode", connections: {} } },
+    };
+    const nodesByKey: Record<string, NodePayload> = {
+      "alpha:PageNode:p1": {
+        id: "p1",
+        nodeType: "PageNode",
+        childRefs: [{ id: "child-sd", nodeType: "ScriptedDecisionNode" }],
+      },
+      "alpha:ScriptedDecisionNode:child-sd": scriptedDecisionPayload("child-sd", "s-nested"),
+    };
+    const client = makeFakePaicClient({ nodesByKey });
+    const cache = makeFakeCache(client);
+    const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
+    const kids = await node.getChildren();
+    const scriptKid = kids.find((k) => k instanceof ScriptNode) as ScriptNode | undefined;
+    expect(scriptKid).toBeDefined();
+    expect(scriptKid?.scriptId).toBe("s-nested");
+  });
+
+  it("PageNode container walk — a nested InnerTreeEvaluatorNode emits a journey-level InnerJourneyNode", async () => {
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "p1",
+      nodes: { p1: { nodeType: "PageNode", connections: {} } },
+    };
+    const nodesByKey: Record<string, NodePayload> = {
+      "alpha:PageNode:p1": {
+        id: "p1",
+        nodeType: "PageNode",
+        childRefs: [{ id: "child-it", nodeType: "InnerTreeEvaluatorNode" }],
+      },
+      "alpha:InnerTreeEvaluatorNode:child-it": innerTreePayload("child-it", "NestedInner"),
+    };
+    const client = makeFakePaicClient({ nodesByKey });
+    const cache = makeFakeCache(client);
+    const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
+    const kids = await node.getChildren();
+    const innerKid = kids.find((k) => k instanceof InnerJourneyNode) as
+      | InnerJourneyNode
+      | undefined;
+    expect(innerKid).toBeDefined();
+    expect(innerKid?.id).toBe("NestedInner");
+  });
+
+  it("emits one SocialIdpNode per unique filteredProvider, deduped across multiple nodes", async () => {
+    const { SocialIdpNode } = await import("@/views/nodes/social-idp");
+    const selectPayload: NodePayload = {
+      id: "n1",
+      nodeType: "SelectIdPNode",
+      filteredProviders: ["google-oidc", "apple-oidc"],
+    };
+    const handlerPayload: NodePayload = {
+      id: "n2",
+      nodeType: "SocialProviderHandlerNode",
+      scriptId: "s-social",
+      filteredProviders: ["google-oidc"], // overlaps with SelectIdPNode → dedup
+    };
+    const { node } = makeFixture("Login", {
+      n1: { nodeType: "SelectIdPNode", payload: selectPayload },
+      n2: { nodeType: "SocialProviderHandlerNode", payload: handlerPayload },
+    });
+    const kids = await node.getChildren();
+    const socialKids = kids.filter((k) => k instanceof SocialIdpNode);
+    expect(socialKids).toHaveLength(2);
+    const names = socialKids.map((k) => (k as InstanceType<typeof SocialIdpNode>).name).sort();
+    expect(names).toEqual(["apple-oidc", "google-oidc"]);
   });
 });

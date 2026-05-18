@@ -78,7 +78,14 @@ describe("InnerJourneyCard", () => {
     render(
       <InnerJourneyCard
         payload={placeholderPayload}
-        deps={{ scripts: [], inners: [], nodeIndex: {} }}
+        deps={{
+          scripts: [],
+          inners: [],
+          themes: [],
+          emailTemplates: [],
+          socialIdps: [],
+          nodeIndex: {},
+        }}
         onNavigate={noop}
         onOpenBody={noop}
       />,
@@ -90,7 +97,14 @@ describe("InnerJourneyCard", () => {
     render(
       <InnerJourneyCard
         payload={fullPayload}
-        deps={{ scripts: [], inners: [], nodeIndex }}
+        deps={{
+          scripts: [],
+          inners: [],
+          themes: [],
+          emailTemplates: [],
+          socialIdps: [],
+          nodeIndex,
+        }}
         onNavigate={noop}
         onOpenBody={noop}
       />,

@@ -2,7 +2,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ScriptCard } from "@/webview/inspector/ui/cards/ScriptCard";
-import type { SelectPayload } from "@/webview/messages";
+import type { NodeRef, SelectPayload } from "@/webview/messages";
 
 const baseline: Extract<SelectPayload, { kind: "script" }> = {
   kind: "script",
@@ -54,5 +54,24 @@ describe("ScriptCard", () => {
       "s-1",
       "JAVASCRIPT",
     );
+  });
+
+  it("renders the script-deps block with library + ESV links and fires onNavigate on click", () => {
+    const onNavigate = vi.fn();
+    const libs: NodeRef[] = [
+      { uid: "library-script:h:alpha:helpers:s-1", label: "helpers", kind: "libraryScript" },
+    ];
+    const esvs: NodeRef[] = [{ uid: "esv:h:alpha:PUBLIC_URL", label: "PUBLIC_URL", kind: "esv" }];
+    render(
+      <ScriptCard
+        payload={baseline}
+        deps={{ libraryScripts: libs, esvs }}
+        onNavigate={onNavigate}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "helpers" }));
+    expect(onNavigate).toHaveBeenLastCalledWith(libs[0].uid);
+    fireEvent.click(screen.getByRole("button", { name: "PUBLIC_URL" }));
+    expect(onNavigate).toHaveBeenLastCalledWith(esvs[0].uid);
   });
 });

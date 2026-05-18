@@ -87,12 +87,19 @@ describe("JourneyCard", () => {
     render(
       <JourneyCard
         payload={payload}
-        deps={{ scripts: [], inners: [], nodeIndex: {} }}
+        deps={{
+          scripts: [],
+          inners: [],
+          themes: [],
+          emailTemplates: [],
+          socialIdps: [],
+          nodeIndex: {},
+        }}
         onNavigate={noop}
         onOpenBody={noop}
       />,
     );
-    expect(screen.getByText(/No script or inner-tree dependencies/)).toBeTruthy();
+    expect(screen.getByText(/No dependencies discovered/)).toBeTruthy();
   });
 
   it("renders script + inner-journey links and calls onNavigate when clicked", () => {
@@ -100,7 +107,14 @@ describe("JourneyCard", () => {
     render(
       <JourneyCard
         payload={payload}
-        deps={{ scripts, inners, nodeIndex }}
+        deps={{
+          scripts,
+          inners,
+          themes: [],
+          emailTemplates: [],
+          socialIdps: [],
+          nodeIndex,
+        }}
         onNavigate={onNavigate}
         onOpenBody={noop}
       />,
@@ -119,7 +133,14 @@ describe("JourneyCard", () => {
     render(
       <JourneyCard
         payload={payload}
-        deps={{ scripts, inners, nodeIndex }}
+        deps={{
+          scripts,
+          inners,
+          themes: [],
+          emailTemplates: [],
+          socialIdps: [],
+          nodeIndex,
+        }}
         onNavigate={noop}
         onOpenBody={noop}
       />,

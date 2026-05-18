@@ -49,11 +49,22 @@ export interface NodeRef {
 }
 
 /** Full node payload from `/nodes/{nodeType}/{id}`. Discriminated union covers
- * the M1 surface (scripted decision + inner-tree evaluator). Other node types
- * surface as a fallback `Other` shape for now; M3 widens this. */
+ * the M1+M3-Slice1+Slice3 surface. Other node types surface as a fallback
+ * `Other` shape; Slice 4 may narrow further as the diagram grows custom
+ * components. */
 export type NodePayload =
   | ScriptedDecisionNodePayload
   | InnerTreeEvaluatorNodePayload
+  | ClientScriptNodePayload
+  | ConfigProviderNodePayload
+  | SocialProviderHandlerNodePayload
+  | SocialProviderHandlerNodeV2Payload
+  | DeviceMatchNodePayload
+  | PingOneVerifyCompletionDecisionNodePayload
+  | PageNodePayload
+  | EmailSuspendNodePayload
+  | EmailTemplateNodePayload
+  | SelectIdPNodePayload
   | OtherNodePayload;
 
 export interface ScriptedDecisionNodePayload {
@@ -71,6 +82,90 @@ export interface InnerTreeEvaluatorNodePayload {
   nodeType: "InnerTreeEvaluatorNode";
   /** Name-shaped ID of the inner journey. */
   tree: string;
+}
+
+/** Always-script-bearing node: fires per D19 predicate when `scriptId` is set. */
+export interface ClientScriptNodePayload {
+  id: string;
+  nodeType: "ClientScriptNode";
+  scriptId: string;
+}
+
+export interface ConfigProviderNodePayload {
+  id: string;
+  nodeType: "ConfigProviderNode";
+  scriptId: string;
+}
+
+export interface SocialProviderHandlerNodePayload {
+  id: string;
+  nodeType: "SocialProviderHandlerNode";
+  scriptId: string;
+  /** Subset of the realm's social IdPs this handler accepts. */
+  filteredProviders: string[];
+}
+
+export interface SocialProviderHandlerNodeV2Payload {
+  id: string;
+  nodeType: "SocialProviderHandlerNodeV2";
+  scriptId: string;
+  filteredProviders: string[];
+}
+
+/** Conditional-script-bearing node (D19): script ref is active only when the
+ * `useScript` flag is true. A `scriptId` may be present even when the flag is
+ * off (stale legacy data); the predicate gates activation. */
+export interface DeviceMatchNodePayload {
+  id: string;
+  nodeType: "DeviceMatchNode";
+  useScript: boolean;
+  scriptId?: string;
+}
+
+/** Conditional-script-bearing node (D19): script ref active only when
+ * `useFilterScript === true`. */
+export interface PingOneVerifyCompletionDecisionNodePayload {
+  id: string;
+  nodeType: "PingOneVerifyCompletionDecisionNode";
+  useFilterScript: boolean;
+  scriptId?: string;
+}
+
+/** Container node — its `nodes[]` array holds inline child nodes. Also
+ * carries a `stage` field that may encode a `themeId`. M3 Slice 3 emits
+ * the theme edge; container child-walk is deferred. */
+export interface PageNodePayload {
+  id: string;
+  nodeType: "PageNode";
+  /** Parsed from raw `stage` (JSON form `{"themeId":"<id>"}` or legacy
+   * `themeId=<id>`). Undefined when no theme is bound. */
+  themeId?: string;
+  /** Inline child-node refs `{id, nodeType}` carried verbatim. Slice 3
+   * preserves them; container-walking lands later. */
+  childRefs: Array<{ id: string; nodeType: string }>;
+}
+
+/** AIC's email-template-referencing nodes. Both carry the same shape — the
+ * `emailTemplateName` field points at an IDM-side `emailTemplate/<name>`
+ * record. */
+export interface EmailSuspendNodePayload {
+  id: string;
+  nodeType: "EmailSuspendNode";
+  emailTemplateName: string;
+}
+
+export interface EmailTemplateNodePayload {
+  id: string;
+  nodeType: "EmailTemplateNode";
+  emailTemplateName: string;
+}
+
+/** Pure social-IdP selector (no script). `filteredProviders` lists the
+ * subset of the realm's social IdPs presented to the user. */
+export interface SelectIdPNodePayload {
+  id: string;
+  nodeType: "SelectIdPNode";
+  filteredProviders: string[];
 }
 
 export interface OtherNodePayload {
@@ -94,4 +189,54 @@ export interface Script {
   language: string;
   /** Decoded script source. */
   body: string;
+}
+
+/** A UI theme registered in `ui/themerealm`. M3 surfaces id + name; later
+ * milestones may expose colors / logos / etc. */
+export interface Theme {
+  id: string;
+  name: string;
+  realm: string;
+}
+
+/** An IDM email template (`/openidm/config/emailTemplate/<name>`). */
+export interface EmailTemplate {
+  name: string;
+  enabled: boolean;
+  from?: string;
+  /** Localized — keyed by locale code (e.g. `en`, `fr`). */
+  subject?: Record<string, string>;
+  message?: Record<string, string>;
+}
+
+/** A social-identity provider configured under a realm. */
+export interface SocialIdp {
+  name: string;
+  /** Provider type ("google-oidc", "appleSocialAuthentication", etc.). */
+  type: string;
+  enabled: boolean;
+  realm: string;
+}
+
+/** An Environment-Specific Variable — either a variable or a secret. The
+ * tenant resolves `&{esv.X}` / `systemEnv.X` in script bodies against one of
+ * these two namespaces; we try variables first, then fall back to secrets. */
+export type Esv = EsvVariable | EsvSecret;
+
+export interface EsvVariable {
+  kind: "variable";
+  name: string;
+  description?: string;
+  /** "string" | "int" | "bool" | "array" | "object" | "list" | "keyvaluelist"
+   * | "number" | "base64encodedinlined". */
+  expressionType?: string;
+  lastChangeDate?: string;
+}
+
+export interface EsvSecret {
+  kind: "secret";
+  name: string;
+  description?: string;
+  encoding?: string;
+  lastChangeDate?: string;
 }

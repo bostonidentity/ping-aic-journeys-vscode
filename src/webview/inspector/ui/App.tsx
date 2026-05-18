@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../../messages";
 import { ConnectionCard } from "./cards/ConnectionCard";
+import { EmailTemplateCard } from "./cards/EmailTemplateCard";
+import { EsvCard } from "./cards/EsvCard";
 import { InnerJourneyCard } from "./cards/InnerJourneyCard";
 import { JourneyCard } from "./cards/JourneyCard";
+import { LibraryScriptCard } from "./cards/LibraryScriptCard";
 import { RealmCard } from "./cards/RealmCard";
 import { ScriptCard } from "./cards/ScriptCard";
+import { SocialIdpCard } from "./cards/SocialIdpCard";
+import { ThemeCard } from "./cards/ThemeCard";
 
 interface VsCodeApi {
   postMessage(msg: W2E): void;
@@ -14,16 +19,26 @@ interface Props {
   vscode: VsCodeApi;
 }
 
-interface DepsState {
+interface JourneyDepsState {
   uid: string;
   scripts: NodeRef[];
   inners: NodeRef[];
+  themes: NodeRef[];
+  emailTemplates: NodeRef[];
+  socialIdps: NodeRef[];
   nodeIndex: Record<string, NodeInfo>;
+}
+
+export interface ScriptDepsState {
+  uid: string;
+  libraryScripts: NodeRef[];
+  esvs: NodeRef[];
 }
 
 export function App({ vscode }: Props) {
   const [selection, setSelection] = useState<SelectPayload | null>(null);
-  const [deps, setDeps] = useState<DepsState | null>(null);
+  const [journeyDeps, setJourneyDeps] = useState<JourneyDepsState | null>(null);
+  const [scriptDeps, setScriptDeps] = useState<ScriptDepsState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,10 +46,21 @@ export function App({ vscode }: Props) {
       const m = e.data;
       if (m.type === "select") {
         setSelection(m.payload);
-        setDeps(null);
+        setJourneyDeps(null);
+        setScriptDeps(null);
         setError(null);
       } else if (m.type === "journeyDeps") {
-        setDeps({ uid: m.uid, scripts: m.scripts, inners: m.inners, nodeIndex: m.nodeIndex });
+        setJourneyDeps({
+          uid: m.uid,
+          scripts: m.scripts,
+          inners: m.inners,
+          themes: m.themes,
+          emailTemplates: m.emailTemplates,
+          socialIdps: m.socialIdps,
+          nodeIndex: m.nodeIndex,
+        });
+      } else if (m.type === "scriptDeps") {
+        setScriptDeps({ uid: m.uid, libraryScripts: m.libraryScripts, esvs: m.esvs });
       } else if (m.type === "error") {
         setError(m.message);
       }
@@ -56,7 +82,8 @@ export function App({ vscode }: Props) {
 
   // Only attach deps if they belong to the current selection — otherwise the
   // previous fetch's results might briefly flash for a new node.
-  const matchingDeps = deps && deps.uid === selection.uid ? deps : null;
+  const matchingJourneyDeps = journeyDeps && journeyDeps.uid === selection.uid ? journeyDeps : null;
+  const matchingScriptDeps = scriptDeps && scriptDeps.uid === selection.uid ? scriptDeps : null;
 
   switch (selection.kind) {
     case "connection":
@@ -67,7 +94,7 @@ export function App({ vscode }: Props) {
       return (
         <JourneyCard
           payload={selection}
-          deps={matchingDeps}
+          deps={matchingJourneyDeps}
           onNavigate={navigate}
           onOpenBody={openBody}
         />
@@ -76,13 +103,37 @@ export function App({ vscode }: Props) {
       return (
         <InnerJourneyCard
           payload={selection}
-          deps={matchingDeps}
+          deps={matchingJourneyDeps}
           onNavigate={navigate}
           onOpenBody={openBody}
         />
       );
     case "script":
-      return <ScriptCard payload={selection} onOpenBody={openBody} />;
+      return (
+        <ScriptCard
+          payload={selection}
+          deps={matchingScriptDeps}
+          onNavigate={navigate}
+          onOpenBody={openBody}
+        />
+      );
+    case "libraryScript":
+      return (
+        <LibraryScriptCard
+          payload={selection}
+          deps={matchingScriptDeps}
+          onNavigate={navigate}
+          onOpenBody={openBody}
+        />
+      );
+    case "esv":
+      return <EsvCard payload={selection} />;
+    case "theme":
+      return <ThemeCard payload={selection} />;
+    case "emailTemplate":
+      return <EmailTemplateCard payload={selection} />;
+    case "socialIdp":
+      return <SocialIdpCard payload={selection} />;
     case "message":
       return <div className="empty">{selection.label}</div>;
   }

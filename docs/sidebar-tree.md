@@ -8,19 +8,24 @@
 ▼ connection: prod-tenant                  [L1]
   ▼ realm: alpha                           [L2]
     ▼ journey: Login                       [L3]
-      📜 script: MyAuthDecision            [L4]
-        📜 library-script: helpers         [L5 — recursive via require()]
-      🌲 inner journey: PasswordReset      [L4 — recursive shape below]
-        📜 script: ResetSender             [L5]
+      ▼ 📜 script: MyAuthDecision          [L4]
+        📜 library-script: helpers         [L5 — via require() in script body]
+          $  esv: TENANT_NAME              [L6 — via &{esv...} in lib body]
+        $  esv: PUBLIC_URL                 [L5 — via &{esv...} in script body]
+      🌲 inner journey: PasswordReset      [L4 — recursive journey shape]
+        ▼ 📜 script: ResetSender           [L5]
+          📜 library-script: helpers       [L6 — same library-script ref ok]
         🌲 inner journey: VerifyEmail      [L5]
           📜 script: ...                   [L6 — recurses indefinitely]
-          🌲 inner journey: ...
+      📧 email-template: PasswordResetMail [L4]
+      🪪 social-idp: google-oidc           [L4]
       🎨 theme: default                    [L4]
-      $ esv: TENANT_NAME                   [L4]
     ▶ journey: Registration
   ▶ realm: beta
 ▶ connection: stage-tenant
 ```
+
+**Key change at M3:** `library-script` and `esv` are children of `script` (and recursively of `library-script`), **not** of `journey` — they're discovered by parsing script bodies, not by walking node payloads.
 
 ## Levels
 
@@ -34,15 +39,17 @@
 
 ## Dependency kinds at L4+
 
-| Icon | `NodeKind` | Source | Recurses into |
-|---|---|---|---|
-| 📜 | `script` | `ScriptedDecisionNode.script` → `/am/json/<realm>/scripts/<id>` | Library scripts via `require()` calls in script body |
-| 📜 | `library-script` | Found via `require()` in any script body | Other library scripts (depth-N) |
-| 🌲 | `inner journey` | `InnerTreeEvaluatorNode` in tree skeleton | Full journey expansion (same L3 shape recursively) |
-| 🎨 | `theme` | `Page.stage` / theme config | Leaf today |
-| $ | `esv` | `&{esv...}` / `systemEnv.X` patterns in script body | Leaf |
+| Icon | `NodeKind` | Parent | Source | Recurses into |
+|---|---|---|---|---|
+| 📜 | `script` | journey | `ScriptedDecisionNode.script` (+ M3's `ClientScriptNode`, `ConfigProviderNode`, `SocialProviderHandlerNode*`, `DeviceMatchNode` (if `useScript`), `PingOneVerifyCompletionDecisionNode` (if `useFilterScript`)) → `/am/json/<realm>/scripts/<id>` | `library-script` + `esv` (both via script-body parsing — D20) |
+| 📜 | `library-script` | script / library-script | `require('<name>')` in any script body | Other `library-script`s (recursive) + `esv` |
+| `$` | `esv` | script / library-script | `&{esv.X}` / `systemEnv.X` in script body | Leaf |
+| 🌲 | `inner journey` | journey | `InnerTreeEvaluatorNode.tree` | Full journey expansion (recursive, cycle-guarded) |
+| 🎨 | `theme` | journey | `PageNode.stage` (JSON-encoded or `themeId=` legacy form) | Leaf |
+| 📧 | `email-template` | journey | `EmailSuspendNode.emailTemplateName` / `EmailTemplateNode.emailTemplateName` | Leaf |
+| 🪪 | `social-idp` | journey | `SocialProviderHandlerNode*.filteredProviders` + `SelectIdPNode.filteredProviders` | Leaf |
 
-Phase-2 resolver walks **all** kinds. The tree view may hide kinds behind a filter toggle in later phases (default-on for scripts + inner journeys, default-off for themes/ESVs until they earn their screen real estate).
+M3 ships every row above. Tree view may add a kind-filter toggle in later phases (default-on for scripts + inner journeys, opt-in for the rest).
 
 ## Edge kinds (for the graph view, not visible in the tree)
 
@@ -50,8 +57,10 @@ Phase-2 resolver walks **all** kinds. The tree view may hide kinds behind a filt
 - `calls-inner-tree` — journey ⟶ inner journey
 - `invokes-script` — node ⟶ script
 - `imports-library` — script ⟶ library-script
-- `references-esv` — script ⟶ esv
-- `uses-theme` — journey ⟶ theme
+- `references-esv` — script ⟶ esv (and library-script ⟶ esv)
+- `uses-theme` — journey ⟶ theme (via PageNode.stage)
+- `references-email-template` — journey ⟶ email-template (via EmailSuspendNode / EmailTemplateNode)
+- `uses-social-idp` — journey ⟶ social-idp (via SocialProviderHandlerNode* / SelectIdPNode)
 
 ## Lazy expansion
 
