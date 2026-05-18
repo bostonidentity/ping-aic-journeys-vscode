@@ -258,7 +258,7 @@ describe("InspectorPanel", () => {
           id: "s-1",
           name: "Auth",
           language: "JAVASCRIPT",
-          body: `require('helpers'); var x = "&{esv.PUBLIC_URL}";`,
+          body: `require('helpers'); var url = systemEnv.getProperty("esv.kyid.portal.name");`,
         },
       },
       scriptsByName: {
@@ -297,7 +297,7 @@ describe("InspectorPanel", () => {
     );
     expect(depsMsg).toBeDefined();
     expect(depsMsg?.libraryScripts.map((l) => l.label)).toEqual(["helpers"]);
-    expect(depsMsg?.esvs.map((e) => e.label)).toEqual(["PUBLIC_URL"]);
+    expect(depsMsg?.esvs.map((e) => e.label)).toEqual(["esv.kyid.portal.name"]);
   });
 
   it("journeyDeps carries themes / emailTemplates / socialIdps arrays from new payload kinds", async () => {

@@ -60,12 +60,12 @@ describe("ScriptNode expansion", () => {
     expect(lib.scriptId).toBe("s-lib-helpers");
   });
 
-  it("emits an EsvNode for an &{esv.X} reference in the body", async () => {
-    const { node } = makeNode(`var url = "&{esv.PUBLIC_URL}";`);
+  it('emits an EsvNode for a systemEnv.getProperty("esv.X.Y.Z") reference', async () => {
+    const { node } = makeNode(`var t = systemEnv.getProperty("esv.kyid.portal.name");`);
     const kids = await node.getChildren();
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(EsvNode);
-    expect((kids[0] as EsvNode).name).toBe("PUBLIC_URL");
+    expect((kids[0] as EsvNode).name).toBe("esv.kyid.portal.name");
   });
 
   it("dedupes both kinds: one library + one ESV from a body that references each twice", async () => {
@@ -73,7 +73,7 @@ describe("ScriptNode expansion", () => {
       scriptsByKey: {
         [`${REALM}:s-1`]: script({
           id: "s-1",
-          body: `require('crypto'); require("crypto"); var a = "&{esv.X}"; var b = systemEnv.X;`,
+          body: `require('crypto'); require("crypto"); var a = "esv.shared.thing"; var b = systemEnv.getProperty("esv.shared.thing");`,
         }),
       },
       scriptsByName: {

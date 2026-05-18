@@ -301,6 +301,26 @@ describe("PaicClient", () => {
     });
   });
 
+  it("getEsv translates the dotted script-form name to the hyphenated REST id", async () => {
+    // POC-validated against sb3: `/variables/esv.kyid.portal.name` → 400 from
+    // the API; `/variables/esv-kyid-portal-name` → 200. Translate before URL,
+    // keep the dotted name for display in the mapped result.
+    fake.enqueueGet({
+      _id: "esv-kyid-portal-name",
+      description: "Portal name",
+      expressionType: "string",
+    });
+    const got = await client.getEsv("esv.kyid.portal.name");
+    expect(fake.calls[0].url).toBe("/environment/variables/esv-kyid-portal-name");
+    expect(got).toEqual({
+      kind: "variable",
+      name: "esv.kyid.portal.name", // canonical display name stays dotted
+      description: "Portal name",
+      expressionType: "string",
+      lastChangeDate: undefined,
+    });
+  });
+
   it("getScriptByName queries by name and returns the first mapped result (or null)", async () => {
     const source = "exports.help = function(){};";
     // First call — hit.

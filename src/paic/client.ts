@@ -208,9 +208,15 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async getEsv(name: string): Promise<Esv | null> {
+      // PAIC ESV REST ids are hyphenated (`esv-foo-bar`) while scripts
+      // reference them in dotted form (`esv.foo.bar`). Translate before the
+      // URL; keep `name` (dotted) as the canonical display name.
+      // POC-validated against sb3: `/variables/esv.kyid.portal.name` → 400;
+      // `/variables/esv-kyid-portal-name` → 200.
+      const apiId = name.replaceAll(".", "-");
       try {
         const resp = await http.get<RawEsvVariable>(
-          `/environment/variables/${encodeURIComponent(name)}`,
+          `/environment/variables/${encodeURIComponent(apiId)}`,
           { apiVersion: ESV_API_VERSION },
         );
         return mapEsvVariable(name, resp.data);
@@ -219,7 +225,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
       }
       try {
         const resp = await http.get<RawEsvSecret>(
-          `/environment/secrets/${encodeURIComponent(name)}`,
+          `/environment/secrets/${encodeURIComponent(apiId)}`,
           { apiVersion: ESV_API_VERSION },
         );
         return mapEsvSecret(name, resp.data);

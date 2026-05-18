@@ -3,22 +3,37 @@
  *
  * Returns deduped, sorted lists of:
  *   - libraryScripts: every `require('<name>')` / `require("<name>")` argument
- *   - esvs: every `&{esv.<NAME>}` and `systemEnv.<NAME>` reference
+ *   - esvs: every `'<esv.x.y.z>'` / `"<esv.x.y.z>"` string literal
  *
- * Accepts > 99% of real AIC scripts. Pathological false-positives (require()
- * inside string literals or comments) are deliberately accepted at M3 — they
- * surface as harmless extra edges. AST upgrade via `acorn` is the documented
- * Plan B if customers hit them in practice.
+ * ESV-pattern rationale (POC-validated against 1159 sb3 scripts):
+ *
+ *   - `systemEnv.getProperty("esv.x.y")` is the dominant form (383 scripts,
+ *     779 refs). The string literal IS the ESV name, dotted.
+ *   - But many scripts use indirect refs: `var foo = "esv.x.y"; … getProperty(foo)`.
+ *     A regex tied to `systemEnv.getProperty(…)` would miss these.
+ *   - The broader pattern `['"](esv\.X)['"]` catches both: 442 scripts, 915
+ *     refs across the same tenant — strict superset.
+ *   - The legacy `&{esv.X}` syntax (used inside IDM config strings) had 0
+ *     hits in 1159 production JS bodies; intentionally dropped.
+ *   - All 226 unique ESV refs across sb3 begin with `esv.` — safe to require.
+ *
+ * Pathological false-positives (the literal `"esv.x.y"` appearing in a
+ * comment or doc-string) surface as harmless extra edges. AST upgrade via
+ * `acorn` is the documented Plan B if a customer hits one in practice.
+ *
+ * NOTE — referenced names are in **dotted form** (`esv.kyid.portal.name`)
+ * because that's how scripts reference them. The PAIC ESV REST API
+ * requires hyphenated ids (`esv-kyid-portal-name`); translation happens
+ * inside `PaicClient.getEsv()`, not here.
  */
 
 const REQUIRE = /require\s*\(\s*['"]([^'"\\]+)['"]\s*\)/g;
-const ESV_BRACE = /&\{\s*esv\.([A-Za-z0-9_]+)\s*\}/g;
-const SYSTEM_ENV = /systemEnv\.([A-Za-z0-9_]+)/g;
+const ESV = /['"](esv\.[A-Za-z0-9_.-]+?)['"]/g;
 
 export interface ScriptBodyRefs {
   /** Distinct library-script names referenced via `require()`, sorted. */
   libraryScripts: string[];
-  /** Distinct ESV names (either `&{esv.X}` or `systemEnv.X` form), sorted. */
+  /** Distinct ESV names (dotted, e.g. `esv.foo.bar`), sorted. */
   esvs: string[];
 }
 
@@ -27,8 +42,7 @@ export function extractScriptBodyRefs(body: string): ScriptBodyRefs {
   for (const m of body.matchAll(REQUIRE)) libs.add(m[1]);
 
   const esvs = new Set<string>();
-  for (const m of body.matchAll(ESV_BRACE)) esvs.add(m[1]);
-  for (const m of body.matchAll(SYSTEM_ENV)) esvs.add(m[1]);
+  for (const m of body.matchAll(ESV)) esvs.add(m[1]);
 
   return {
     libraryScripts: [...libs].sort(),
