@@ -5,6 +5,7 @@ import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { MessageNode, type PaicNode } from "./base";
 import { EmailTemplateNode } from "./email-template";
+import { groupAndSort } from "./grouping";
 import { InnerJourneyNode } from "./inner-journey";
 import { ScriptNode } from "./script";
 import { SocialIdpNode } from "./social-idp";
@@ -231,7 +232,7 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
   if (children.length === 0) {
     return [new MessageNode("No dependencies discovered", "info")];
   }
-  return children;
+  return groupAndSort(children);
 }
 
 /** Expand an inner-journey by id (we don't have its skeleton yet). Performs

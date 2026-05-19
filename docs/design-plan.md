@@ -429,6 +429,111 @@ All three follow the same `.diag-node` shape as other kinds (consistent visual l
 
 **No separate entry-node marker.** Earlier the entry node carried a thin blue `outline` to mark "the flow starts here." With Start synthesized as a dedicated visual terminal (always present per D28), that secondary marker is redundant and was removed. The `isEntry` flag still drives the hover-tooltip "(entry)" suffix in `buildNodeTooltip` — useful textual context that doesn't compete visually.
 
+### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
+
+Today the sidebar tree builds a journey's (or script's) children in **discovery order** — whatever order the dependency walker emits as it crawls a journey's nodes. A real journey can mix Inner Journeys, Scripts, Themes, Email Templates, and Social IdPs in any sequence, and the result is hard to scan.
+
+We sort children by **kind** (using a fixed priority list), then by **name** alphabetically within each kind. Between kind groups, we insert a non-clickable `─── <Category> ───` divider row so the kind structure is visually obvious even on tall trees.
+
+**Kind priority** (where mixed kinds appear, applied uniformly at every level):
+
+| # | Kind | Domain class | Header label |
+|---|---|---|---|
+| 1 | Inner Journey | `InnerJourneyNode` | `─── Inner Journeys ───` |
+| 2 | Script | `ScriptNode` | `─── Scripts ───` |
+| 3 | Library Script | `LibraryScriptNode` | `─── Library Scripts ───` |
+| 4 | Theme | `ThemeNode` | `─── Themes ───` |
+| 5 | Email Template | `EmailTemplateNode` | `─── Email Templates ───` |
+| 6 | Social IdP | `SocialIdpNode` | `─── Social IdPs ───` |
+| 7 | ESV | `EsvNode` | `─── ESVs ───` |
+
+Within each kind: case-insensitive sort by display name (the resolved human name — script's `name`, journey's `id`, theme's `name`, etc.), NOT by UUID.
+
+**Where this applies:**
+
+- `JourneyNode` children (and `InnerJourneyNode`, which expands the same way) — most-mixed case; uses `groupAndSort` with category headers
+- `ScriptNode` children (mixes `LibraryScriptNode` + `EsvNode`) — same
+- `RealmNode → JourneyNode` (single kind) — alphabetical sort by `journey.id`, no header
+- `ConnectionNode → RealmNode` (single kind) — alphabetical sort by `realm.name`, no header
+
+Sort is locale-aware case-insensitive (`localeCompare(..., { sensitivity: "base" })`) everywhere for consistency.
+
+**Skip the divider when only one kind is present.** A journey with only scripts (no inner journeys, themes, etc.) shows the scripts directly, no `─── Scripts ───` header — would be redundant clutter. The divider only appears when **2+ kinds** are present at the same level.
+
+**Divider rendering:**
+
+A new `CategoryHeaderNode` class (or small extension of the existing `MessageNode` pattern). Visual contract:
+
+- `label`: the divider text including the em-dashes, e.g. `"─── Inner Journeys ───"`
+- `description`: undefined (no count — keeps the row light)
+- `collapsibleState`: `None` (leaf)
+- `iconPath`: undefined (no icon — the em-dashes provide visual weight)
+- `contextValue`: `"categoryHeader"` (so context menus skip it)
+- `tooltip`: undefined
+- Not selectable in any meaningful way — clicking it does nothing (no preview card spawns; the `instanceof` checks in `InspectorFactory.spawn` won't match)
+
+**Implementation sketch:**
+
+A new pure helper `src/views/nodes/grouping.ts`:
+
+```ts
+export type NodeKind =
+  | "innerJourney" | "script" | "libraryScript" | "theme"
+  | "emailTemplate" | "socialIdp" | "esv";
+
+const KIND_ORDER: Record<NodeKind, number> = {
+  innerJourney: 0, script: 1, libraryScript: 2,
+  theme: 3, emailTemplate: 4, socialIdp: 5, esv: 6,
+};
+
+const KIND_HEADER: Record<NodeKind, string> = {
+  innerJourney: "── Inner Journeys ──",
+  script: "── Scripts ──",
+  libraryScript: "── Library Scripts ──",
+  theme: "── Themes ──",
+  emailTemplate: "── Email Templates ──",
+  socialIdp: "── Social IdPs ──",
+  esv: "── ESVs ──",
+};
+
+function kindOf(node: PaicNode): NodeKind | null { ... } // instanceof switch
+
+/** Sort + group + insert dividers (when 2+ kinds present). */
+export function groupAndSort(nodes: PaicNode[]): PaicNode[] {
+  const byKind = new Map<NodeKind, PaicNode[]>();
+  for (const n of nodes) {
+    const k = kindOf(n);
+    if (k === null) continue; // skip unknown — shouldn't happen at L4
+    if (!byKind.has(k)) byKind.set(k, []);
+    byKind.get(k)!.push(n);
+  }
+  const presentKinds = [...byKind.keys()].sort((a, b) => KIND_ORDER[a] - KIND_ORDER[b]);
+  const multi = presentKinds.length >= 2;
+  const out: PaicNode[] = [];
+  for (const k of presentKinds) {
+    const group = byKind.get(k)!.sort((a, b) =>
+      (a.label?.toString() ?? "").localeCompare(b.label?.toString() ?? "", undefined, { sensitivity: "base" })
+    );
+    if (multi) out.push(new CategoryHeaderNode(KIND_HEADER[k]));
+    out.push(...group);
+  }
+  return out;
+}
+```
+
+`journey-expand.ts` + `script-expand.ts` each replace their current `children.push(...)` final return with `return groupAndSort(children)`.
+
+**What stays the same:**
+
+- The walk logic — `expandJourney` / `expandScript` still produces the same set of nodes, just unordered. We sort at the boundary, not during the walk.
+- Click behavior — clicking a real node still spawns a preview tab. Clicking a header is a no-op (no `instanceof` match in the factory).
+- Drag, refresh, context menus — unchanged for real nodes; not applicable to headers.
+
+**Risks:**
+
+- **Test fixtures assert order.** A handful of existing tests use `expect(children[0]).toBeInstanceOf(...)`. Need to update those to account for header rows and the new ordering. Most assert presence + counts, not specific positions.
+- **The "skip header when single kind" rule** changes count expectations subtly. Tests should be explicit about this branch.
+
 ### D32 — "Re-layout" / "Original layout" toggle (5th Controls button)
 
 D31 makes the diagram faithful to AIC's hand-placed coordinates — that's the right default. But some journeys have messy hand-placements (overlapping nodes, oddly spaced clusters, retry loops in awkward corners) where the user might prefer a clean algorithmic arrangement.

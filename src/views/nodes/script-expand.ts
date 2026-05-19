@@ -5,6 +5,7 @@ import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { MessageNode, type PaicNode } from "./base";
 import { type EsvKind, EsvNode } from "./esv";
+import { groupAndSort } from "./grouping";
 import { LibraryScriptNode } from "./library-script";
 
 /** Concurrency cap for `getScriptByName` lookups when resolving multiple
@@ -144,5 +145,5 @@ export async function expandScript(args: ScriptExpandArgs): Promise<PaicNode[]> 
   if (children.length === 0) {
     return [new MessageNode("No script-body dependencies", "info")];
   }
-  return children;
+  return groupAndSort(children);
 }

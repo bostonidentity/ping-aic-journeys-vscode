@@ -301,6 +301,15 @@ Implementation worked technically (297/297 tests passing, lint clean, build clea
 - [x] **Expand button uses icon + tooltip** — same pattern: horizontal-arrows-outward → expand, inward → collapse; plain text in `title` + `aria-label`.
 - [x] **+1 test in `journey-diagram.test.tsx`** — seeds journey with server coordinates, asserts initial position is server-coords-derived, clicks the Re-layout button (queried by aria-label) → asserts position changes to dagre output, clicks again → asserts position returns to server coords. Mock extended with `data-rf-x`/`data-rf-y` attributes. Total 296 → 297.
 
+#### D33 — Sidebar tree: kind-grouped children + category headers + alphabetical sort
+
+- [x] **`CategoryHeaderNode` class** — `src/views/nodes/category-header.ts`. Extends `PaicNode`. `label = "── <Category> ──"`; `collapsibleState: None`; `contextValue: "categoryHeader"`; no icon, no tooltip, no children.
+- [x] **`groupAndSort(nodes)` helper** — `src/views/nodes/grouping.ts`. Exports `kindOf(node)` + `groupAndSort(nodes)`. Classifies by `instanceof` (InnerJourney / Script / LibraryScript / Theme / EmailTemplate / SocialIdp / Esv). Sorts case-insensitively within kind via `localeCompare(..., { sensitivity: "base" })`. Inserts `CategoryHeaderNode` only when ≥2 kinds are present. Unknown nodes (MessageNode etc.) appended at the end in original order.
+- [x] **`journey-expand.ts` + `script-expand.ts` wired** — return `groupAndSort(children)` at the end instead of raw `children`. Empty-list `MessageNode` short-circuit kept for clarity.
+- [x] **`extension.ts` selection guard** — `treeView.onDidChangeSelection` now skips `CategoryHeaderNode` AND `MessageNode` before calling `inspectorFactory.spawn(node)`. Defensive bonus on `MessageNode`: clicking error / cycle / empty-state rows no longer spawns a vacant inspector tab.
+- [x] **Tests** — new `grouping.test.ts` (6 cases: empty, single-kind no header, multi-kind headers in priority order, case-insensitive sort, unknown-kind appended) + `kindOf` smoke (2 cases for known/unknown classification). Existing `journey.test.ts` + `script.test.ts` length assertions updated to filter out `CategoryHeaderNode` before counting data kids. Total 297 → 304.
+- [x] **Single-kind levels also sorted** — `RealmNode → JourneyNode` sorts journeys by `id` case-insensitive; `ConnectionNode → RealmNode` sorts realms by `name`. No category headers (single kind), just alphabetical order. +2 tests (realm sorts journeys, connection sorts realms). Total 304 → 306.
+
 #### Other M3 notes / non-goals
 
 - [ ] First-click latency on journey expansion grows (PageNode container walk adds one extra `getNode` per child ref). Needs a live-tenant measurement pass against sb3 to record the actual range — not blocking the M3 commit; will be recorded here once captured.

@@ -5,6 +5,7 @@ vi.mock("vscode", async () => (await import("../../util/vscode-mock")).makeVscod
 import { describe, expect, it } from "vitest";
 import type { Journey, NodePayload } from "@/domain/types";
 import { MessageNode } from "@/views/nodes/base";
+import { CategoryHeaderNode } from "@/views/nodes/category-header";
 import { InnerJourneyNode } from "@/views/nodes/inner-journey";
 import { JourneyNode } from "@/views/nodes/journey";
 import { ScriptNode } from "@/views/nodes/script";
@@ -65,9 +66,11 @@ describe("JourneyNode", () => {
       n2: { nodeType: "InnerTreeEvaluatorNode", payload: innerTreePayload("n2", "Inner") },
     });
     const kids = await node.getChildren();
-    expect(kids).toHaveLength(2);
-    const script = kids.find((k) => k instanceof ScriptNode) as ScriptNode;
-    const inner = kids.find((k) => k instanceof InnerJourneyNode) as InnerJourneyNode;
+    // D33: headers added for multi-kind children (Inner Journeys + Scripts).
+    const dataKids = kids.filter((k) => !(k instanceof CategoryHeaderNode));
+    expect(dataKids).toHaveLength(2);
+    const script = dataKids.find((k) => k instanceof ScriptNode) as ScriptNode;
+    const inner = dataKids.find((k) => k instanceof InnerJourneyNode) as InnerJourneyNode;
     expect(script.scriptId).toBe("s-1");
     expect(inner.id).toBe("Inner");
     // visited carries the parent journey id for cycle-checking downstream.

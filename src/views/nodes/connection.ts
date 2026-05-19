@@ -36,7 +36,10 @@ export class ConnectionNode extends PaicNode {
     // the root name as "/" and others as something else. Hide it so the tree
     // stays clean. If on-prem AM support is added later, gate on connection
     // type instead.
-    const realms = all.filter((r) => !r.isRoot && r.name !== "/");
+    const realms = all
+      .filter((r) => !r.isRoot && r.name !== "/")
+      // Sort alphabetically (D33 — applies even to single-kind levels).
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     if (realms.length === 0) {
       return [new MessageNode("No realms found", "info")];
     }

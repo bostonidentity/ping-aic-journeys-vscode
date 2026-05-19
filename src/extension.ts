@@ -15,7 +15,8 @@ import { type ClientCache, makeClientCache } from "./tenants/client-cache";
 import { makeProductionDeps, makeTenantsRegistry, type TenantsRegistry } from "./tenants/registry";
 import { type Logger, makeLogger } from "./util/logger";
 import { openConnectionForm } from "./views/connection-form";
-import type { PaicNode } from "./views/nodes/base";
+import { MessageNode, type PaicNode } from "./views/nodes/base";
+import { CategoryHeaderNode } from "./views/nodes/category-header";
 import { ConnectionNode } from "./views/nodes/connection";
 import { LibraryScriptNode } from "./views/nodes/library-script";
 import { ScriptNode } from "./views/nodes/script";
@@ -86,7 +87,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     treeView.onDidChangeSelection((ev) => {
       const node = ev.selection[0];
-      if (node) inspectorFactory.spawn(node);
+      if (!node) return;
+      // Category headers and message rows aren't data nodes — clicking them
+      // shouldn't spawn an inspector tab (D33).
+      if (node instanceof CategoryHeaderNode) return;
+      if (node instanceof MessageNode) return;
+      inspectorFactory.spawn(node);
     }),
   );
 

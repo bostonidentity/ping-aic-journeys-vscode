@@ -74,6 +74,18 @@ describe("ConnectionNode", () => {
     expect((kids[0] as RealmNode).realm.name).toBe("alpha");
   });
 
+  it("sorts realms alphabetically, case-insensitive (D33)", async () => {
+    const node = makeNode([
+      { name: "ZebraRealm", active: true, parentPath: "/", isRoot: false },
+      { name: "aardvark", active: true, parentPath: "/", isRoot: false },
+      { name: "Bravo", active: true, parentPath: "/", isRoot: false },
+      { name: "alpha", active: true, parentPath: "/", isRoot: false },
+    ]);
+    const kids = await node.getChildren();
+    const names = kids.map((k) => (k as RealmNode).realm.name);
+    expect(names).toEqual(["aardvark", "alpha", "Bravo", "ZebraRealm"]);
+  });
+
   it("emits the empty-list MessageNode when only root is returned", async () => {
     const node = makeNode([{ name: "/", active: true, parentPath: "/", isRoot: true }]);
     const kids = await node.getChildren();

@@ -4,6 +4,7 @@ vi.mock("vscode", async () => (await import("../../util/vscode-mock")).makeVscod
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Script } from "@/domain/types";
+import { CategoryHeaderNode } from "@/views/nodes/category-header";
 import { EsvNode } from "@/views/nodes/esv";
 import { LibraryScriptNode } from "@/views/nodes/library-script";
 import { ScriptNode } from "@/views/nodes/script";
@@ -82,9 +83,11 @@ describe("ScriptNode expansion", () => {
     });
     const node = new ScriptNode(HOST, REALM, "s-1", makeFakeCache(client), makeFakeLogger());
     const kids = await node.getChildren();
-    expect(kids).toHaveLength(2);
-    expect(kids.filter((k) => k instanceof LibraryScriptNode)).toHaveLength(1);
-    expect(kids.filter((k) => k instanceof EsvNode)).toHaveLength(1);
+    // D33: 2 kinds present → 2 category headers + 2 data nodes = 4 total.
+    const dataKids = kids.filter((k) => !(k instanceof CategoryHeaderNode));
+    expect(dataKids).toHaveLength(2);
+    expect(dataKids.filter((k) => k instanceof LibraryScriptNode)).toHaveLength(1);
+    expect(dataKids.filter((k) => k instanceof EsvNode)).toHaveLength(1);
   });
 
   it("pre-labels EsvNodes per kind (variable / secret / missing) via the per-expansion list fetch", async () => {

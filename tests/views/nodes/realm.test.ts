@@ -29,6 +29,23 @@ describe("RealmNode", () => {
     expect((kids[1] as JourneyNode).journey.id).toBe("Registration");
   });
 
+  it("sorts journeys alphabetically by id, case-insensitive (D33)", async () => {
+    const client = makeFakePaicClient({
+      journeysByRealm: {
+        alpha: [
+          makeJourney("ZebraJourney"),
+          makeJourney("aardvarkJourney"),
+          makeJourney("MasterLogin"),
+          makeJourney("Login"),
+        ],
+      },
+    });
+    const node = new RealmNode(HOST, REALM, makeFakeCache(client), makeFakeLogger());
+    const kids = await node.getChildren();
+    const ids = kids.map((k) => (k as JourneyNode).journey.id);
+    expect(ids).toEqual(["aardvarkJourney", "Login", "MasterLogin", "ZebraJourney"]);
+  });
+
   it("empty journey list emits a MessageNode", async () => {
     const client = makeFakePaicClient({ journeysByRealm: { alpha: [] } });
     const node = new RealmNode(HOST, REALM, makeFakeCache(client), makeFakeLogger());

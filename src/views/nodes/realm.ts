@@ -31,7 +31,12 @@ export class RealmNode extends PaicNode {
     if (journeys.length === 0) {
       return [new MessageNode("No journeys in this realm", "info")];
     }
-    return journeys.map(
+    // Single-kind level → no category header, but still sort alphabetically
+    // by id for predictable scanning (D33 principle).
+    const sorted = [...journeys].sort((a, b) =>
+      a.id.localeCompare(b.id, undefined, { sensitivity: "base" }),
+    );
+    return sorted.map(
       (j) => new JourneyNode(this.host, this.realm.name, j, this.cache, this.log, [], this),
     );
   }
