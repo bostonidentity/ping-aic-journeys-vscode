@@ -181,9 +181,11 @@
   "scripts": {
     "build:ext": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs",
     "build:webview": "esbuild src/webview/inspector/ui/main.tsx --bundle --outfile=out/webview.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
-    "build": "npm run build:ext && npm run build:webview",
+    "build:connection-form": "esbuild src/webview/connection-form/ui/main.tsx --bundle --outfile=out/connection-form.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
+    "build": "npm run build:ext && npm run build:webview && npm run build:connection-form",
     "watch": "npm run build:ext -- --watch",
     "watch:webview": "npm run build:webview -- --watch",
+    "watch:connection-form": "npm run build:connection-form -- --watch",
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.webview.json --noEmit",

@@ -310,6 +310,20 @@ Implementation worked technically (297/297 tests passing, lint clean, build clea
 - [x] **Tests** — new `grouping.test.ts` (6 cases: empty, single-kind no header, multi-kind headers in priority order, case-insensitive sort, unknown-kind appended) + `kindOf` smoke (2 cases for known/unknown classification). Existing `journey.test.ts` + `script.test.ts` length assertions updated to filter out `CategoryHeaderNode` before counting data kids. Total 297 → 304.
 - [x] **Single-kind levels also sorted** — `RealmNode → JourneyNode` sorts journeys by `id` case-insensitive; `ConnectionNode → RealmNode` sorts realms by `name`. No category headers (single kind), just alphabetical order. +2 tests (realm sorts journeys, connection sorts realms). Total 304 → 306.
 
+#### D34 — Migrate connection form to a separate React bundle
+
+- [x] **New `src/webview/connection-form/`** directory mirrors the inspector layout:
+  - `messages.ts` — typed `W2E` (save / cancel / validate) + `E2W` (validateResult ok/err) + `ConnectionFormData` / `ConnectionFormInitial` / `ConnectionFormPayload` types + `isW2E` guard.
+  - `panel.ts` — extension-side `openConnectionForm(context, opts) → Promise<ConnectionFormData \| undefined>`; creates the WebviewPanel; embeds initial payload via `data-paic-payload`; wires `onDidReceiveMessage`; includes `handleValidate` (moved from the old file, unchanged); inlines `CONNECTION_FORM_CSS`.
+  - `ui/main.tsx` — React entry. Reads payload from `data-paic-payload`; mounts `<App>`. Uses a local cast of `window.acquireVsCodeApi()` because the inspector's `main.tsx` already declares a global with a conflicting `W2E` type — each bundle now casts locally.
+  - `ui/App.tsx` — form component. State (name/host/saId/jwk/errors), validation (required fields, duplicate host with Edit-same-host exception, JWK JSON validity, JWK required-in-Add / optional-in-Edit), Test Connection handler with monotonic requestId in a `useRef` (avoids stale-closure on the message listener).
+- [x] **New esbuild target** — `package.json` adds `build:connection-form` + `watch:connection-form`; parent `build` chains all three (ext + webview + connection-form). Output: `out/connection-form.js` (262 KB).
+- [x] **Deleted `src/views/connection-form.ts`** — old 467-line raw-HTML implementation removed.
+- [x] **Updated `src/extension.ts`** — one import line moved to `./webview/connection-form/panel`. No behavioral changes; same external API.
+- [x] **`localResourceRoots`** narrowed to `out/` so the bundle loads. CSP unchanged (`default-src 'none'; style-src ... 'unsafe-inline'; script-src 'nonce-…'`).
+- [x] **Both tsconfigs updated** — main `tsconfig.json` excludes the new `src/webview/connection-form/ui/**`; `tsconfig.webview.json` includes `tests/webview/connection-form/ui/**` so test files get JSX + DOM lib.
+- [x] **Tests** — new `tests/webview/connection-form/ui/app.test.tsx` (6 cases: required-field errors; duplicate-host in Add; Edit-same-host allowed; Edit JWK optional; Test Connection success roundtrip; stale-requestId ignored). Total 306 → 312.
+
 #### Other M3 notes / non-goals
 
 - [ ] First-click latency on journey expansion grows (PageNode container walk adds one extra `getNode` per child ref). Needs a live-tenant measurement pass against sb3 to record the actual range — not blocking the M3 commit; will be recorded here once captured.

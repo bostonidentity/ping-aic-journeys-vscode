@@ -429,6 +429,66 @@ All three follow the same `.diag-node` shape as other kinds (consistent visual l
 
 **No separate entry-node marker.** Earlier the entry node carried a thin blue `outline` to mark "the flow starts here." With Start synthesized as a dedicated visual terminal (always present per D28), that secondary marker is redundant and was removed. The `isEntry` flag still drives the hover-tooltip "(entry)" suffix in `buildNodeTooltip` — useful textual context that doesn't compete visually.
 
+### D34 — Migrate the connection form from raw HTML to a separate React bundle
+
+The connection form (`openConnectionForm` — used by the Add Connection / Edit Connection commands) is the lone remaining webview that emits raw HTML strings + inline JavaScript via a hand-built `renderHtml()`. ~320 lines of template string with embedded `<style>` + `<script>` and ad-hoc `document.getElementById(...)` wiring. Every other webview surface in the project (inspector cards, diagram panels) is React, lives under `src/webview/`, and gets built into `out/webview.js` by a dedicated esbuild target.
+
+Migrate the connection form to follow the same pattern, but as **a separate React bundle** rather than expanding `out/webview.js`. The form has its own lifecycle (modal-style dialog returning a `Promise<ConnectionFormData | undefined>`), its own message protocol (Test Connection roundtrip with request ids), and zero overlap with inspector data models. Mixing it into the inspector bundle bloats that surface with code the user only hits when adding/editing a connection.
+
+The pattern also matches what's already anticipated in CLAUDE.md: *"M5/M6 will add query + graph panels reusing the same framework."* Adding a third React surface (the form) now establishes the "one bundle per panel" convention before we have to repeat the work for query + graph.
+
+**Final shape:**
+
+```
+src/webview/connection-form/
+├── panel.ts          ← extension-side openConnectionForm()
+├── messages.ts       ← typed W2E / E2W protocol
+└── ui/
+    ├── main.tsx      ← React entry; reads data-paic-payload; mounts <App>
+    └── App.tsx       ← form state, validation, message-posting
+```
+
+**esbuild target.** A new `build:connection-form` script bundles `src/webview/connection-form/ui/main.tsx` → `out/connection-form.js`. The parent `build` runs all three (ext + webview + connection-form). Same flags as the inspector webview (`--platform=browser --format=iife --jsx=automatic`).
+
+**API stays identical.** `openConnectionForm(context, opts) → Promise<ConnectionFormData | undefined>` is preserved. Its body is what changes — from "render a 320-line HTML template" to "create a WebviewPanel that loads `out/connection-form.js` with an embedded `data-paic-payload`, then resolve the returned promise on the next `save` or `cancel` message from the React app." Callers (`commands/add-connection.ts`, `commands/edit-connection.ts`) need zero updates.
+
+**File moves.** `src/views/connection-form.ts` is deleted; the new home is `src/webview/connection-form/panel.ts`. Import paths in the two command files get a one-line update each (`../views/connection-form` → `../webview/connection-form/panel`).
+
+**Messages** mirror the inspector's protocol style — W2E + E2W typed unions with discriminant `type`:
+
+```ts
+export type W2E =
+  | { type: "save"; data: ConnectionFormData }
+  | { type: "cancel" }
+  | { type: "validate"; data: ConnectionFormData; requestId: number };
+
+export type E2W = { type: "validateResult"; requestId: number } & (
+  | { ok: true; expiresIn: number; droppedScopes: string[] }
+  | { ok: false; message: string }
+);
+```
+
+Initial payload (mode + initial values + existingHosts) is embedded in the page via a `data-paic-payload` attribute on the mount div — same trick the inspector uses — so we don't need an `init` message at all.
+
+**Test plan.** New `tests/webview/connection-form/ui/` directory with happy-dom + React Testing Library tests for the form:
+- Required-field validation surfaces error text
+- Duplicate-host detection in Add mode
+- JWK-optional in Edit mode
+- Save button posts the typed save message
+- Cancel button posts cancel
+- Test Connection button shows pending → ok / error state from the `validateResult` message
+
+**What stays the same:**
+
+- `handleValidate` (mint token via `paic/auth`, log success/failure) — stays in the extension-side `panel.ts` unchanged. The webview never touches `axios` / `jose` (D2 / D27).
+- CSP shape (`script-src 'nonce-...'`, no remote anything), `localResourceRoots` (now includes `out/` so the bundle loads).
+- `SecretStorage` flow: webview never receives the existing JWK; `handleValidate` looks it up extension-side via `getExistingJwk`.
+
+**What does NOT migrate (out of scope for D34):**
+
+- The two command files (`add-connection`, `edit-connection`) — their `openConnectionForm()` calls are unchanged.
+- The `tenants/registry.ts` save/edit logic.
+
 ### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
 
 Today the sidebar tree builds a journey's (or script's) children in **discovery order** — whatever order the dependency walker emits as it crawls a journey's nodes. A real journey can mix Inner Journeys, Scripts, Themes, Email Templates, and Social IdPs in any sequence, and the result is hard to scan.

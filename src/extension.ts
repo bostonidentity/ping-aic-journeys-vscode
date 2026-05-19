@@ -14,13 +14,13 @@ import {
 import { type ClientCache, makeClientCache } from "./tenants/client-cache";
 import { makeProductionDeps, makeTenantsRegistry, type TenantsRegistry } from "./tenants/registry";
 import { type Logger, makeLogger } from "./util/logger";
-import { openConnectionForm } from "./views/connection-form";
 import { MessageNode, type PaicNode } from "./views/nodes/base";
 import { CategoryHeaderNode } from "./views/nodes/category-header";
 import { ConnectionNode } from "./views/nodes/connection";
 import { LibraryScriptNode } from "./views/nodes/library-script";
 import { ScriptNode } from "./views/nodes/script";
 import { PaicTreeProvider } from "./views/paic-tree-provider";
+import { openConnectionForm } from "./webview/connection-form/panel";
 import { InspectorFactory } from "./webview/inspector/panel";
 
 const LOG_LEVEL_SETTING = "paicJourneys.logging.level";

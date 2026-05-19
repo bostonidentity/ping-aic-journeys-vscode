@@ -43,7 +43,9 @@ export function makeClientCache(deps: ClientCacheDeps): ClientCache {
     let cached: { token: string; expiresAt: number } | null = null;
     const getToken = async (opts?: { forceRefresh?: boolean }): Promise<string> => {
       const now = Date.now();
-      if (!opts?.forceRefresh && cached && cached.expiresAt > now + 5_000) {
+      // 30 s safety margin matches frodo-lib (`TokenCacheOps.readToken`).
+      // The 401 self-heal in `paic/http.ts` catches anything that slips past.
+      if (!opts?.forceRefresh && cached && cached.expiresAt > now + 30_000) {
         return cached.token;
       }
       const res = await mintToken({ host: conn.host, saId: conn.saId, jwk });

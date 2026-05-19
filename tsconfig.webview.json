@@ -14,5 +14,9 @@
     "paths": { "@/*": ["src/*"] },
     "types": ["vitest/globals"]
   },
-  "include": ["src/webview/**/*", "tests/webview/inspector/ui/**/*"]
+  "include": [
+    "src/webview/**/*",
+    "tests/webview/inspector/ui/**/*",
+    "tests/webview/connection-form/ui/**/*"
+  ]
 }

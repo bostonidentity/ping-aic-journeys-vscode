@@ -14,5 +14,10 @@
     }
   },
   "include": ["src/**/*", "tests/**/*"],
-  "exclude": ["src/webview/inspector/ui/**", "tests/webview/inspector/ui/**"]
+  "exclude": [
+    "src/webview/inspector/ui/**",
+    "tests/webview/inspector/ui/**",
+    "src/webview/connection-form/ui/**",
+    "tests/webview/connection-form/ui/**"
+  ]
 }
