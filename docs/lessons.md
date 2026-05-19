@@ -16,6 +16,18 @@ Corrections and patterns to avoid repeating. Append entries here whenever a user
 
 <!-- Entries below, newest first. -->
 
+## 2026-05-18 — AIC platform terminal-node IDs: verify against fixtures, never reconstruct from memory
+
+**Context:** Implementing D28 (synthesize Success/Failure terminals). I wrote the constants by recalling the UUIDs from earlier in the session and reading my own prior code.
+**Mistake:** The Failure UUID I committed was `e301438c-0bd0-429c-ab0c-4b8d48aa5b41`. Correct value from frodo-lib captures + real AIC wire payloads is `e301438c-0bd0-429c-ab0c-66126501069a`. Same first segment, fabricated last segment. Also missed that AIC's `staticNodes` has a *third* entry — `startNode` (literal string key) — that AIC's admin UI renders as the visual "Start" pill before the entry node. Both bugs were caught by a real-tenant smoke test on the user's simplest journey (`aaron_test_login` showed no Failure terminal and no Start pill).
+**Correction:** The full set of platform-static node IDs is:
+- `"startNode"` (literal string) — synthetic start, always implicit before `entryNodeId`
+- `"70e691a5-1e33-4ac3-a356-e7b6d60d92e0"` — Success
+- `"e301438c-0bd0-429c-ab0c-66126501069a"` — Failure
+
+All three appear under `staticNodes` on the wire. `startNode` is connected to `entryNodeId` implicitly (no edge in `nodes` references it); Success/Failure are targets of edges from real decision/data-store nodes.
+**How to avoid next time:** When defining "stable" platform constants (UUIDs, well-known IDs, magic strings), grep them out of captured fixtures or `ref/frodo-lib/` before adding to source. Never type a UUID from memory. A `grep -rn '<first-segment>' ref/frodo-lib/src` takes 2 seconds and would have caught both bugs immediately.
+
 ## 2026-05-18 — `/openidm/config/ui/themerealm` uses `realm` (singular), value is the theme array directly
 
 **Context:** Implementing `client.getTheme(realm, themeId)` for the M3 theme leaf + card. Initial code looked under `json.realms[realm].themes` (plural, with `.themes` wrapper).

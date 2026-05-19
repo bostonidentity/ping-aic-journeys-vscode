@@ -339,6 +339,222 @@ The wire identifier for the root realm is `parentPath === null` (or absent), not
 
 The filter lives in the view layer, not the data layer: `client.listRealms()` stays a faithful translation of the wire response (D11), `isRoot` is a derived domain flag. If on-prem AM support is added later, the `Connection` type grows a discriminator (`paic` vs `am-onprem`) and the filter becomes conditional on `connection.type === "paic"`.
 
+### D26 — Diagram layout: left-to-right dagre, non-persistent node dragging
+
+**Direction: left-to-right (`rankdir: "LR"`).** AIC journeys read as authentication *flows* — entry on the left, outcomes on the right. Top-to-bottom layouts grow vertically fast (sb3's `kyid_2B1_MasterLogin` has ~30 nodes and scrolls forever) and don't match the mental model of "flow from start to end." AIC's own admin UI uses LR for the same reason. The change is a single field flip in `layout.ts`; node-anchor handles continue to use ReactFlow defaults (dagre routes edges to handle positions automatically).
+
+**Algorithm: stay on dagre.** Dagre is the standard Sugiyama-style hierarchical layout (layer-assign → crossing-minimize → coordinate-assign). It's deterministic, runs in <10ms for journeys we've seen, and is what PingHub's pipeline diagram + most DAG viewers use. Tune knobs before switching libraries:
+
+| Knob | Today | LR target |
+|---|---|---|
+| `rankdir` | `TB` | `LR` |
+| `ranksep` (between-layer gap) | 48 | 70 (room for edge labels in LR) |
+| `nodesep` (within-layer gap) | 30 | 30 (unchanged) |
+| `ranker` | default (`network-simplex`) | unchanged — switch to `tight-tree` only if narrow journeys look bad |
+
+**Alternatives considered + rejected (for now):**
+- **ELK** — more layout strategies and real orthogonal edge routing. ~700 KB dep, async API. Worth revisiting if dagre's edge crossings get noisy on real customer journeys with many cycles. Not a today problem.
+- **cytoscape + cose-bilkent** (force-directed) — wrong fit. Journeys are hierarchies, not hairballs.
+
+**Node dragging: enabled, NOT persisted.** Flip `nodesDraggable={true}` and back it with ReactFlow's `useNodesState` so positions are owned in component state, not recomputed every render. Drag positions live for the lifetime of the inspector tab and die when the tab closes. No settings, no message protocol, no persistence layer.
+
+Why not save positions? (a) Every "show a card" gesture spawns a fresh tab per D24 — there is no stable "this is the journey diagram" surface to attach saved positions to. (b) Persistence would force a key choice (per-host? per-realm? per-journey?) and an eviction strategy we don't need to make now. (c) The use case is "rearrange a bit to see something clearly," not "design a layout." Ephemeral drag covers that.
+
+### D27 — Webview theming: VS Code semantic CSS variables, never hardcoded colors
+
+The inspector webviews must work in any VS Code theme — default dark, default light, GitHub themes, Solarized, Dracula, and the two high-contrast themes. VS Code injects ~150 `--vscode-<area>-<purpose>` CSS custom properties into every webview that remap automatically when the user switches themes. Using them is free theme support; ignoring them is a recurring bug factory.
+
+**Rules:**
+1. **Never hardcode a color** in webview CSS. Inline `var(--vscode-*, #fallback)` is fine — the fallback hex is a safety net for unknown themes, not the actual color we expect. Existing chart-color fallbacks (`var(--vscode-charts-purple, #b180d7)`) are the model.
+2. **Never rely on background-contrast alone** for shape definition. High-contrast themes flatten background differences — always pair `background` with a `border` so cards stay readable.
+3. **Use semantic variables** (table below), not the most-similar-looking one. Don't reach for `--vscode-editor-background` when the surface is actually a raised panel; reach for `--vscode-editorWidget-background`.
+4. **Override ReactFlow's defaults.** ReactFlow ships its own CSS with hardcoded grays for edges, controls, minimap, and the background-dot pattern. Override all of these to point at VS Code vars so they follow the theme.
+5. **Provide a focus ring** (`outline: 2px solid var(--vscode-focusBorder)` on `:focus-visible`) on every interactive element. Required for keyboard a11y and shows clearly in every theme including high contrast.
+
+**Semantic variable cheat sheet** (canonical use across all webview cards + diagram):
+
+| Purpose | Variable |
+|---|---|
+| Page background (the canvas behind cards) | `--vscode-editor-background` |
+| Card / raised surface (hover popups, peek widgets, our diagram nodes) | `--vscode-editorWidget-background` |
+| Default body text | `--vscode-foreground` |
+| Dimmed / secondary text (IDs under names, captions) | `--vscode-descriptionForeground` |
+| Hyperlinks | `--vscode-textLink-foreground` / `--vscode-textLink-activeForeground` |
+| Borders, dividers | `--vscode-panel-border` (fallback `--vscode-editorWidget-border`) |
+| Inline `<code>` background | `--vscode-textBlockQuote-background` |
+| Inputs | `--vscode-input-background` / `--input-foreground` / `--input-border` |
+| Primary buttons | `--vscode-button-background` / `--button-foreground` / `--button-hoverBackground` |
+| Secondary buttons | `--vscode-button-secondaryBackground` / `--secondaryForeground` |
+| Per-kind accents (script/inner/page/email/etc.) | `--vscode-charts-{red\|orange\|yellow\|green\|blue\|purple\|foreground}` |
+| Focus ring | `--vscode-focusBorder` |
+| Error text | `--vscode-errorForeground` |
+| Warning text | `--vscode-editorWarning-foreground` |
+| Code-block font | `--vscode-editor-font-family` / `--vscode-editor-font-size` |
+
+**Acid test:** if the webview looks right in **Default High Contrast Dark** (`Ctrl+K Ctrl+T` → "Default High Contrast"), it'll look right in every theme. Pure-black background + pure-white text strips away all subtle gray contrast, forcing the layout to stand on real borders + semantic colors.
+
+### D28 — Synthesize platform-fixed terminal nodes (Start, Success, Failure)
+
+AIC journeys begin and end at three platform-fixed nodes that appear under `staticNodes` on the wire. They are **NOT** in the journey's `nodes` map — the platform treats them as implicit. IDs verified against frodo-lib captures and live AIC payloads:
+
+| Terminal | Stable ID | nodeType | Direction |
+|---|---|---|---|
+| Start | `"startNode"` (literal string) | `StartNode` | Source only (no inbound) |
+| Success | `70e691a5-1e33-4ac3-a356-e7b6d60d92e0` | `SuccessNode` | Sink only (no outbound) |
+| Failure | `e301438c-0bd0-429c-ab0c-66126501069a` | `FailureNode` | Sink only (no outbound) |
+
+Without synthesis, AIC's admin-UI-like flow ("Start → entry → … → Success/Failure") is broken in three ways: (a) no visual Start pill on the left, (b) edges to Success/Failure get dropped by the orphan-target guard, (c) `ScriptedDecisionNode` with `{ Success: <succID>, Failure: <failID>, Locked: "node-X" }` would render only the `Locked` edge — visually a journey "with no end."
+
+**Three-part fix:**
+
+1. **Always synthesize the Start node** when the journey has a valid `entryNodeId` (i.e. `journey.nodes[entryNodeId]` exists). Adds an implicit edge `startNode → entryNodeId` labeled `"start"`. The Start view has only a source handle (right side).
+2. **Synthesize Success/Failure on demand** when at least one real edge points to either ID. Each gets a target handle (left side) and no source handle.
+3. **Stop dropping their edges.** Replace the absent-target guard with: drop only if the target is neither in `journey.nodes` nor one of the two output-terminal IDs. Start's edge is added explicitly above.
+
+**Three node views:**
+
+- `StartNodeView` — blue stripe (`var(--vscode-charts-blue, #4f8cc9)`), label "Start", source handle right
+- `SuccessNodeView` — green stripe (`var(--vscode-charts-green, #6c9b34)`), label "Success", target handle left
+- `FailureNodeView` — red stripe (`var(--vscode-charts-red, #c93636)`), label "Failure", target handle left
+
+All three follow the same `.diag-node` shape as other kinds (consistent visual language) but are non-clickable (no `info.uid` — there's nothing to inspect, they're platform constants). Hover tooltip: "Platform terminal — every AIC journey begins/ends here."
+
+**Pinning positions** is not needed for horizontal placement — in LR with dagre's default `network-simplex` ranker, Start (no inbound edges) naturally lands in the leftmost layer and Success/Failure (no outbound edges) naturally land in the rightmost layer.
+
+**Vertical pinning** *is* applied: after `dagre.layout()` runs, we recompute the y-midpoint of all real journey nodes (`(min_y + max_y) / 2`) and override each terminal's y to that value. Without this, dagre places terminals wherever the algorithm finds room — often offset from the visual center, which makes simple journeys look lopsided. Anchoring all three terminals to the same y also makes the flow's entry/exit symmetric and predictable.
+
+**Only Start is undraggable.** It anchors the leftmost-vertical-center of every flow. Success and Failure can be dragged like real nodes — users may want to rearrange them to keep adjacent outcomes visually together. `JourneyDiagram` carries `NON_DRAGGABLE = new Set([START_NODE_ID])` and applies `draggable: false` only to that one node.
+
+**Color palette discipline.** Per D27 the diagram uses VS Code chart/terminal colors. **Blue / green / red are now reserved exclusively for the three terminals** (Start / Success / Failure). Real journey nodes draw from the rest of the palette: purple (script family), orange (Page), yellow (Email), cyan (Inner Journey / DeviceMatch), magenta (Social IdP / SelectIdP / PingOne Verify), and gray (Other fallback). This avoids confusion where, e.g., a red `social` stripe could look like a Failure terminal at a glance.
+
+**No separate entry-node marker.** Earlier the entry node carried a thin blue `outline` to mark "the flow starts here." With Start synthesized as a dedicated visual terminal (always present per D28), that secondary marker is redundant and was removed. The `isEntry` flag still drives the hover-tooltip "(entry)" suffix in `buildNodeTooltip` — useful textual context that doesn't compete visually.
+
+### D32 — "Re-layout" / "Original layout" toggle (5th Controls button)
+
+D31 makes the diagram faithful to AIC's hand-placed coordinates — that's the right default. But some journeys have messy hand-placements (overlapping nodes, oddly spaced clusters, retry loops in awkward corners) where the user might prefer a clean algorithmic arrangement.
+
+A fifth text-labeled button is added to the `<Controls>` panel (after zoom-in / zoom-out / fit-view / Expand). It's a **two-state toggle**:
+
+- Default (`usingDagre = false`): button label "Re-layout". Diagram renders AIC's server-coords layout.
+- After click (`usingDagre = true`): button label "Original layout". Diagram renders dagre's clean layout.
+- Clicking again returns to AIC's layout. Both directions discard any drag positions made while in that mode.
+
+**Mechanics:**
+
+1. `computeDagreLayout` is exported from `src/webview/inspector/ui/diagram/layout.ts` (was a private helper).
+2. `JourneyDiagram` holds a `usingDagre` boolean state and a `toggleLayout` callback:
+   ```ts
+   const toggleLayout = useCallback(() => {
+     const next = !usingDagre;
+     setUsingDagre(next);
+     const layout = next ? computeDagreLayout(journey) : computeLayout(journey);
+     setRfNodes(layout.nodes.map((n) => toRfNode(n, nodeIndex)));
+     window.requestAnimationFrame(() =>
+       rfInstanceRef.current?.fitView({ padding: 0.12 }),
+     );
+   }, [usingDagre, journey, nodeIndex, setRfNodes]);
+   ```
+   `computeLayout` is the D31 dispatcher: it returns the server-coords layout when usable and falls back to dagre otherwise. Toggling back is symmetric.
+3. The button text + tooltip flip based on `usingDagre`. A shared `ctrl-text-button` class widens the button so the label fits.
+
+**What stays the same:**
+
+- Server coordinates remain the default on first render — D31 unchanged.
+- Drag (D26), expand (D29), terminal anchoring (D28) all still work after a toggle — the new positions become the new `useNodesState` seed.
+- No persistence across tabs — closing and reopening reverts to AIC's layout regardless of which state the button was in. Matches D26.
+
+**Risks / non-risks:**
+
+- **Edge endpoints** auto-follow nodes via ReactFlow's id references; no manual edge updates needed.
+- **Drag positions are discarded on toggle** — expected. The toggle is a "give me a fresh arrangement" gesture, not a drag-preserver.
+- **No mode flicker.** State is local to the React component; both layout functions are pure, sync, and fast (<10 ms each).
+
+### D31 — Use server-provided node coordinates instead of dagre auto-layout
+
+AIC's journey wire response carries the **exact node positions** the user laid out in the admin UI:
+
+- Every entry in `journey.nodes[id]` has `x` and `y` fields — pixel coordinates from the AIC canvas.
+- A separate `journey.staticNodes` map carries coordinates for the three platform terminals:
+  - `staticNodes.startNode` → `{x, y}`
+  - `staticNodes["70e691a5-..."]` → Success
+  - `staticNodes["e301438c-...-66126501069a"]` → Failure
+
+This means we can **render the diagram exactly as the user designed it in AIC**, instead of running our own layout algorithm. dagre produces a clean tree but it doesn't match what the user is looking at when they edit the journey — and many real-world journeys have deliberate spatial arrangement (e.g. fallback loops on one side, happy paths in a column) that dagre flattens away.
+
+**Approach:**
+
+1. **Pass server coordinates straight through.** `NodeRef.x` / `y` become part of the domain type; `Journey.staticNodes` is added. `mapJourney` threads both through verbatim — D11's "faithful translation" principle.
+2. **Layout uses server coordinates as the primary source.** `computeLayout` reads `journey.nodes[id].x/y` for real nodes and `journey.staticNodes[id].x/y` for terminals. The result feeds directly into ReactFlow's `position`.
+3. **Dagre stays as a fallback.** If a journey has no coordinates (e.g. journeys created via API without ever opening the admin UI, or older exports), or if more than a small threshold of nodes have `x === 0 && y === 0`, fall back to the dagre-based layout we have today.
+4. **NODE_W / NODE_H stay constant.** AIC's coordinates are top-left-anchored pixel positions in its canvas; we render them at the same scale. ReactFlow's `fitView` handles the zoom-to-fit automatically.
+5. **Terminal-anchoring code from D28 is removed** when using server coordinates — server already centers Start vertically and stacks Success/Failure naturally. Anchoring stays in the dagre fallback path.
+6. **LR direction stays.** AIC's own layout is LR (verified: `startNode.x = 70`, internal nodes 200–500, terminals 692). Our LR flips match the source data.
+
+**Why this is better than dagre:**
+
+- **Matches the user's mental model exactly** — they see the same diagram in our extension that they see in AIC's admin UI.
+- **Removes a whole class of layout-quirk bugs** — dagre sometimes produces awkward placements for cycles or wide journeys; the user's hand-tuned layout doesn't have those.
+- **Simpler code path** — no dagre invocation for the common case. Dagre stays only as the fallback for coordinate-less journeys.
+- **Drag-to-rearrange still works** (D26) — `useNodesState` still owns positions for the tab's lifetime; the initial values just come from the wire instead of dagre.
+
+**What needs care:**
+
+- **Coordinate scale.** AIC's canvas uses pixel values that can be very large (Success node at x=1236 in one capture). Our diagram canvas auto-fits via `fitView`, so absolute scale doesn't matter — only relative positions do.
+- **Coordinate offset.** AIC's coordinates are anchored to its canvas origin, not ours. ReactFlow's pan/zoom adapts.
+- **Missing coordinates.** Some node references may have `x` / `y` undefined or 0. Our fallback rule: if `journey.entryNodeId` exists and its node has no coordinates, OR if all real nodes have `x === 0 && y === 0`, treat the journey as "uncoordinated" and run dagre. Per-node missing coordinates default to `(0, 0)` and accept the overlap — rare edge case.
+- **Inner journeys.** Each inner journey is fetched separately and has its own `staticNodes`. The recursive `getJourney` already returns the full shape; the inner-journey card builds its own diagram from the inner's coordinates.
+
+**Risks:**
+
+- **Hand-edited journeys may have overlapping nodes** if a user dragged two nodes to similar positions in AIC. Faithful reproduction means we'd show the overlap too. Acceptable — it's accurate to what AIC shows.
+- **Older exports / API-created journeys** may have placeholder coordinates. The fallback path covers these.
+- **Tests** assume dagre-driven coordinates today. Fixtures + assertions need a small revisit — most just verify node presence and edges, not pixel positions.
+
+### D30 — Per-outcome handles inside decision nodes (TRIED, REVERTED 2026-05-19)
+
+**Status: reverted.** AIC's admin UI lists outcome names (True / False / Allow / etc.) inside the source node body with per-outcome handles. We tried mimicking the pattern (variable node height, named source handles, edge labels dropped). The implementation worked technically — tests passed, layout was correct — but the visual result looked cluttered: the inline-label stack inside a 200 px-wide node, combined with our color stripe, header text, and synthesized terminals, was busier than the labels-on-edges baseline.
+
+**Decision:** stay with mid-edge outcome labels. Fixed `NODE_H = 64`. Single source handle per node on the right edge.
+
+**If we ever revisit this**, the friction wasn't the mechanics — it was the visual density at our current node dimensions. A wider node, a sparser header, or an opt-in toggle ("compact" vs "labeled-edges") could make it work. Not a foundational change worth the complexity right now.
+
+### D29 — Diagram expand-to-tab-width toggle (no fullscreen, no persistence)
+
+Inspector cards have `max-width: 720px` so prose stays readable. The diagram lives inside a card, so on wide tabs the diagram is squeezed even when there's plenty of horizontal space available. Real journeys regularly exceed what fits at 720 px (30+ nodes in LR flow).
+
+A text-labeled button is added to ReactFlow's existing `<Controls>` panel as the **4th button** (after zoom-in / zoom-out / fit-view). The whole `<Controls>` panel is moved to the **top-left** corner of the diagram (`position="top-left"`) — the default bottom-left position would put zoom controls at the very bottom of an expanded diagram, far from where the user's eye starts. Top-left keeps the controls in immediate reach.
+
+**Both added buttons use icons** — small 12×12 inline SVGs that match the visual weight of ReactFlow's built-in zoom/fit-view buttons. The icon **swaps with state** to suggest the click outcome:
+
+| Button | State A icon | State B icon |
+|---|---|---|
+| Expand / Collapse | Horizontal arrows **outward** (expand) | Horizontal arrows **inward** (collapse) |
+| Re-layout / Original layout | Tree-graph (3 dots + 2 branches → "auto-arrange") | Counter-clockwise circular arrow (revert) |
+
+The **hover tooltip + `aria-label`** carry the plain-text label ("Expand" / "Collapse" / "Re-layout" / "Original layout") for accessibility and discoverability. No text inside the button bodies — keeps them visually consistent with the three default ReactFlow Controls buttons (zoom in, zoom out, fit-view).
+
+| State | Width | Height |
+|---|---|---|
+| Collapsed (default) | Card's `max-width: 720px` | `360px` fixed |
+| Expanded | Full tab width (`max-width: none` on the card) | Derived from CSS `aspect-ratio: 16 / 9` of the now-wider container |
+
+Width-to-tab is the primary mechanic. Height uses a **fixed 16:9 aspect ratio** of the width rather than `100vh - X`, because:
+- The webview is already vertically scrollable (the inspector card sits in normal page flow with deps + diagram + footer content). Tying height to viewport double-counts that scrolling and produces awkward sizing.
+- A ratio scales linearly with width — wider tab → taller diagram, predictably.
+- Width is more reliably measurable in a webview than the "available vertical space."
+
+The expand mechanism uses `:has()` on the containing card: `.card:has(.diagram.expanded) { max-width: none }`. Modern Chromium supports `:has()` so this works in VS Code's Electron renderer.
+
+**Not fullscreen.** A real fullscreen mode would need an `IntersectionObserver` for scroll-into-view restoration, focus trapping, and ESC handling. Out of scope for "I want more room to see the flow."
+
+**Not persisted.** Toggle state is `useState` inside `JourneyDiagram` — lives for the lifetime of one inspector tab. Each `previewNode` spawn (per D24) gets a fresh tab + fresh state. No settings, no message protocol, no per-host preference. Same rationale as the no-drag-persistence decision in D26.
+
+**Re-fit on toggle.** ReactFlow doesn't auto-refit on container resize. We capture the instance via `onInit` and call `fitView({ padding: 0.12 })` inside a `requestAnimationFrame` callback in a `useEffect` keyed on `expanded`. Single-frame defer is needed so the DOM has settled to the new size before we measure.
+
+**Drag positions on toggle?** `useNodesState` keeps the same array across the toggle. After the refit, nodes are repositioned by the fitView pan/zoom, not by re-running dagre. If the user wants a re-layout after expanding, they can close + reopen the tab.
+
+**Why hardcode the IDs?** They're stable across every PAIC tenant and every on-prem AM deployment in frodo-lib's fixtures. frodo-lib, PingHub, and the AIC admin UI all do the same. If they ever change (extremely unlikely — would break every customer integration), we'd need a fix anyway. **Lesson:** verify against captured fixtures, never reconstruct UUIDs from memory (see lessons.md 2026-05-18).
+
 ## Architecture (M2 target state)
 
 ```

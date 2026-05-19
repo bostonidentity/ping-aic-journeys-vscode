@@ -8,10 +8,10 @@ export function OtherNodeView({ data }: NodeProps<DiagramNodeData>) {
       className={`diag-node other ${data.isEntry ? "entry" : ""}`}
       title={buildNodeTooltip(data)}
     >
-      <Handle type="target" position={Position.Top} isConnectable={false} />
+      <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className="kind">{prettyKind(data.nodeType)}</div>
       <div className="label">{data.displayName ?? "(unnamed)"}</div>
-      <Handle type="source" position={Position.Bottom} isConnectable={false} />
+      <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
 }

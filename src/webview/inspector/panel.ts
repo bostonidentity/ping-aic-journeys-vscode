@@ -626,23 +626,51 @@ button.link:hover { text-decoration: underline; color: var(--vscode-textLink-act
 .card-actions { margin-top: 16px; }
 .card-actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid var(--vscode-button-border, transparent); padding: 6px 14px; border-radius: 2px; cursor: pointer; font: inherit; }
 .card-actions button.primary:hover { background: var(--vscode-button-hoverBackground); }
-.diagram { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.diagram { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); height: 360px; }
 .diagram-empty { margin-top: 18px; color: var(--vscode-descriptionForeground); padding-top: 12px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
-.diag-node { width: 200px; height: 64px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); border-radius: 4px; background: var(--vscode-editor-background); color: var(--vscode-foreground); font-size: 0.85em; box-sizing: border-box; cursor: pointer; }
+/* When the diagram is expanded, let the containing card stretch beyond its
+   normal max-width so the diagram fills the inspector tab. Height is derived
+   from a 16:9 aspect ratio of the now-wider container — see D29. :has()
+   support is universal in modern Chromium (VS Code's renderer). */
+.card:has(.diagram.expanded) { max-width: none; }
+.diagram.expanded { height: auto; aspect-ratio: 16 / 9; }
+.diag-node { width: 200px; height: 64px; padding: 6px 8px; border: 1.5px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); border-radius: 4px; background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground); font-size: 0.85em; box-sizing: border-box; cursor: pointer; }
 .diag-node .kind { font-size: 0.7em; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
 .diag-node .label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diag-node .hint { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.75em; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.diag-node.script { border-left: 3px solid var(--vscode-charts-purple, #b180d7); }
-.diag-node.inner { border-left: 3px solid var(--vscode-charts-blue, #4f8cc9); }
-.diag-node.other { border-left: 3px solid var(--vscode-charts-foreground, #8c8c8c); opacity: 0.85; }
-.diag-node.page { border-left: 3px solid var(--vscode-charts-orange, #d18616); }
-.diag-node.email { border-left: 3px solid var(--vscode-charts-yellow, #c9b73a); }
-.diag-node.social { border-left: 3px solid var(--vscode-charts-red, #c93636); }
-.diag-node.select-idp { border-left: 3px solid var(--vscode-charts-red, #c93636); opacity: 0.9; }
-.diag-node.device-match { border-left: 3px solid var(--vscode-charts-blue, #4f8cc9); opacity: 0.95; }
-.diag-node.config-provider { border-left: 3px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
-.diag-node.client-script { border-left: 3px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
-.diag-node.verify { border-left: 3px solid var(--vscode-charts-green, #3c9c3c); opacity: 0.9; }
+/* Per-kind color stripes (D27). Blue, green, and red are RESERVED for the
+   three synthesized terminals (terminal-start, terminal-success,
+   terminal-failure). Real journey nodes use other chart/terminal colors so
+   they don't collide visually with terminals. */
+.diag-node.script { border-left: 5px solid var(--vscode-charts-purple, #b180d7); }
+.diag-node.inner { border-left: 5px solid var(--vscode-terminal-ansiCyan, #06989a); }
+.diag-node.other { border-left: 5px solid var(--vscode-charts-foreground, #8c8c8c); opacity: 0.85; }
+.diag-node.page { border-left: 5px solid var(--vscode-charts-orange, #d18616); }
+.diag-node.email { border-left: 5px solid var(--vscode-charts-yellow, #c9b73a); }
+.diag-node.social { border-left: 5px solid var(--vscode-terminal-ansiMagenta, #cc66cc); }
+.diag-node.select-idp { border-left: 5px solid var(--vscode-terminal-ansiMagenta, #cc66cc); opacity: 0.9; }
+.diag-node.device-match { border-left: 5px solid var(--vscode-terminal-ansiCyan, #06989a); opacity: 0.95; }
+.diag-node.config-provider { border-left: 5px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
+.diag-node.client-script { border-left: 5px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
+.diag-node.verify { border-left: 5px solid var(--vscode-terminal-ansiMagenta, #cc66cc); opacity: 0.9; }
+/* Terminals — exclusive owners of blue / green / red. */
+.diag-node.terminal-start { border-left: 5px solid var(--vscode-charts-blue, #4f8cc9); }
+.diag-node.terminal-success { border-left: 5px solid var(--vscode-charts-green, #6c9b34); }
+.diag-node.terminal-failure { border-left: 5px solid var(--vscode-charts-red, #c93636); }
+/* ReactFlow defaults ship hardcoded grays/whites — override to track VS Code theme. */
+.diagram .react-flow__edge-path,
+.diagram .react-flow__connection-path { stroke: var(--vscode-editor-foreground); stroke-opacity: 0.55; }
+.diagram .react-flow__edge-textbg { fill: var(--vscode-editorWidget-background, var(--vscode-editor-background)); }
+.diagram .react-flow__edge-text { fill: var(--vscode-foreground); }
+.diagram .react-flow__background-pattern { color: var(--vscode-editorIndentGuide-background, #555); }
+.diagram .react-flow__controls { background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); box-shadow: none; }
+.diagram .react-flow__controls-button { background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground); border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.diagram .react-flow__controls-button:hover { background: var(--vscode-list-hoverBackground); }
+.diagram .react-flow__controls-button svg { fill: var(--vscode-foreground); }
+/* Keyboard focus rings on every interactive element — required for a11y and works across themes. */
+button.link:focus-visible,
+.card-actions button:focus-visible,
+.diag-node:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .theme-swatch { display: inline-flex; align-items: center; gap: 6px; }
 .theme-swatch-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
 .theme-logo { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }

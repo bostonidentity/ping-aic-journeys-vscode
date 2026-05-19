@@ -11,11 +11,11 @@ export function EmailNodeView({ data }: NodeProps<DiagramNodeData>) {
       className={`diag-node email ${data.isEntry ? "entry" : ""}`}
       title={buildNodeTooltip(data)}
     >
-      <Handle type="target" position={Position.Top} isConnectable={false} />
+      <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className="kind">{kindLabel}</div>
       <div className="label">{data.displayName ?? "(unnamed)"}</div>
       {name ? <div className="hint">Template: {name}</div> : null}
-      <Handle type="source" position={Position.Bottom} isConnectable={false} />
+      <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
 }

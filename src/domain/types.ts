@@ -46,6 +46,10 @@ export interface Journey {
   noSession?: boolean;
   mustRun?: boolean;
   transactionalOnly?: boolean;
+  /** Pixel coordinates for the platform-fixed terminal nodes (`startNode`,
+   * `<success-uuid>`, `<failure-uuid>`). Wire field is `staticNodes`
+   * alongside `nodes` — see D31 in `docs/design-plan.md`. */
+  staticNodes?: Record<string, { x: number; y: number }>;
 }
 
 /** A node as referenced inside a journey skeleton. External refs (script
@@ -56,6 +60,10 @@ export interface NodeRef {
   displayName?: string;
   /** outcome → next-node-id within the same journey. */
   connections: Record<string, string>;
+  /** Pixel coordinates from the AIC admin UI canvas (D31). When absent or
+   * all-zero across the journey, the diagram layout falls back to dagre. */
+  x?: number;
+  y?: number;
 }
 
 /** Full node payload from `/nodes/{nodeType}/{id}`. Discriminated union covers

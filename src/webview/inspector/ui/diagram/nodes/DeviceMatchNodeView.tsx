@@ -11,12 +11,12 @@ export function DeviceMatchNodeView({ data }: NodeProps<DiagramNodeData>) {
       className={`diag-node device-match ${data.isEntry ? "entry" : ""}`}
       title={buildNodeTooltip(data)}
     >
-      <Handle type="target" position={Position.Top} isConnectable={false} />
+      <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className="kind">Device Match</div>
       <div className="label">{data.displayName ?? "(unnamed)"}</div>
       {scriptLabel ? <div className="hint">{scriptLabel}</div> : null}
       {inactive ? <div className="hint">Script: inactive</div> : null}
-      <Handle type="source" position={Position.Bottom} isConnectable={false} />
+      <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
 }

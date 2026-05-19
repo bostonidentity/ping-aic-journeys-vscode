@@ -13,10 +13,12 @@ vi.mock("reactflow", async () => {
       nodes,
       onNodeClick,
       nodeTypes,
+      children,
     }: {
       nodes: Array<{ id: string; type: string; data: unknown }>;
       onNodeClick?: (e: unknown, n: { id: string; data: unknown }) => void;
       nodeTypes: Record<string, React.ComponentType<{ data: unknown }>>;
+      children?: React.ReactNode;
     }) =>
       React.createElement(
         "div",
@@ -33,11 +35,26 @@ vi.mock("reactflow", async () => {
             React.createElement(Comp, { data: n.data }),
           );
         }),
+        children,
       ),
     Background: () => null,
-    Controls: () => null,
+    Controls: ({ children }: { children?: React.ReactNode }) =>
+      React.createElement("div", null, children),
+    ControlButton: ({
+      children,
+      onClick,
+      title,
+    }: {
+      children?: React.ReactNode;
+      onClick?: () => void;
+      title?: string;
+    }) => React.createElement("button", { onClick, title }, children),
     Handle: () => null,
-    Position: { Top: "top", Bottom: "bottom" },
+    Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
+    useNodesState: (initial: unknown) => {
+      const [state, setState] = React.useState(initial);
+      return [state, setState, () => undefined];
+    },
   };
 });
 

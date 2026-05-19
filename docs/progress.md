@@ -251,6 +251,56 @@ Bug fix shipped in commit `b41ad21` (parser was capturing `"getProperty"` as ESV
   - [x] `EsvCard.tsx` rewritten — kind-discriminated rendering (`VariableFields` / `SecretFields` / `SharedAuditFields`); `decodeEsvValue` UTF-8 round-trip via `atob` + `TextDecoder`; Copy button uses `navigator.clipboard.writeText`
 - [x] **D25 hide PAIC root realm** — wire identifier is `parentPath === null` (or absent), not the name (varies by deployment: `"/"`, `"root"`, `"Top Level Realm"`). Added `isRoot: boolean` to the `Realm` domain type, set by `mapRealm` via `raw.parentPath == null`. `ConnectionNode.loadChildren` filters `!r.isRoot && r.name !== "/"` (belt-and-suspenders against name variants). Filter lives in view layer; data layer stays a faithful translation per D11. If on-prem AM support is added later, the filter becomes conditional on `connection.type`. 5 new tests (2 mapRealm wire shapes + 3 connection-filter variants). Total 274 → 278.
 
+#### Diagram + theming polish (D26 + D27 + D28)
+
+- [x] **D26 diagram direction → LR** — `layout.ts` flipped `rankdir: "TB"` → `"LR"`; bumped `ranksep: 48` → `70`. Also flipped Handle positions from `Top`/`Bottom` → `Left`/`Right` across all 11 existing node views so edges route into the sides of nodes (consistent with LR).
+- [x] **D26 enable node dragging (non-persistent)** — `JourneyDiagram.tsx` migrated from `useMemo`-derived `rfNodes` to `useNodesState` + `nodesDraggable={true}`. Initial nodes re-seed via `useEffect` keyed on `journey.id`. Drag positions live for the inspector tab's lifetime; no persistence layer.
+- [x] **D27 theme audit pass** — `panel.ts` `INSPECTOR_CSS`:
+  - `.diag-node` background → `var(--vscode-editorWidget-background, var(--vscode-editor-background))` (fixes dark-on-dark)
+  - Border widened `1px` → `1.5px`; per-kind stripe `3px` → `5px`
+  - New `.diag-node.entry` rule: subtle `outline: 1.5px solid var(--vscode-focusBorder); outline-offset: -1px`
+  - ReactFlow defaults overridden: `.react-flow__edge-path`/`__connection-path` stroke, `__edge-textbg`, `__edge-text`, `__background-pattern`, `__controls`, `__controls-button` (+ hover + svg)
+  - `:focus-visible` rings on `button.link`, `.card-actions button`, `.diag-node`
+  - Grep audit confirmed: every hex appears only as a `var(..., #fallback)` per D27
+- [x] **D28 synthesize all three platform terminals (Start, Success, Failure)** — `layout.ts` exports `START_NODE_ID = "startNode"`, `SUCCESS_NODE_ID = "70e691a5-1e33-4ac3-a356-e7b6d60d92e0"`, `FAILURE_NODE_ID = "e301438c-0bd0-429c-ab0c-66126501069a"`. Start is always synthesized when `journey.nodes[entryNodeId]` exists, with an implicit `start→entry` edge. Success/Failure are synthesized on demand when referenced from a real node's `connections`. Pinning not needed — LR + dagre's `network-simplex` ranker naturally puts Start (no inbound) leftmost and Success/Failure (no outbound) rightmost.
+- [x] **D28 StartNodeView + SuccessNodeView + FailureNodeView** — three non-clickable components under `src/webview/inspector/ui/diagram/nodes/`. Blue/green/red kind stripes via VS Code chart vars. Start has only a source handle (right); Success/Failure have only a target handle (left). Registered in `JourneyDiagram.nodeTypes`. Click handler's existing `if (info?.uid)` guard already no-ops for all three (no `nodeIndex` entry).
+- [x] **D28 terminals anchored to vertical midpoint** — `computeLayout` recomputes `(min_y + max_y) / 2` of real journey nodes after dagre runs, then overrides each terminal's `y` to that value (consistent vertical center across simple/complex journeys).
+- [x] **Only Start is undraggable** — Success/Failure carry the same draggability as real nodes (the user may want to rearrange terminal labels for readability). `NON_DRAGGABLE = Set([START_NODE_ID])` in `JourneyDiagram`.
+- [x] **Reserve blue/green/red for terminals only** — earlier `social`/`select-idp` used red and `inner`/`device-match` used blue and `verify` used green, conflicting with Start (blue)/Success (green)/Failure (red). Reassigned: `inner` + `device-match` → cyan (`--vscode-terminal-ansiCyan`); `social` + `select-idp` + `verify` → magenta (`--vscode-terminal-ansiMagenta`). Per-kind palette is now: purple (scripts), orange (Page), yellow (Email), cyan (Inner/Device), magenta (Social/IdP/Verify), gray (Other). Terminals own blue/green/red exclusively.
+- [x] **Removed `.diag-node.entry` outline** — redundant now that Start is a dedicated visual terminal. `isEntry` still drives the hover-tooltip "(entry)" suffix in `buildNodeTooltip`.
+- [x] **D28 tests** — `layout.test.ts` +6 cases (Start always synthesized; Start NOT synthesized when entryNodeId missing; Success-only; Failure-only; both outputs; outputs not synthesized when unreferenced) + adjusted existing tests for the +1 node-count math. `journey-diagram.test.tsx` +2 (SuccessNode rf-type wiring, terminal click is a no-op). 3 new view tests (start/success/failure). Total 278 → 289.
+- [x] **Lesson recorded** — `docs/lessons.md` 2026-05-18 entry: failure-UUID-from-memory bug + missing Start node both caught by user's `aaron_test_login` smoke test. Verify platform-constant IDs against captured fixtures before adding to source.
+- [x] **D29 diagram expand-to-tab-width toggle** — `JourneyDiagram` adds a `ControlButton` as the **4th icon button** in ReactFlow's `Controls` panel (after zoom-in / zoom-out / fit-view), with the whole panel moved to **top-left** (`position="top-left"`). Inline SVG uses horizontal double-arrows (out = expand, in = collapse) — visually distinct from fit-view's frame icon and signals the "width-focused" nature of the toggle. Toggling switches the section between `360px` fixed height inside the card's `720px` cap and `aspect-ratio: 16/9` of full tab width via `:has(.diagram.expanded) { max-width: none }` on the parent card. Height is derived from width (ratio), not from `100vh`, since the webview is already vertically scrollable. Not fullscreen, not persisted. ReactFlow re-fits on toggle via captured instance + `fitView({ padding: 0.12 })` inside a `requestAnimationFrame`. +1 toggle test. Reactflow test mock updated (3 files) to render `ReactFlow` children + provide `Controls` + `ControlButton`. Total 289 → 290.
+
+#### D26/D27/D28 still to verify manually
+
+- [ ] **D27 acid-test** — smoke against Default High Contrast Dark theme (`Ctrl+K Ctrl+T`) before claiming visual done. If it reads correctly there, every theme works.
+- [ ] **Live-tenant smoke** in EDH per the plan's verification list (LR direction, drag, terminals, drag-survives-render, theme switch).
+
+#### D30 — Per-outcome handles inside decision nodes (TRIED, REVERTED 2026-05-19)
+
+Implementation worked technically (297/297 tests passing, lint clean, build clean) but the visual result looked cluttered at our current node dimensions — inline-label stack + color stripe + header text + synthesized terminals were busier than the labels-on-edges baseline. User reviewed and reverted. Notes in D30 of `design-plan.md`. All D30 code + tests deleted; layout / JourneyDiagram / 11 node views / CSS restored to the post-D29 state. Total reverted from 297 → 290.
+
+#### D31 — Use server-provided node coordinates instead of dagre auto-layout
+
+- [x] **Domain widening** — `NodeRef` gains `x?: number` and `y?: number`. `Journey` gains `staticNodes?: Record<string, { x: number; y: number }>`.
+- [x] **Wire types + mapper** — `RawJourney.staticNodes` typed; `mapJourney` threads node `x`/`y` onto each domain `NodeRef` and maps `raw.staticNodes` verbatim (defaults missing axes to `0`).
+- [x] **layout.ts — server-coords primary, dagre fallback** — new `computeLayout` is a small dispatcher routing to `computeServerCoordLayout` (when `hasUsableServerCoords` is true) or the renamed `computeDagreLayout` (existing logic, unchanged behavior). Shared helpers `gatherReferencedOutputTerminals` + `buildEdges` extracted to avoid duplication. Server-coords path subtracts `NODE_W/2` / `NODE_H/2` to convert AIC's center-anchored pixels to ReactFlow's top-left; references `journey.staticNodes` for terminal positions with a "rightmost + center" fallback for terminals that are referenced but missing from `staticNodes`. Terminal vertical-midpoint anchoring (D28) stays in the dagre path only.
+- [x] **JourneyDiagram.tsx** — no changes (layout output shape unchanged).
+- [x] **Tests**:
+  - `mappers.test.ts` +3: preserves node coordinates; maps staticNodes verbatim with `0` defaults; leaves staticNodes undefined when wire omits it.
+  - `layout.test.ts` +3: server-coords path uses node x/y verbatim; server-coords path uses `staticNodes` for terminals; falls back to dagre when no node has non-zero coords.
+  - Existing tests unchanged — the `journey()` factory doesn't supply coords by default, so all 290 existing tests continue to verify the dagre fallback. Total 290 → 296.
+
+#### D32 — "Re-layout with dagre" Controls button
+
+- [x] **`computeDagreLayout` exported** from `layout.ts` (was a private helper; same body, no behavior change).
+- [x] **`toRfNode(n, nodeIndex)` extracted** as a module-level helper — the initial `useMemo` and the new `relayoutWithDagre` handler use the same transformation.
+- [x] **5th `<ControlButton>` in `JourneyDiagram`** — small inline SVG icon that swaps with state: tree-graph (3 dots + 2 branches) for "Re-layout", counter-clockwise circular arrow for "Original layout". Plain-text labels live in the `title` (hover tooltip) + `aria-label` attributes.
+- [x] **`toggleLayout` handler (D32 is a 2-state toggle)** — `usingDagre` boolean state. Click flips state, calls `computeDagreLayout(journey)` entering dagre mode or `computeLayout(journey)` returning to AIC's layout (D31 dispatcher), then `setRfNodes(layout.nodes.map(toRfNode))` + `requestAnimationFrame → fitView({ padding: 0.12 })`. Drag positions are discarded on toggle in both directions.
+- [x] **Expand button uses icon + tooltip** — same pattern: horizontal-arrows-outward → expand, inward → collapse; plain text in `title` + `aria-label`.
+- [x] **+1 test in `journey-diagram.test.tsx`** — seeds journey with server coordinates, asserts initial position is server-coords-derived, clicks the Re-layout button (queried by aria-label) → asserts position changes to dagre output, clicks again → asserts position returns to server coords. Mock extended with `data-rf-x`/`data-rf-y` attributes. Total 296 → 297.
+
 #### Other M3 notes / non-goals
 
 - [ ] First-click latency on journey expansion grows (PageNode container walk adds one extra `getNode` per child ref). Needs a live-tenant measurement pass against sb3 to record the actual range — not blocking the M3 commit; will be recorded here once captured.

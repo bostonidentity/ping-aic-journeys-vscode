@@ -57,6 +57,9 @@ export interface RawJourney {
   identityResource?: string;
   entryNodeId: string;
   nodes?: Record<string, RawNodeRef>;
+  /** Coordinates for the three platform-fixed terminals (`startNode`,
+   * Success UUID, Failure UUID). Present alongside `nodes` on the wire. */
+  staticNodes?: Record<string, { x?: number; y?: number }>;
   innerTreeOnly?: boolean;
   noSession?: boolean;
   mustRun?: boolean;
@@ -70,7 +73,16 @@ export function mapJourney(raw: RawJourney): Journey {
       nodeType: n.nodeType,
       displayName: n.displayName,
       connections: n.connections ?? {},
+      x: n.x,
+      y: n.y,
     };
+  }
+  let staticNodes: Journey["staticNodes"];
+  if (raw.staticNodes) {
+    staticNodes = {};
+    for (const [id, pos] of Object.entries(raw.staticNodes)) {
+      staticNodes[id] = { x: pos.x ?? 0, y: pos.y ?? 0 };
+    }
   }
   return {
     id: raw._id,
@@ -83,6 +95,7 @@ export function mapJourney(raw: RawJourney): Journey {
     mustRun: raw.mustRun,
     transactionalOnly: raw.transactionalOnly,
     nodes,
+    staticNodes,
   };
 }
 

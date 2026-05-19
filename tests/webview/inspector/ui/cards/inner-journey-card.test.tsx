@@ -7,18 +7,39 @@ import type { NodeInfo, SelectPayload } from "@/webview/messages";
 vi.mock("reactflow", async () => {
   const React = await import("react");
   return {
-    default: ({ nodes }: { nodes: Array<{ id: string; type: string; data: unknown }> }) =>
+    default: ({
+      nodes,
+      children,
+    }: {
+      nodes: Array<{ id: string; type: string; data: unknown }>;
+      children?: React.ReactNode;
+    }) =>
       React.createElement(
         "div",
         { "data-testid": "rf-canvas" },
         nodes.map((n) =>
           React.createElement("div", { key: n.id, "data-testid": `rf-node-${n.id}` }),
         ),
+        children,
       ),
     Background: () => null,
-    Controls: () => null,
+    Controls: ({ children }: { children?: React.ReactNode }) =>
+      React.createElement("div", null, children),
+    ControlButton: ({
+      children,
+      onClick,
+      title,
+    }: {
+      children?: React.ReactNode;
+      onClick?: () => void;
+      title?: string;
+    }) => React.createElement("button", { onClick, title }, children),
     Handle: () => null,
-    Position: { Top: "top", Bottom: "bottom" },
+    Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
+    useNodesState: (initial: unknown) => {
+      const [state, setState] = React.useState(initial);
+      return [state, setState, () => undefined];
+    },
   };
 });
 

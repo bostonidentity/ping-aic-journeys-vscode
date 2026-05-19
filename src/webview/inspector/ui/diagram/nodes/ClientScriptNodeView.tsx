@@ -9,11 +9,11 @@ export function ClientScriptNodeView({ data }: NodeProps<DiagramNodeData>) {
       className={`diag-node client-script ${data.isEntry ? "entry" : ""}`}
       title={buildNodeTooltip(data)}
     >
-      <Handle type="target" position={Position.Top} isConnectable={false} />
+      <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className="kind">Client Script</div>
       <div className="label">{data.displayName ?? "(unnamed)"}</div>
       {scriptLabel ? <div className="hint">{scriptLabel}</div> : null}
-      <Handle type="source" position={Position.Bottom} isConnectable={false} />
+      <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
 }

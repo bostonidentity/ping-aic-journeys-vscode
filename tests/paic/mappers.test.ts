@@ -94,6 +94,49 @@ describe("mapJourney", () => {
     expect(mapJourney(raw).enabled).toBe(false);
   });
 
+  it("preserves node x/y coordinates from the wire (D31)", () => {
+    const raw: RawJourney = {
+      _id: "x",
+      entryNodeId: "n1",
+      nodes: {
+        n1: { nodeType: "PageNode", x: 210, y: 109 },
+        n2: { nodeType: "DataStoreDecisionNode", x: 455, y: 137.5 },
+        n3: { nodeType: "Other" }, // no coords
+      },
+    };
+    const j = mapJourney(raw);
+    expect(j.nodes.n1.x).toBe(210);
+    expect(j.nodes.n1.y).toBe(109);
+    expect(j.nodes.n2.x).toBe(455);
+    expect(j.nodes.n2.y).toBe(137.5);
+    expect(j.nodes.n3.x).toBeUndefined();
+    expect(j.nodes.n3.y).toBeUndefined();
+  });
+
+  it("maps staticNodes verbatim, defaulting missing axes to 0 (D31)", () => {
+    const raw: RawJourney = {
+      _id: "x",
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "PageNode" } },
+      staticNodes: {
+        startNode: { x: 70, y: 155 },
+        "70e691a5-1e33-4ac3-a356-e7b6d60d92e0": { x: 692, y: 230 },
+        "e301438c-0bd0-429c-ab0c-66126501069a": { x: 692 }, // missing y
+      },
+    };
+    const j = mapJourney(raw);
+    expect(j.staticNodes).toEqual({
+      startNode: { x: 70, y: 155 },
+      "70e691a5-1e33-4ac3-a356-e7b6d60d92e0": { x: 692, y: 230 },
+      "e301438c-0bd0-429c-ab0c-66126501069a": { x: 692, y: 0 },
+    });
+  });
+
+  it("leaves staticNodes undefined when the wire omits it", () => {
+    const raw: RawJourney = { _id: "x", entryNodeId: "e" };
+    expect(mapJourney(raw).staticNodes).toBeUndefined();
+  });
+
   it("threads through the 4 runtime flags verbatim (no defaulting)", () => {
     const raw: RawJourney = {
       _id: "x",
