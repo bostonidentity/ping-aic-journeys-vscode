@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { Script } from "../../domain/types";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { MessageNode, PaicNode } from "./base";
@@ -12,9 +13,12 @@ import { expandScript } from "./script-expand";
  */
 export class ScriptNode extends PaicNode {
   readonly uid: string;
-  /** Resolved script name — populated by `journey-expand`'s eager fetch. Used
-   * for the tree label + inspector deps lists. Falls back to `scriptId` when
-   * the eager fetch failed (network / 404). */
+  /** Full resolved script — populated by `journey-expand`'s eager fetch.
+   * Drives the tree label, inspector card metadata (context, description,
+   * evaluatorVersion, last-modified pair), and the ensureBody() short-
+   * circuit. Undefined when the eager fetch failed. */
+  readonly resolved?: Script;
+  /** Cached scriptName for backwards compatibility — equals `resolved?.name`. */
   readonly scriptName?: string;
   private bodyPromise?: Promise<string>;
 
@@ -29,11 +33,11 @@ export class ScriptNode extends PaicNode {
      * as a recursive child of another script's expansion. Top-level scripts
      * (discovered via journey-expand) pass `[]`. */
     public readonly visited: readonly string[] = [],
-    /** Pre-resolved name + body, supplied by `journey-expand` to avoid the
-     * round-trip on first expansion + put the script's name (not its UUID)
-     * on the tree label. Optional for backwards compatibility (direct test
-     * construction, future callers). */
-    resolved?: { name: string; body: string },
+    /** Pre-resolved full Script, supplied by `journey-expand` to avoid the
+     * round-trip on first expansion, put the script's name (not its UUID) on
+     * the tree label, and let the inspector card show context / audit
+     * fields without a per-click fetch. Optional. */
+    resolved?: Script,
   ) {
     super(resolved?.name || scriptId, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
@@ -41,16 +45,12 @@ export class ScriptNode extends PaicNode {
     this.id = this.uid;
     this.contextValue = "script";
     this.iconPath = new vscode.ThemeIcon("symbol-method");
+    this.resolved = resolved;
     this.scriptName = resolved?.name || undefined;
     this.tooltip = buildScriptTooltip(host, realm, scriptId, this.scriptName);
     if (resolved?.body !== undefined) {
-      // Stash the body so ensureBody() short-circuits — no extra fetch on
-      // first expansion.
       this.bodyPromise = Promise.resolve(resolved.body);
     }
-    // Tree-item description (secondary text shown beside the label) — show
-    // the scriptId when we have a name, so the UUID stays discoverable
-    // without dominating the label.
     if (this.scriptName) this.description = scriptId;
   }
 

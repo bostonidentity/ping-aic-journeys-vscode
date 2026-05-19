@@ -9,7 +9,7 @@ import { JourneyNode } from "@/views/nodes/journey";
 import { RealmNode } from "@/views/nodes/realm";
 import { makeFakeCache, makeFakeLogger, makeFakePaicClient } from "../fakes";
 
-const REALM = { name: "alpha", active: true, parentPath: "/" };
+const REALM = { name: "alpha", active: true, parentPath: "/", isRoot: false };
 const HOST = "h.example.com";
 
 function makeJourney(id: string): Journey {

@@ -1,4 +1,4 @@
-import type { Journey, NodePayload, Script } from "../../domain/types";
+import type { Journey, NodePayload, Script, Theme } from "../../domain/types";
 import { mapConcurrent } from "../../paic/concurrency";
 import { getScriptIdIfRef } from "../../paic/script-ref-predicates";
 import type { ClientCache } from "../../tenants/client-cache";
@@ -129,6 +129,30 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
       .filter((e): e is readonly [string, Script] => e !== null),
   );
 
+  // Pre-resolve themes: if any PageNode carries a themeId, fetch the realm's
+  // theme list once and build a lookup map. Lets each ThemeNode show the
+  // human name instead of the UUID and lets the inspector card skip the
+  // per-click fetch.
+  const themeById = new Map<string, Theme>();
+  const wantsThemes = [...payloadById.values()].some((p) => p.nodeType === "PageNode" && p.themeId);
+  if (wantsThemes) {
+    try {
+      const themes = await client.listThemes(realm);
+      for (const t of themes) themeById.set(t.id, t);
+    } catch (err) {
+      childLog.warn(
+        {
+          event: "journey.expand.themeListFailed",
+          host,
+          realm,
+          journey: journey.id,
+          message: err instanceof Error ? err.message : String(err),
+        },
+        "Theme list fetch failed — tree label falls back to id",
+      );
+    }
+  }
+
   const seenScripts = new Set<string>();
   const seenInners = new Set<string>();
   const seenThemes = new Set<string>();
@@ -141,18 +165,7 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
     if (scriptId && !seenScripts.has(scriptId)) {
       seenScripts.add(scriptId);
       const resolved = scriptById.get(scriptId);
-      children.push(
-        new ScriptNode(
-          host,
-          realm,
-          scriptId,
-          cache,
-          log,
-          parent,
-          [],
-          resolved ? { name: resolved.name, body: resolved.body } : undefined,
-        ),
-      );
+      children.push(new ScriptNode(host, realm, scriptId, cache, log, parent, [], resolved));
     }
 
     // Inner-tree edge.
@@ -163,10 +176,12 @@ export async function expandJourney(args: ExpandArgs): Promise<PaicNode[]> {
       );
     }
 
-    // M3 Slice 3 — theme edge via PageNode.stage.
+    // M3 Slice 3 — theme edge via PageNode.stage. Pre-resolved above so the
+    // tree label can show the name + the inspector card skips its fetch.
     if (p.nodeType === "PageNode" && p.themeId && !seenThemes.has(p.themeId)) {
       seenThemes.add(p.themeId);
-      children.push(new ThemeNode(host, realm, p.themeId, cache, log, parent));
+      const resolved = themeById.get(p.themeId);
+      children.push(new ThemeNode(host, realm, p.themeId, cache, log, parent, resolved));
     }
 
     // M3 Slice 3 — email-template edge.

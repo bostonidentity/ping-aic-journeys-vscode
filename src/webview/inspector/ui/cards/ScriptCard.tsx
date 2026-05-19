@@ -8,11 +8,14 @@ export interface ScriptCardDeps {
 interface Props {
   payload: Extract<SelectPayload, { kind: "script" }>;
   deps?: ScriptCardDeps | null;
-  onNavigate?: (uid: string) => void;
+  /** Card-internal hyperlink clicks (deps-list library + ESV links) go
+   * through here per D24 — opens the target's card in the preview panel
+   * beside; main inspector + tree stay put. */
+  onPreview?: (uid: string) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
 }
 
-export function ScriptCard({ payload, deps, onNavigate, onOpenBody }: Props) {
+export function ScriptCard({ payload, deps, onPreview, onOpenBody }: Props) {
   const { scriptId, host, realmName, script } = payload;
   return (
     <article className="card">
@@ -37,6 +40,50 @@ export function ScriptCard({ payload, deps, onNavigate, onOpenBody }: Props) {
             <dd>{script.language}</dd>
           </>
         ) : null}
+        {script?.context ? (
+          <>
+            <dt>Context</dt>
+            <dd>
+              <code>{script.context}</code>
+            </dd>
+          </>
+        ) : null}
+        {script?.description ? (
+          <>
+            <dt>Description</dt>
+            <dd>{script.description}</dd>
+          </>
+        ) : null}
+        {script?.isDefault === undefined ? null : (
+          <>
+            <dt>Default (OOTB)</dt>
+            <dd>{String(script.isDefault)}</dd>
+          </>
+        )}
+        {script?.evaluatorVersion ? (
+          <>
+            <dt>Evaluator version</dt>
+            <dd>
+              <code>{script.evaluatorVersion}</code>
+            </dd>
+          </>
+        ) : null}
+        {script?.lastModifiedBy ? (
+          <>
+            <dt>Last modified by</dt>
+            <dd>
+              <code>{script.lastModifiedBy}</code>
+            </dd>
+          </>
+        ) : null}
+        {script?.lastModifiedDate === undefined ? null : (
+          <>
+            <dt>Last modified</dt>
+            <dd>
+              <code>{new Date(script.lastModifiedDate).toISOString()}</code>
+            </dd>
+          </>
+        )}
       </dl>
       {onOpenBody ? (
         <div className="card-actions">
@@ -49,19 +96,19 @@ export function ScriptCard({ payload, deps, onNavigate, onOpenBody }: Props) {
           </button>
         </div>
       ) : null}
-      <ScriptDepsBlock deps={deps ?? null} onNavigate={onNavigate} />
+      <ScriptDepsBlock deps={deps ?? null} onPreview={onPreview} />
     </article>
   );
 }
 
 interface ScriptDepsProps {
   deps: ScriptCardDeps | null;
-  onNavigate?: (uid: string) => void;
+  onPreview?: (uid: string) => void;
 }
 
 /** Shared deps block — reused by `LibraryScriptCard` too. Renders the
  * library-script + ESV lists discovered by parsing the script body. */
-export function ScriptDepsBlock({ deps, onNavigate }: ScriptDepsProps) {
+export function ScriptDepsBlock({ deps, onPreview }: ScriptDepsProps) {
   if (!deps) {
     return (
       <section className="deps-loading">
@@ -87,8 +134,8 @@ export function ScriptDepsBlock({ deps, onNavigate }: ScriptDepsProps) {
                 <button
                   type="button"
                   className="link"
-                  onClick={() => onNavigate?.(l.uid)}
-                  disabled={!onNavigate}
+                  onClick={() => onPreview?.(l.uid)}
+                  disabled={!onPreview}
                 >
                   {l.label}
                 </button>
@@ -106,8 +153,8 @@ export function ScriptDepsBlock({ deps, onNavigate }: ScriptDepsProps) {
                 <button
                   type="button"
                   className="link"
-                  onClick={() => onNavigate?.(e.uid)}
-                  disabled={!onNavigate}
+                  onClick={() => onPreview?.(e.uid)}
+                  disabled={!onPreview}
                 >
                   {e.label}
                 </button>

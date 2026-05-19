@@ -176,7 +176,7 @@ describe("JourneyNode", () => {
     expect((kids[0] as ScriptNode).scriptId).toBe("s-client");
   });
 
-  it("emits a ThemeNode when a PageNode payload carries a themeId", async () => {
+  it("emits a ThemeNode when a PageNode payload carries a themeId — pre-resolved via listThemes", async () => {
     const { ThemeNode } = await import("@/views/nodes/theme");
     const pagePayload: NodePayload = {
       id: "n1",
@@ -184,13 +184,47 @@ describe("JourneyNode", () => {
       themeId: "theme-1",
       childRefs: [],
     };
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n0",
+      nodes: { n1: { nodeType: "PageNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: { [`${REALM}:PageNode:n1`]: pagePayload },
+      themesByKey: {
+        [`${REALM}:theme-1`]: { id: "theme-1", name: "MainTheme", realm: REALM, isDefault: true },
+      },
+    });
+    const cache = makeFakeCache(client);
+    const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
+    const kids = await node.getChildren();
+    expect(kids).toHaveLength(1);
+    const tn = kids[0] as InstanceType<typeof ThemeNode>;
+    expect(tn).toBeInstanceOf(ThemeNode);
+    expect(tn.themeId).toBe("theme-1");
+    expect(tn.label).toBe("MainTheme");
+    expect(tn.description).toBe("theme-1 · default");
+    expect(tn.resolved?.name).toBe("MainTheme");
+    // listThemes was called exactly once.
+    expect((client.listThemes as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it("falls back to themeId label when listThemes returns no match", async () => {
+    const { ThemeNode } = await import("@/views/nodes/theme");
+    const pagePayload: NodePayload = {
+      id: "n1",
+      nodeType: "PageNode",
+      themeId: "theme-not-there",
+      childRefs: [],
+    };
     const { node } = makeFixture("Login", {
       n1: { nodeType: "PageNode", payload: pagePayload },
     });
     const kids = await node.getChildren();
-    expect(kids).toHaveLength(1);
-    expect(kids[0]).toBeInstanceOf(ThemeNode);
-    expect((kids[0] as InstanceType<typeof ThemeNode>).themeId).toBe("theme-1");
+    const tn = kids[0] as InstanceType<typeof ThemeNode>;
+    expect(tn.label).toBe("theme-not-there");
+    expect(tn.resolved).toBeUndefined();
   });
 
   it("emits an EmailTemplateNode when an EmailSuspendNode payload carries emailTemplateName", async () => {

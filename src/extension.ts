@@ -2,6 +2,11 @@ import type { Level } from "pino";
 import * as vscode from "vscode";
 import type { Connection } from "./domain/types";
 import {
+  EMAIL_TEMPLATE_URI_SCHEME,
+  makeEmailTemplateUri,
+  PaicEmailTemplateFileSystemProvider,
+} from "./providers/email-template-fs-provider";
+import {
   makeScriptUri,
   PaicScriptFileSystemProvider,
   SCRIPT_URI_SCHEME,
@@ -12,9 +17,10 @@ import { type Logger, makeLogger } from "./util/logger";
 import { openConnectionForm } from "./views/connection-form";
 import type { PaicNode } from "./views/nodes/base";
 import { ConnectionNode } from "./views/nodes/connection";
+import { LibraryScriptNode } from "./views/nodes/library-script";
 import { ScriptNode } from "./views/nodes/script";
 import { PaicTreeProvider } from "./views/paic-tree-provider";
-import { InspectorPanel } from "./webview/inspector/panel";
+import { InspectorFactory } from "./webview/inspector/panel";
 
 const LOG_LEVEL_SETTING = "paicJourneys.logging.level";
 const LOG_FILE_ENABLED_SETTING = "paicJourneys.logging.fileEnabled";
@@ -52,8 +58,11 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(treeView);
 
-  const inspector = new InspectorPanel({ context, cache: clientCache, log, treeView });
-  context.subscriptions.push(inspector);
+  // Per D24, every "show a card" gesture (tree click, card hyperlink click,
+  // diagram node click) spawns a fresh inspector tab via the factory — no
+  // reuse, no in-place updates.
+  const inspectorFactory = new InspectorFactory({ context, cache: clientCache, log });
+  context.subscriptions.push(inspectorFactory);
 
   // Register the FileSystemProvider that surfaces script bodies as
   // `paic-script://<host>/<realm>/<scriptId>.<ext>` editor tabs (D17).
@@ -65,10 +74,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  // Same pattern for email-template bodies — `paic-email-template://<host>/<name>/<locale>.html`.
+  const emailTemplateFs = new PaicEmailTemplateFileSystemProvider(clientCache, log);
+  context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider(EMAIL_TEMPLATE_URI_SCHEME, emailTemplateFs, {
+      isReadonly: true,
+      isCaseSensitive: true,
+    }),
+  );
+
   context.subscriptions.push(
     treeView.onDidChangeSelection((ev) => {
       const node = ev.selection[0];
-      if (node) void inspector.show(node);
+      if (node) inspectorFactory.spawn(node);
     }),
   );
 
@@ -80,6 +98,7 @@ export function activate(context: vscode.ExtensionContext): void {
     registry.onDidChange(() => {
       for (const h of priorHosts) clientCache.drop(h);
       priorHosts = registry.list().map((c) => c.host);
+      inspectorFactory.clearRegistry();
       provider.reload();
     }),
   );
@@ -88,12 +107,33 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("paicJourneys.refresh", () => {
       log.info({ event: "tree.refresh" }, "Refreshing tree");
       for (const h of priorHosts) clientCache.drop(h);
+      inspectorFactory.clearRegistry();
       provider.reload();
     }),
 
-    vscode.commands.registerCommand("paicJourneys.openInspector", () => {
-      log.info({ event: "inspector.open" }, "Opening inspector");
-      inspector.reveal();
+    vscode.commands.registerCommand("paicJourneys.openEmailTemplateBody", async (arg: unknown) => {
+      const parsed = parseOpenEmailTemplateArg(arg);
+      if (!parsed) {
+        log.warn(
+          { event: "openEmailTemplateBody.badArg" },
+          "openEmailTemplateBody invoked without host / name / locale",
+        );
+        return;
+      }
+      const uri = makeEmailTemplateUri(parsed.host, parsed.name, parsed.locale);
+      log.info(
+        {
+          event: "openEmailTemplateBody",
+          host: parsed.host,
+          template_name: parsed.name,
+          locale: parsed.locale,
+        },
+        "Opening email-template body in editor",
+      );
+      await vscode.commands.executeCommand("vscode.open", uri, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Beside,
+      });
     }),
 
     vscode.commands.registerCommand("paicJourneys.openScriptBody", async (arg: unknown) => {
@@ -253,12 +293,15 @@ interface OpenScriptArgs {
   language?: string;
 }
 
-/** Accepts a `ScriptNode` (tree right-click handed us the tree item) or a
- * plain `{host, realm, scriptId, language?}` payload (from the inspector
- * webview's `openScriptBody` message). */
+/** Accepts a `ScriptNode` or `LibraryScriptNode` (tree right-click handed
+ * us the tree item) or a plain `{host, realm, scriptId, language?}` payload
+ * (from an inspector card's `openScriptBody` message). Both node kinds carry
+ * the same `host` / `realm` / `scriptId` fields, so the FS provider serves
+ * the body identically. */
 function parseOpenScriptArg(arg: unknown): OpenScriptArgs | null {
-  if (arg instanceof ScriptNode) {
-    return { host: arg.host, realm: arg.realm, scriptId: arg.scriptId };
+  if (arg instanceof ScriptNode || arg instanceof LibraryScriptNode) {
+    const language = arg.resolved?.language;
+    return { host: arg.host, realm: arg.realm, scriptId: arg.scriptId, language };
   }
   if (arg && typeof arg === "object") {
     const a = arg as Record<string, unknown>;
@@ -273,6 +316,26 @@ function parseOpenScriptArg(arg: unknown): OpenScriptArgs | null {
         scriptId: a.scriptId,
         language: typeof a.language === "string" ? a.language : undefined,
       };
+    }
+  }
+  return null;
+}
+
+interface OpenEmailTemplateArgs {
+  host: string;
+  name: string;
+  locale: string;
+}
+
+/** Accepts `{host, name, locale}` from either a tree-context invocation or
+ * an inspector-card button click. (No tree-side EmailTemplateNode binding
+ * because email templates are not bound to a specific locale at tree level
+ * — locale is picked at the card.) */
+function parseOpenEmailTemplateArg(arg: unknown): OpenEmailTemplateArgs | null {
+  if (arg && typeof arg === "object") {
+    const a = arg as Record<string, unknown>;
+    if (typeof a.host === "string" && typeof a.name === "string" && typeof a.locale === "string") {
+      return { host: a.host, name: a.name, locale: a.locale };
     }
   }
   return null;

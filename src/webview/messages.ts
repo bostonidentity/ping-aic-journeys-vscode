@@ -160,13 +160,26 @@ export type SelectPayload =
 /** Webview → extension. */
 export type W2E =
   | { type: "ready" }
-  | { type: "navigate"; uid: string }
   | {
       type: "openScriptBody";
       host: string;
       realm: string;
       scriptId: string;
       language?: string;
+    }
+  | {
+      type: "openEmailTemplateBody";
+      host: string;
+      /** Template slug (the `name` field on EmailTemplate). */
+      name: string;
+      locale: string;
+    }
+  | {
+      /** Open the card for `uid` in a separate preview panel beside the
+       * main inspector — does NOT change tree selection or main-inspector
+       * state. Triggered by clicks on the journey diagram. */
+      type: "previewNode";
+      uid: string;
     };
 
 // ─── Type-guard helpers ───────────────────────────────────────────────────
@@ -181,5 +194,7 @@ export function isE2W(msg: unknown): msg is E2W {
 export function isW2E(msg: unknown): msg is W2E {
   if (!msg || typeof msg !== "object") return false;
   const t = (msg as { type?: unknown }).type;
-  return t === "ready" || t === "navigate" || t === "openScriptBody";
+  return (
+    t === "ready" || t === "openScriptBody" || t === "openEmailTemplateBody" || t === "previewNode"
+  );
 }

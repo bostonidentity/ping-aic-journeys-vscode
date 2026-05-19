@@ -292,6 +292,53 @@ function decodeEsvValue(b64: string): string {
 
 Display the decoded string as-is regardless of `expressionType` — users interpret per type. No pretty-print / coercion at M3; JSON pretty-print on `list`/`object` is a future polish if requested.
 
+### D23 — Inspector card field policy: surface raw values, skip when undefined
+
+Cards display fields from the PAIC REST response as-is, with these conventions:
+
+- **Booleans render as raw `true` / `false`** — no humanization. Audit + grep friendly; the field names (`innerTreeOnly`, `useScript`, etc.) are AIC-developer-recognized terms.
+- **Undefined values skip the row.** Matches existing behavior for `description` / `identityResource`. We don't render `"—"` or `"(unset)"` placeholders. In practice all the always-present fields come back from PAIC; the skip is a defensive fallback for stale/mocked/older-tenant responses.
+- **Field selection is deliberate, not exhaustive.** Each card surfaces fields a developer needs in the moment — identity, status, audit (last-modified), and dependency-graph-relevant flags. We intentionally skip wire-shape noise (`_rev`, `staticNodes`, `uiConfig`, branding sub-styles, account-page-only colors).
+- **`script.context` is a key signal.** It declares which subsystem invokes the script (`AUTHENTICATION_TREE_DECISION_NODE` for journey scripts, `LIBRARY` for required modules, plus ~20 specialized OAuth/SAML/OIDC contexts). Always shown when defined — useful for sanity-checking a script's placement in the graph.
+- **Audit trail uses last-modified, not created.** `lastModifiedBy` + `lastModifiedDate` cover the common audit question ("who touched this most recently?"). `createdBy` + `creationDate` are redundant for our purposes and not surfaced.
+
+Locked per-card field sets:
+
+| Card | Always shown (when defined) |
+|---|---|
+| **JourneyCard / InnerJourneyCard** | id, host, realm, enabled, description, identityResource, entryNodeId, node count, `innerTreeOnly`, `noSession`, `mustRun`, `transactionalOnly` |
+| **ScriptCard** | name/id, host, realm, language, `context`, `description`, `default`, `evaluatorVersion`, `lastModifiedBy`, `lastModifiedDate`, Open-body action, deps block |
+| **ThemeCard** | id, host, realm, name, isDefault, journeyLayout, fontFamily, primaryColor (swatch), backgroundColor (swatch), backgroundImage, logo image, linkedTrees |
+| **EmailTemplateCard** | name, host, realm, enabled, displayName, description, defaultLocale, mimeType, from, per-locale subjects, per-locale Open-body buttons |
+| **EsvCard** | name, host, realm, kind, expressionType / encoding, description, value (variables only — decoded), loaded, lastChangeDate, lastChangedBy, version fields (secrets only), useInPlaceholders (secrets only) |
+
+### D24 — Every "show a card" gesture opens a fresh tab; no panel reuse
+
+Every action that displays an inspector card opens a **new independent `WebviewPanel`**. Existing tabs are never touched. The user accumulates tabs as they explore and manages them with VS Code's normal tab UI (close, pin, drag-to-new-window).
+
+| User gesture | What happens |
+|---|---|
+| **Tree click** (sidebar tree node) | New tab beside the editor with the clicked node's card |
+| **Card hyperlink click** (deps-list link inside any card) | New tab with the target's card |
+| **Diagram node click** | New tab with the target's card |
+| **"Open body" buttons** (ScriptCard, EmailTemplateCard per-locale) | Editor tab via the FS providers (`paic-script://`, `paic-email-template://`) — unchanged |
+
+Rationale: a user inspecting a journey wants to fan out into its referenced scripts / inner journeys / themes / etc. without losing the source view. Replacing the current tab on every click destroys the comparison context. Spawning a new tab per click preserves history, lets users compare side-by-side via VS Code's drag-tab UX, and aligns with how developers already use editor tabs.
+
+Implementation collapses `InspectorPanel` + `DiagramPreviewPanel` into a single `InspectorTab` class — one card per instance, one webview per instance, no reuse. An extension-level factory tracks active tabs for clean dispose on extension deactivation. Each tab loads its own copy of the React bundle (~850 KB); ~8 MB across 10 tabs is acceptable cost for the UX win.
+
+`ThemeCard.linkedTrees` remains **NOT** clickable. The 18-journey list inside a theme is informational only — clicking would require materializing a JourneyCard from just an ID, but our tree is lazy (no global journey-by-id index). That kind of "jump anywhere by id" lookup is a back-search (M5) capability, not an inspector feature.
+
+The `W2E.navigate` message is **removed** — no UI surface posts it after this change, and the previous "treeView.reveal + show" semantics no longer fit the new-tab-each-time model. Explicit "Reveal in tree" actions, if needed later, will be a new command (right-click → "Reveal in tree"), not a reused message type.
+
+### D25 — Hide the platform root realm from the tree
+
+PAIC's `GET /am/json/global-config/realms` returns the platform root realm alongside `alpha` and `bravo`, but tenant service accounts always get **403** on its journey/script endpoints. Showing it would train users to ignore failure states on tree expansion — the opposite of what we want when real failures occur.
+
+The wire identifier for the root realm is `parentPath === null` (or absent), not the name. Different AIC deployments report the root's name as `"/"`, `"root"`, or `"Top Level Realm"` — name-based filtering is fragile. The `Realm` domain type carries an `isRoot: boolean` set by the mapper (`raw.parentPath == null`), and `ConnectionNode.loadChildren` filters `!r.isRoot && r.name !== "/"` (belt-and-suspenders for variants that report the name as `"/"` with a non-null parentPath).
+
+The filter lives in the view layer, not the data layer: `client.listRealms()` stays a faithful translation of the wire response (D11), `isRoot` is a derived domain flag. If on-prem AM support is added later, the `Connection` type grows a discriminator (`paic` vs `am-onprem`) and the filter becomes conditional on `connection.type === "paic"`.
+
 ## Architecture (M2 target state)
 
 ```

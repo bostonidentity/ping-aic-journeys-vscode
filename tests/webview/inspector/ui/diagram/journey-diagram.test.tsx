@@ -41,9 +41,6 @@ vi.mock("reactflow", async () => {
   };
 });
 
-const HOST = "openam-tenant.example.forgeblocks.com";
-const REALM = "alpha";
-
 function journey(over: Partial<Journey> = {}): Journey {
   return {
     id: "Login",
@@ -52,8 +49,6 @@ function journey(over: Partial<Journey> = {}): Journey {
     nodes: {
       n1: { nodeType: "ScriptedDecisionNode", connections: { true: "n2", false: "n3" } },
       n2: { nodeType: "InnerTreeEvaluatorNode", connections: {} },
-      // Use a kind that's not registered in nodeTypes to verify the
-      // unknown-kind → "Other" fallback path.
       n3: { nodeType: "UsernameCollectorNode", connections: {} },
     },
     ...over,
@@ -70,31 +65,13 @@ const noop = () => undefined;
 
 describe("JourneyDiagram", () => {
   it("renders the empty placeholder when journey.nodes is empty", () => {
-    render(
-      <JourneyDiagram
-        journey={journey({ nodes: {} })}
-        nodeIndex={{}}
-        host={HOST}
-        realm={REALM}
-        onNavigate={noop}
-        onOpenBody={noop}
-      />,
-    );
+    render(<JourneyDiagram journey={journey({ nodes: {} })} nodeIndex={{}} onPreview={noop} />);
     expect(screen.getByText(/No nodes in this journey/)).toBeTruthy();
     expect(screen.queryByTestId("rf-canvas")).toBeNull();
   });
 
   it("renders one rf-node per journey node and maps unknown kinds to 'Other'", () => {
-    render(
-      <JourneyDiagram
-        journey={journey()}
-        nodeIndex={nodeIndex}
-        host={HOST}
-        realm={REALM}
-        onNavigate={noop}
-        onOpenBody={noop}
-      />,
-    );
+    render(<JourneyDiagram journey={journey()} nodeIndex={nodeIndex} onPreview={noop} />);
     expect(screen.getByTestId("rf-node-n1").getAttribute("data-rf-type")).toBe(
       "ScriptedDecisionNode",
     );
@@ -104,54 +81,25 @@ describe("JourneyDiagram", () => {
     expect(screen.getByTestId("rf-node-n3").getAttribute("data-rf-type")).toBe("Other");
   });
 
-  it("clicking a script node calls onOpenBody with host / realm / scriptId", () => {
-    const onOpenBody = vi.fn();
-    render(
-      <JourneyDiagram
-        journey={journey()}
-        nodeIndex={nodeIndex}
-        host={HOST}
-        realm={REALM}
-        onNavigate={noop}
-        onOpenBody={onOpenBody}
-      />,
-    );
+  it("clicking a script node calls onPreview with the script's uid", () => {
+    const onPreview = vi.fn();
+    render(<JourneyDiagram journey={journey()} nodeIndex={nodeIndex} onPreview={onPreview} />);
     fireEvent.click(screen.getByTestId("rf-node-n1"));
-    expect(onOpenBody).toHaveBeenCalledWith(HOST, REALM, "s-1");
+    expect(onPreview).toHaveBeenCalledWith("script:h:alpha:s-1");
   });
 
-  it("clicking an inner-journey node calls onNavigate with the matching uid", () => {
-    const onNavigate = vi.fn();
-    render(
-      <JourneyDiagram
-        journey={journey()}
-        nodeIndex={nodeIndex}
-        host={HOST}
-        realm={REALM}
-        onNavigate={onNavigate}
-        onOpenBody={noop}
-      />,
-    );
+  it("clicking an inner-journey node calls onPreview with the inner uid", () => {
+    const onPreview = vi.fn();
+    render(<JourneyDiagram journey={journey()} nodeIndex={nodeIndex} onPreview={onPreview} />);
     fireEvent.click(screen.getByTestId("rf-node-n2"));
-    expect(onNavigate).toHaveBeenCalledWith("inner:h:alpha:Inner");
+    expect(onPreview).toHaveBeenCalledWith("inner:h:alpha:Inner");
   });
 
-  it("clicking an 'other' node fires neither callback", () => {
-    const onNavigate = vi.fn();
-    const onOpenBody = vi.fn();
-    render(
-      <JourneyDiagram
-        journey={journey()}
-        nodeIndex={nodeIndex}
-        host={HOST}
-        realm={REALM}
-        onNavigate={onNavigate}
-        onOpenBody={onOpenBody}
-      />,
-    );
+  it("clicking a node with no uid in nodeIndex fires nothing", () => {
+    const onPreview = vi.fn();
+    render(<JourneyDiagram journey={journey()} nodeIndex={nodeIndex} onPreview={onPreview} />);
     fireEvent.click(screen.getByTestId("rf-node-n3"));
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(onOpenBody).not.toHaveBeenCalled();
+    expect(onPreview).not.toHaveBeenCalled();
   });
 
   it("maps PageNode to the PageNode rf-type (not Other)", () => {
@@ -166,40 +114,14 @@ describe("JourneyDiagram", () => {
         nodeIndex={{
           p1: { kind: "theme", themeId: "theme-1", uid: "theme:h:alpha:theme-1" },
         }}
-        host={HOST}
-        realm={REALM}
-        onNavigate={noop}
-        onOpenBody={noop}
+        onPreview={noop}
       />,
     );
     expect(screen.getByTestId("rf-node-p1").getAttribute("data-rf-type")).toBe("PageNode");
   });
 
-  it("clicking a ConfigProviderNode with kind:script calls onOpenBody with its scriptId", () => {
-    const onOpenBody = vi.fn();
-    render(
-      <JourneyDiagram
-        journey={{
-          id: "Login",
-          enabled: true,
-          entryNodeId: "c1",
-          nodes: { c1: { nodeType: "ConfigProviderNode", connections: {} } },
-        }}
-        nodeIndex={{
-          c1: { kind: "script", scriptId: "s-cfg" },
-        }}
-        host={HOST}
-        realm={REALM}
-        onNavigate={noop}
-        onOpenBody={onOpenBody}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("rf-node-c1"));
-    expect(onOpenBody).toHaveBeenCalledWith(HOST, REALM, "s-cfg");
-  });
-
-  it("clicking a PageNode with kind:theme calls onNavigate with the theme uid", () => {
-    const onNavigate = vi.fn();
+  it("clicking a theme node fires onPreview with the theme uid", () => {
+    const onPreview = vi.fn();
     render(
       <JourneyDiagram
         journey={{
@@ -211,13 +133,10 @@ describe("JourneyDiagram", () => {
         nodeIndex={{
           p1: { kind: "theme", themeId: "theme-1", uid: "theme:h:alpha:theme-1" },
         }}
-        host={HOST}
-        realm={REALM}
-        onNavigate={onNavigate}
-        onOpenBody={noop}
+        onPreview={onPreview}
       />,
     );
     fireEvent.click(screen.getByTestId("rf-node-p1"));
-    expect(onNavigate).toHaveBeenCalledWith("theme:h:alpha:theme-1");
+    expect(onPreview).toHaveBeenCalledWith("theme:h:alpha:theme-1");
   });
 });

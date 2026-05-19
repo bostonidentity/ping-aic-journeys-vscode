@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Connection, Journey, Realm } from "@/domain/types";
 import { type E2W, isE2W, isW2E, type SelectPayload, type W2E } from "@/webview/messages";
 
-const REALM: Realm = { name: "alpha", active: true, parentPath: "/" };
+const REALM: Realm = { name: "alpha", active: true, parentPath: "/", isRoot: false };
 const CONN: Connection = { host: "h.example.com", saId: "sa-1" };
 const JOURNEY: Journey = { id: "Login", enabled: true, entryNodeId: "e", nodes: {} };
 
@@ -76,7 +76,7 @@ describe("messages protocol", () => {
     expect(isE2W(deps)).toBe(true);
     expect(isE2W(err)).toBe(true);
 
-    expect(isE2W({ type: "navigate", uid: "x" })).toBe(false); // W2E shape
+    expect(isE2W({ type: "previewNode", uid: "x" })).toBe(false); // W2E shape
     expect(isE2W(null)).toBe(false);
     expect(isE2W("string")).toBe(false);
     expect(isE2W({})).toBe(false);
@@ -84,9 +84,9 @@ describe("messages protocol", () => {
 
   it("W2E type guard accepts known types and rejects others", () => {
     const ready: W2E = { type: "ready" };
-    const nav: W2E = { type: "navigate", uid: "u1" };
+    const preview: W2E = { type: "previewNode", uid: "u1" };
     expect(isW2E(ready)).toBe(true);
-    expect(isW2E(nav)).toBe(true);
+    expect(isW2E(preview)).toBe(true);
 
     expect(isW2E({ type: "select", payload: {} })).toBe(false); // E2W shape
     expect(isW2E(undefined)).toBe(false);

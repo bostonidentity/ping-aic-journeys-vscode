@@ -29,12 +29,31 @@ describe("mapRealm", () => {
         parentPath: "/",
         aliases: ["customers"],
       }),
-    ).toEqual({ name: "alpha", active: true, parentPath: "/" });
+    ).toEqual({ name: "alpha", active: true, parentPath: "/", isRoot: false });
 
     expect(mapRealm({ name: "beta", active: false } as never)).toEqual({
       name: "beta",
       active: false,
       parentPath: "/",
+      isRoot: true,
+    });
+  });
+
+  it("flags isRoot=true when wire returns parentPath: null", () => {
+    expect(mapRealm({ _id: "root", name: "/", active: true, parentPath: null })).toEqual({
+      name: "/",
+      active: true,
+      parentPath: "/",
+      isRoot: true,
+    });
+  });
+
+  it("flags isRoot=true when wire omits parentPath", () => {
+    expect(mapRealm({ _id: "root", name: "Top Level Realm", active: true })).toEqual({
+      name: "Top Level Realm",
+      active: true,
+      parentPath: "/",
+      isRoot: true,
     });
   });
 });
@@ -73,6 +92,31 @@ describe("mapJourney", () => {
   it("defaults enabled to false when omitted", () => {
     const raw: RawJourney = { _id: "x", entryNodeId: "e" };
     expect(mapJourney(raw).enabled).toBe(false);
+  });
+
+  it("threads through the 4 runtime flags verbatim (no defaulting)", () => {
+    const raw: RawJourney = {
+      _id: "x",
+      entryNodeId: "e",
+      innerTreeOnly: true,
+      noSession: false,
+      mustRun: true,
+      transactionalOnly: false,
+    };
+    const j = mapJourney(raw);
+    expect(j.innerTreeOnly).toBe(true);
+    expect(j.noSession).toBe(false);
+    expect(j.mustRun).toBe(true);
+    expect(j.transactionalOnly).toBe(false);
+  });
+
+  it("leaves flags undefined when the raw doesn't carry them (no defaulting to false)", () => {
+    const raw: RawJourney = { _id: "x", entryNodeId: "e" };
+    const j = mapJourney(raw);
+    expect(j.innerTreeOnly).toBeUndefined();
+    expect(j.noSession).toBeUndefined();
+    expect(j.mustRun).toBeUndefined();
+    expect(j.transactionalOnly).toBeUndefined();
   });
 });
 
@@ -286,9 +330,43 @@ describe("mapNodePayload", () => {
 });
 
 describe("mapTheme + mapEmailTemplate + mapSocialIdp + mapEsv*", () => {
-  it("mapTheme extracts _id + name and bakes in the realm", () => {
+  it("mapTheme extracts _id + name and bakes in the realm (minimal raw)", () => {
     const raw: RawTheme = { _id: "theme-uuid", name: "Default" };
-    expect(mapTheme("alpha", raw)).toEqual({ id: "theme-uuid", name: "Default", realm: "alpha" });
+    expect(mapTheme("alpha", raw)).toMatchObject({
+      id: "theme-uuid",
+      name: "Default",
+      realm: "alpha",
+    });
+  });
+
+  it("mapTheme threads through isDefault / linkedTrees / colors / logo / layout / font", () => {
+    const raw: RawTheme = {
+      _id: "t-rich",
+      name: "RichTheme",
+      isDefault: true,
+      linkedTrees: ["J1", "J2"],
+      primaryColor: "#3057A4",
+      backgroundColor: "#FFFFFF",
+      backgroundImage: "https://cdn.example/bg.jpg",
+      logo: { en: "https://cdn.example/en.svg", es: "https://cdn.example/es.svg" },
+      logoAltText: { en: "Logo" },
+      journeyLayout: "card",
+      fontFamily: "Arial",
+    };
+    expect(mapTheme("alpha", raw)).toEqual({
+      id: "t-rich",
+      name: "RichTheme",
+      realm: "alpha",
+      isDefault: true,
+      linkedTrees: ["J1", "J2"],
+      primaryColor: "#3057A4",
+      backgroundColor: "#FFFFFF",
+      backgroundImage: "https://cdn.example/bg.jpg",
+      logo: { en: "https://cdn.example/en.svg", es: "https://cdn.example/es.svg" },
+      logoAltText: { en: "Logo" },
+      journeyLayout: "card",
+      fontFamily: "Arial",
+    });
   });
 
   it("mapEmailTemplate carries enabled / from / subject / message; defaults enabled=false", () => {
@@ -374,16 +452,48 @@ describe("mapScript", () => {
     const source = "var x = 1;\nreturn x;";
     const b64 = Buffer.from(source, "utf8").toString("base64");
     const raw: RawScript = { _id: "s1", name: "MyScript", language: "JAVASCRIPT", script: b64 };
-    expect(mapScript(raw)).toEqual({
-      id: "s1",
-      name: "MyScript",
-      language: "JAVASCRIPT",
-      body: source,
-    });
+    const got = mapScript(raw);
+    expect(got.id).toBe("s1");
+    expect(got.name).toBe("MyScript");
+    expect(got.language).toBe("JAVASCRIPT");
+    expect(got.body).toBe(source);
   });
 
   it("returns empty body when script field is missing", () => {
     expect(mapScript({ _id: "s2", name: "Empty" }).body).toBe("");
+  });
+
+  it("threads through context / description / default / evaluatorVersion / lastModifiedBy / lastModifiedDate", () => {
+    const raw: RawScript = {
+      _id: "s-rich",
+      name: "AuthHelper",
+      language: "JAVASCRIPT",
+      context: "AUTHENTICATION_TREE_DECISION_NODE",
+      description: "Sets session assurance",
+      default: false,
+      evaluatorVersion: "2.0",
+      lastModifiedBy: "id=admin,ou=user,ou=am-config",
+      lastModifiedDate: 1777882948171,
+    };
+    const got = mapScript(raw);
+    expect(got.context).toBe("AUTHENTICATION_TREE_DECISION_NODE");
+    expect(got.description).toBe("Sets session assurance");
+    expect(got.isDefault).toBe(false);
+    expect(got.evaluatorVersion).toBe("2.0");
+    expect(got.lastModifiedBy).toBe("id=admin,ou=user,ou=am-config");
+    expect(got.lastModifiedDate).toBe(1777882948171);
+  });
+
+  it("coerces description=null (AIC legacy shape) to undefined", () => {
+    // sb3 returns `description: null` for some older scripts. Don't surface
+    // null in the domain — the card's `script.description ?` guard would
+    // truthy-check it as falsy anyway, but undefined is the canonical form.
+    const raw = {
+      _id: "s-legacy",
+      name: "Legacy",
+      description: null,
+    } as unknown as RawScript;
+    expect(mapScript(raw).description).toBeUndefined();
   });
 
   it("defaults language to JAVASCRIPT when not provided", () => {

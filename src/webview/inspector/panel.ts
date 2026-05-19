@@ -16,38 +16,138 @@ import { SocialIdpNode } from "../../views/nodes/social-idp";
 import { ThemeNode } from "../../views/nodes/theme";
 import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../messages";
 
-export interface InspectorPanelDeps {
+export interface InspectorFactoryDeps {
   context: vscode.ExtensionContext;
   cache: ClientCache;
   log: Logger;
-  treeView: vscode.TreeView<PaicNode>;
 }
 
 /**
- * Singleton webview panel that shows kind-specific info cards for the
- * currently-selected tree node. Lifecycle:
- *   - Lazy-created on first `show(node)`.
- *   - Reused across selections; `retainContextWhenHidden: true` keeps state.
- *   - Disposes itself when the user closes the tab; next `show()` re-creates.
+ * Owns the lifecycle of all open `InspectorTab` instances. Per D24, every
+ * "show a card" gesture (tree click, card hyperlink click, diagram node
+ * click) spawns a fresh `WebviewPanel` — no reuse, no in-place update.
  *
- * Cross-navigation: when the React UI posts `{ type: "navigate", uid }`, we
- * look up the cached `PaicNode` in `uidIndex` and call `treeView.reveal()`.
- * The map is populated as we send selections and dep lists.
+ * Maintains a uid→PaicNode registry populated as tabs fetch their deps,
+ * so a tab's `previewNode` message (the user clicking a hyperlink inside a
+ * card) can resolve the target node and spawn a new tab for it.
  */
-export class InspectorPanel implements vscode.Disposable {
-  private panel: vscode.WebviewPanel | null = null;
+export class InspectorFactory implements vscode.Disposable {
+  private readonly tabs = new Set<InspectorTab>();
   private readonly uidIndex = new Map<string, PaicNode>();
   private readonly childLog: Logger;
 
-  constructor(private readonly deps: InspectorPanelDeps) {
-    this.childLog = deps.log.child({ component: "webview.inspector" });
+  constructor(private readonly deps: InspectorFactoryDeps) {
+    this.childLog = deps.log.child({ component: "webview.inspector.factory" });
   }
 
-  /** Reveal panel (creating it if needed) and render `node`. */
-  async show(node: PaicNode): Promise<void> {
-    this.ensurePanel();
+  /** Open a fresh inspector tab for `node`. */
+  spawn(node: PaicNode): InspectorTab {
     this.uidIndex.set(node.uid, node);
-    const payload = await this.toSelectPayload(node);
+    const tab = new InspectorTab(
+      {
+        context: this.deps.context,
+        cache: this.deps.cache,
+        log: this.deps.log,
+        spawnByUid: (uid) => this.spawnByUid(uid),
+        registerNode: (n) => this.uidIndex.set(n.uid, n),
+        onClosed: (t) => this.tabs.delete(t),
+      },
+      node,
+    );
+    this.tabs.add(tab);
+    this.childLog.info({ event: "factory.spawn", uid: node.uid }, "Spawned inspector tab");
+    return tab;
+  }
+
+  /** Forget all known uids — called when the connection registry mutates so
+   * stale `previewNode` clicks against now-evicted nodes can't resurrect them. */
+  clearRegistry(): void {
+    this.uidIndex.clear();
+  }
+
+  dispose(): void {
+    for (const tab of this.tabs) tab.dispose();
+    this.tabs.clear();
+    this.uidIndex.clear();
+  }
+
+  private spawnByUid(uid: string): void {
+    const node = this.uidIndex.get(uid);
+    if (!node) {
+      this.childLog.warn(
+        { event: "factory.spawn.miss", uid },
+        "previewNode for unknown uid — no node in registry",
+      );
+      return;
+    }
+    this.spawn(node);
+  }
+}
+
+interface InspectorTabDeps {
+  context: vscode.ExtensionContext;
+  cache: ClientCache;
+  log: Logger;
+  /** Called when the webview posts `previewNode` — the factory creates a
+   * new tab for that uid. */
+  spawnByUid: (uid: string) => void;
+  /** Called as tabs discover child nodes (deps blocks) — the factory's
+   * uid registry grows so future `previewNode` clicks can resolve. */
+  registerNode: (node: PaicNode) => void;
+  /** Called when the tab's webview is disposed (user closed the tab). */
+  onClosed: (tab: InspectorTab) => void;
+}
+
+/**
+ * One open inspector tab: one `WebviewPanel`, one card. Constructor creates
+ * the panel eagerly and kicks off the initial render. No reuse — closing the
+ * tab disposes the panel and removes it from the factory's set.
+ *
+ * Per D24, in-card link clicks (`previewNode` messages) don't update this
+ * tab; they ask the factory to spawn a new tab.
+ */
+export class InspectorTab implements vscode.Disposable {
+  private readonly panel: vscode.WebviewPanel;
+  private readonly childLog: Logger;
+  /** Resolves once the initial render + deps fetch complete. Useful for
+   * tests; in production code nothing needs to await it. */
+  readonly ready: Promise<void>;
+
+  constructor(
+    private readonly deps: InspectorTabDeps,
+    node: PaicNode,
+  ) {
+    this.childLog = deps.log.child({ component: "webview.inspector.tab" });
+    const extensionUri = deps.context.extensionUri;
+    this.panel = vscode.window.createWebviewPanel(
+      "paicJourneys.inspector",
+      tabTitle(node),
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(extensionUri, "out")],
+      },
+    );
+    this.panel.iconPath = new vscode.ThemeIcon("preview");
+    this.panel.webview.html = this.renderHtml(this.panel.webview);
+    this.panel.webview.onDidReceiveMessage((m: unknown) => this.onMessage(m));
+    this.panel.onDidDispose(() => {
+      this.deps.onClosed(this);
+      this.childLog.debug({ event: "tab.closed", uid: node.uid }, "Inspector tab disposed");
+    });
+    this.ready = this.render(node);
+  }
+
+  dispose(): void {
+    this.panel.dispose();
+  }
+
+  // ─── private ─────────────────────────────────────────────────────────────
+
+  private async render(node: PaicNode): Promise<void> {
+    this.deps.registerNode(node);
+    const payload = await buildSelectPayload(node, this.deps.cache, this.childLog);
     if (!payload) return;
     this.post({ type: "select", payload });
 
@@ -56,47 +156,6 @@ export class InspectorPanel implements vscode.Disposable {
     } else if (node instanceof ScriptNode || node instanceof LibraryScriptNode) {
       await this.sendScriptDeps(node);
     }
-  }
-
-  /** Open the inspector even if nothing is selected yet. */
-  reveal(): void {
-    this.ensurePanel();
-  }
-
-  dispose(): void {
-    this.panel?.dispose();
-    this.panel = null;
-    this.uidIndex.clear();
-  }
-
-  // ─── private ─────────────────────────────────────────────────────────────
-
-  private ensurePanel(): void {
-    if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Beside, true);
-      return;
-    }
-    const extensionUri = this.deps.context.extensionUri;
-    const panel = vscode.window.createWebviewPanel(
-      "paicJourneys.inspector",
-      "PAIC Inspector",
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(extensionUri, "out")],
-      },
-    );
-    panel.iconPath = new vscode.ThemeIcon("preview");
-    panel.webview.html = this.renderHtml(panel.webview);
-    panel.webview.onDidReceiveMessage((m: unknown) => this.onMessage(m));
-    panel.onDidDispose(() => {
-      this.panel = null;
-      this.uidIndex.clear();
-      this.childLog.debug({ event: "inspector.closed" }, "Inspector panel disposed");
-    });
-    this.panel = panel;
-    this.childLog.info({ event: "inspector.opened" }, "Inspector panel opened");
   }
 
   private async sendJourneyDeps(node: JourneyNode | InnerJourneyNode): Promise<void> {
@@ -114,7 +173,7 @@ export class InspectorPanel implements vscode.Disposable {
       const emailUidByName = new Map<string, string>();
       const idpUidByName = new Map<string, string>();
       for (const k of kids) {
-        this.uidIndex.set(k.uid, k);
+        this.deps.registerNode(k);
         if (k instanceof ScriptNode) {
           scripts.push({ uid: k.uid, label: k.scriptName ?? k.scriptId, kind: "script" });
           scriptUidById.set(k.scriptId, k.uid);
@@ -160,8 +219,8 @@ export class InspectorPanel implements vscode.Disposable {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.childLog.error(
-        { event: "inspector.depsFailed", uid: node.uid, message },
-        "Dep fetch failed",
+        { event: "tab.depsFailed", uid: node.uid, message },
+        "Journey dep fetch failed",
       );
       this.post({ type: "error", uid: node.uid, message });
     }
@@ -173,7 +232,7 @@ export class InspectorPanel implements vscode.Disposable {
       const libraryScripts: NodeRef[] = [];
       const esvs: NodeRef[] = [];
       for (const k of kids) {
-        this.uidIndex.set(k.uid, k);
+        this.deps.registerNode(k);
         if (k instanceof LibraryScriptNode) {
           libraryScripts.push({ uid: k.uid, label: k.name, kind: "libraryScript" });
         } else if (k instanceof EsvNode) {
@@ -184,146 +243,11 @@ export class InspectorPanel implements vscode.Disposable {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.childLog.error(
-        { event: "inspector.scriptDepsFailed", uid: node.uid, message },
+        { event: "tab.scriptDepsFailed", uid: node.uid, message },
         "Script dep fetch failed",
       );
       this.post({ type: "error", uid: node.uid, message });
     }
-  }
-
-  private async toSelectPayload(node: PaicNode): Promise<SelectPayload | null> {
-    if (node instanceof ConnectionNode) {
-      return { kind: "connection", uid: node.uid, connection: node.connection };
-    }
-    if (node instanceof RealmNode) {
-      return { kind: "realm", uid: node.uid, host: node.host, realm: node.realm };
-    }
-    if (node instanceof JourneyNode) {
-      return {
-        kind: "journey",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        journey: node.journey,
-      };
-    }
-    if (node instanceof InnerJourneyNode) {
-      // Fetch the inner-journey's full skeleton so the diagram has nodes to
-      // render. Cached on the node (and shared with tree expansion), so the
-      // pair of fetches is deduped. On failure, fall back to a placeholder
-      // and let the deps message surface the error.
-      let journey;
-      try {
-        journey = await node.ensureJourney();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.childLog.warn(
-          { event: "inspector.innerJourney.fetchFailed", uid: node.uid, message },
-          "Inner journey skeleton fetch failed — falling back to placeholder",
-        );
-        journey = { id: node.id, entryNodeId: "", enabled: true, nodes: {} };
-      }
-      return {
-        kind: "innerJourney",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        journey,
-        visited: node.visited,
-      };
-    }
-    if (node instanceof ScriptNode) {
-      return {
-        kind: "script",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        scriptId: node.scriptId,
-      };
-    }
-    if (node instanceof LibraryScriptNode) {
-      return {
-        kind: "libraryScript",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        scriptId: node.scriptId,
-        name: node.name,
-      };
-    }
-    if (node instanceof EsvNode) {
-      // EsvNode is pre-labeled at construction by script-expand (D22) — read
-      // the cached resolved metadata directly. No extra fetch on click.
-      return {
-        kind: "esv",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        name: node.name,
-        esv: node.resolved,
-      };
-    }
-    if (node instanceof ThemeNode) {
-      let theme;
-      try {
-        const client = await this.deps.cache.get(node.host);
-        theme = (await client.getTheme(node.realm, node.themeId)) ?? undefined;
-      } catch (err) {
-        this.childLog.warn(
-          { event: "inspector.theme.fetchFailed", uid: node.uid, message: errMsg(err) },
-          "Theme resolution failed — showing id only",
-        );
-      }
-      return {
-        kind: "theme",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        themeId: node.themeId,
-        theme,
-      };
-    }
-    if (node instanceof EmailTemplateNode) {
-      let template;
-      try {
-        const client = await this.deps.cache.get(node.host);
-        template = (await client.getEmailTemplate(node.name)) ?? undefined;
-      } catch (err) {
-        this.childLog.warn(
-          { event: "inspector.emailTemplate.fetchFailed", uid: node.uid, message: errMsg(err) },
-          "Email-template resolution failed — showing name only",
-        );
-      }
-      return {
-        kind: "emailTemplate",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        name: node.name,
-        template,
-      };
-    }
-    if (node instanceof SocialIdpNode) {
-      let idp;
-      try {
-        const client = await this.deps.cache.get(node.host);
-        idp = (await client.getSocialIdp(node.realm, node.name)) ?? undefined;
-      } catch (err) {
-        this.childLog.warn(
-          { event: "inspector.socialIdp.fetchFailed", uid: node.uid, message: errMsg(err) },
-          "Social-IdP resolution failed — showing name only",
-        );
-      }
-      return {
-        kind: "socialIdp",
-        uid: node.uid,
-        host: node.host,
-        realmName: node.realm,
-        name: node.name,
-        idp,
-      };
-    }
-    return { kind: "message", uid: node.uid, label: String(node.label ?? "") };
   }
 
   private renderHtml(webview: vscode.Webview): string {
@@ -331,10 +255,6 @@ export class InspectorPanel implements vscode.Disposable {
     const bundleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.deps.context.extensionUri, "out", "webview.js"),
     );
-    // esbuild emits `out/webview.css` as a sibling of `out/webview.js` when the
-    // JS bundle imports any CSS (ReactFlow's stylesheet does, inside
-    // JourneyDiagram.tsx). Loading it as a <link> keeps it out of the inlined
-    // <style> below.
     const stylesUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.deps.context.extensionUri, "out", "webview.css"),
     );
@@ -345,12 +265,6 @@ export class InspectorPanel implements vscode.Disposable {
       `img-src ${webview.cspSource} https: data:`,
       `font-src ${webview.cspSource}`,
     ].join("; ");
-
-    // Inline our shell CSS so user-theme CSS variables resolve without
-    // round-tripping through a static file. ReactFlow's stylesheet (loaded
-    // above) defines its own selectors that don't conflict.
-    const css = INSPECTOR_CSS;
-
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -358,7 +272,7 @@ export class InspectorPanel implements vscode.Disposable {
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <title>PAIC Inspector</title>
 <link rel="stylesheet" href="${stylesUri.toString()}" />
-<style>${css}</style>
+<style>${INSPECTOR_CSS}</style>
 </head>
 <body>
 <div id="root"></div>
@@ -368,54 +282,186 @@ export class InspectorPanel implements vscode.Disposable {
   }
 
   private post(msg: E2W): void {
-    this.panel?.webview.postMessage(msg);
+    this.panel.webview.postMessage(msg);
   }
 
   private async onMessage(msg: unknown): Promise<void> {
     if (!msg || typeof msg !== "object") return;
     const m = msg as W2E;
     if (m.type === "ready") {
-      this.childLog.debug({ event: "inspector.ready" }, "Inspector reported ready");
+      this.childLog.debug({ event: "tab.ready" }, "Inspector tab webview ready");
       return;
     }
-    if (m.type === "navigate") {
-      const target = this.uidIndex.get(m.uid);
-      if (!target) {
-        this.childLog.warn(
-          { event: "inspector.navigate.miss", uid: m.uid },
-          "Navigate target not in uid index",
-        );
-        return;
-      }
-      try {
-        await this.deps.treeView.reveal(target, {
-          select: true,
-          focus: false,
-          expand: false,
-        });
-        await this.show(target);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.childLog.error(
-          { event: "inspector.navigate.failed", uid: m.uid, message },
-          "Tree reveal failed",
-        );
-      }
+    if (m.type === "previewNode") {
+      // Any in-card hyperlink click → ask the factory for a new tab.
+      this.deps.spawnByUid(m.uid);
       return;
     }
     if (m.type === "openScriptBody") {
-      this.childLog.debug(
-        { event: "inspector.openScriptBody", host: m.host, realm: m.realm, scriptId: m.scriptId },
-        "Webview asked to open script body",
-      );
       await vscode.commands.executeCommand("paicJourneys.openScriptBody", {
         host: m.host,
         realm: m.realm,
         scriptId: m.scriptId,
         language: m.language,
       });
+      return;
+    }
+    if (m.type === "openEmailTemplateBody") {
+      await vscode.commands.executeCommand("paicJourneys.openEmailTemplateBody", {
+        host: m.host,
+        name: m.name,
+        locale: m.locale,
+      });
     }
   }
+}
+
+function tabTitle(node: PaicNode): string {
+  const label = String(node.label ?? node.uid);
+  // Truncate to keep the editor tab strip readable.
+  const trimmed = label.length > 40 ? `${label.slice(0, 37)}…` : label;
+  return `PAIC: ${trimmed}`;
+}
+
+/** Build the `select` payload for any `PaicNode`. Shared by `InspectorTab`'s
+ * initial render. Async because Inner/Email/Social kinds need to resolve
+ * real metadata. */
+export async function buildSelectPayload(
+  node: PaicNode,
+  cache: ClientCache,
+  log: Logger,
+): Promise<SelectPayload | null> {
+  if (node instanceof ConnectionNode) {
+    return { kind: "connection", uid: node.uid, connection: node.connection };
+  }
+  if (node instanceof RealmNode) {
+    return { kind: "realm", uid: node.uid, host: node.host, realm: node.realm };
+  }
+  if (node instanceof JourneyNode) {
+    return {
+      kind: "journey",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      journey: node.journey,
+    };
+  }
+  if (node instanceof InnerJourneyNode) {
+    let journey;
+    try {
+      journey = await node.ensureJourney();
+    } catch (err) {
+      log.warn(
+        {
+          event: "buildSelectPayload.innerJourney.fetchFailed",
+          uid: node.uid,
+          message: errMsg(err),
+        },
+        "Inner journey skeleton fetch failed — falling back to placeholder",
+      );
+      journey = { id: node.id, entryNodeId: "", enabled: true, nodes: {} };
+    }
+    return {
+      kind: "innerJourney",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      journey,
+      visited: node.visited,
+    };
+  }
+  if (node instanceof ScriptNode) {
+    return {
+      kind: "script",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      scriptId: node.scriptId,
+      // Pre-resolved during journey-expand's eager fetch — drives the card's
+      // name heading + context / description / audit fields.
+      script: node.resolved,
+    };
+  }
+  if (node instanceof LibraryScriptNode) {
+    return {
+      kind: "libraryScript",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      scriptId: node.scriptId,
+      name: node.name,
+      script: node.resolved,
+    };
+  }
+  if (node instanceof EsvNode) {
+    return {
+      kind: "esv",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      name: node.name,
+      esv: node.resolved,
+    };
+  }
+  if (node instanceof ThemeNode) {
+    return {
+      kind: "theme",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      themeId: node.themeId,
+      theme: node.resolved,
+    };
+  }
+  if (node instanceof EmailTemplateNode) {
+    let template;
+    try {
+      const client = await cache.get(node.host);
+      template = (await client.getEmailTemplate(node.name)) ?? undefined;
+    } catch (err) {
+      log.warn(
+        {
+          event: "buildSelectPayload.emailTemplate.fetchFailed",
+          uid: node.uid,
+          message: errMsg(err),
+        },
+        "Email-template resolution failed — showing name only",
+      );
+    }
+    return {
+      kind: "emailTemplate",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      name: node.name,
+      template,
+    };
+  }
+  if (node instanceof SocialIdpNode) {
+    let idp;
+    try {
+      const client = await cache.get(node.host);
+      idp = (await client.getSocialIdp(node.realm, node.name)) ?? undefined;
+    } catch (err) {
+      log.warn(
+        {
+          event: "buildSelectPayload.socialIdp.fetchFailed",
+          uid: node.uid,
+          message: errMsg(err),
+        },
+        "Social-IdP resolution failed — showing name only",
+      );
+    }
+    return {
+      kind: "socialIdp",
+      uid: node.uid,
+      host: node.host,
+      realmName: node.realm,
+      name: node.name,
+      idp,
+    };
+  }
+  return { kind: "message", uid: node.uid, label: String(node.label ?? "") };
 }
 
 function makeNonce(): string {
@@ -438,9 +484,7 @@ interface UidMaps {
 }
 
 /** Translate a fetched NodePayload into the NodeInfo the diagram + tooltip
- * consume. The `kind` discriminator decides what clicking does — see
- * `JourneyDiagram.onNodeClick`. Conditional-script kinds with `useScript=false`
- * fall through to `kind: "other"` so they don't trigger an open-body. */
+ * consume. Same logic as before; lifted out so it can be tested in isolation. */
 function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
   if (p.nodeType === "ScriptedDecisionNode" && p.scriptId) {
     return {
@@ -551,9 +595,6 @@ function buildNodeInfo(p: NodePayload, uids: UidMaps): NodeInfo {
 }
 
 // Inlined to avoid a separate static asset + extra `localResourceRoots` entry.
-// Keep in sync with `src/webview/inspector/ui/styles.css` (which exists for
-// editor + esbuild's CSS-import path; this constant is what the host actually
-// serves into the webview HTML).
 const INSPECTOR_CSS = `
 :root { color-scheme: light dark; }
 body {
@@ -602,6 +643,8 @@ button.link:hover { text-decoration: underline; color: var(--vscode-textLink-act
 .diag-node.config-provider { border-left: 3px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
 .diag-node.client-script { border-left: 3px solid var(--vscode-charts-purple, #b180d7); opacity: 0.9; }
 .diag-node.verify { border-left: 3px solid var(--vscode-charts-green, #3c9c3c); opacity: 0.9; }
-.diag-node.entry { box-shadow: 0 0 0 2px var(--vscode-charts-green, #3c9c3c); }
-.diag-node:hover { background: var(--vscode-list-hoverBackground); }
+.theme-swatch { display: inline-flex; align-items: center; gap: 6px; }
+.theme-swatch-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.theme-logo { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.theme-logo-img { max-width: 240px; max-height: 80px; background: var(--vscode-editor-background); padding: 6px; border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); border-radius: 4px; }
 `;

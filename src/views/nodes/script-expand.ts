@@ -1,4 +1,4 @@
-import type { Esv } from "../../domain/types";
+import type { Esv, Script } from "../../domain/types";
 import { mapConcurrent } from "../../paic/concurrency";
 import { extractScriptBodyRefs } from "../../resolver/script-body-parser";
 import type { ClientCache } from "../../tenants/client-cache";
@@ -28,7 +28,7 @@ export interface ScriptExpandArgs {
 type LibraryResolveResult =
   | { kind: "cycle"; name: string }
   | { kind: "missing"; name: string }
-  | { kind: "found"; name: string; scriptId: string; body: string };
+  | { kind: "found"; name: string; script: Script };
 
 /**
  * Parse a script body (D20) and emit tree children for each library-script
@@ -52,13 +52,13 @@ export async function expandScript(args: ScriptExpandArgs): Promise<PaicNode[]> 
     const resolved: LibraryResolveResult[] = await mapConcurrent(
       refs.libraryScripts,
       CONCURRENCY,
-      async (name) => {
+      async (name): Promise<LibraryResolveResult> => {
         if (newVisited.includes(name)) {
           return { kind: "cycle", name };
         }
         const script = await client.getScriptByName(realm, name);
         if (!script) return { kind: "missing", name };
-        return { kind: "found", name, scriptId: script.id, body: script.body };
+        return { kind: "found", name, script };
       },
     );
     for (const r of resolved) {
@@ -71,13 +71,14 @@ export async function expandScript(args: ScriptExpandArgs): Promise<PaicNode[]> 
           new LibraryScriptNode(
             host,
             realm,
-            r.scriptId,
+            r.script.id,
             r.name,
-            r.body,
+            r.script.body,
             cache,
             log,
             newVisited,
             parent,
+            r.script,
           ),
         );
       }

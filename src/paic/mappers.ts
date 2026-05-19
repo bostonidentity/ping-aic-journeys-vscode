@@ -13,20 +13,26 @@ import type {
 
 // ─── Realm ─────────────────────────────────────────────────────────────────
 
-/** Raw AIC realm entry from `GET /am/json/global-config/realms?_queryFilter=true`. */
+/** Raw AIC realm entry from `GET /am/json/global-config/realms?_queryFilter=true`.
+ * `parentPath` is `null` for the platform root realm and a path string for
+ * child realms (e.g. `"/"` for alpha/bravo). */
 export interface RawRealm {
   _id?: string;
   name: string;
   active: boolean;
-  parentPath?: string;
+  parentPath?: string | null;
   aliases?: string[];
 }
 
 export function mapRealm(raw: RawRealm): Realm {
+  // `parentPath == null` matches both wire `null` and missing field — both
+  // indicate the platform root realm. Loose-equals is intentional.
+  const isRoot = raw.parentPath == null;
   return {
     name: raw.name,
     active: raw.active,
     parentPath: raw.parentPath ?? "/",
+    isRoot,
   };
 }
 
@@ -51,6 +57,10 @@ export interface RawJourney {
   identityResource?: string;
   entryNodeId: string;
   nodes?: Record<string, RawNodeRef>;
+  innerTreeOnly?: boolean;
+  noSession?: boolean;
+  mustRun?: boolean;
+  transactionalOnly?: boolean;
 }
 
 export function mapJourney(raw: RawJourney): Journey {
@@ -68,6 +78,10 @@ export function mapJourney(raw: RawJourney): Journey {
     enabled: raw.enabled ?? false,
     identityResource: raw.identityResource,
     entryNodeId: raw.entryNodeId,
+    innerTreeOnly: raw.innerTreeOnly,
+    noSession: raw.noSession,
+    mustRun: raw.mustRun,
+    transactionalOnly: raw.transactionalOnly,
     nodes,
   };
 }
@@ -227,6 +241,15 @@ export interface RawScript {
   name: string;
   language?: string;
   script?: string;
+  context?: string;
+  /** Author-supplied. Can come back as `null` for older scripts. */
+  description?: string | null;
+  default?: boolean;
+  evaluatorVersion?: string;
+  /** LDAP-style DN of the last editor. */
+  lastModifiedBy?: string;
+  /** Epoch milliseconds. */
+  lastModifiedDate?: number;
 }
 
 export function mapScript(raw: RawScript): Script {
@@ -235,6 +258,12 @@ export function mapScript(raw: RawScript): Script {
     name: raw.name,
     language: raw.language ?? "JAVASCRIPT",
     body: decodeScriptBody(raw.script),
+    context: raw.context,
+    description: typeof raw.description === "string" ? raw.description : undefined,
+    isDefault: raw.default,
+    evaluatorVersion: raw.evaluatorVersion,
+    lastModifiedBy: raw.lastModifiedBy,
+    lastModifiedDate: raw.lastModifiedDate,
   };
 }
 
@@ -250,20 +279,49 @@ function decodeScriptBody(b64: string | undefined): string {
 
 // ─── Theme ─────────────────────────────────────────────────────────────────
 
-/** A single theme inside `ui/themerealm.realms.<realm>.themes[]`. */
+/** A single theme inside `ui/themerealm.realm.<realmName>[]`.
+ *
+ * The wire shape is rich (~80+ branding/color fields). We capture only what
+ * the inspector card surfaces; everything else is intentionally ignored. */
 export interface RawTheme {
   _id?: string;
   name?: string;
+  isDefault?: boolean;
+  /** Journey IDs that link to this theme. Useful for reverse-lookup
+   * surfaces (M5 back-search will exploit this). */
+  linkedTrees?: string[];
+  primaryColor?: string;
+  backgroundColor?: string;
+  backgroundImage?: string;
+  /** Localized logo URLs keyed by locale code (e.g. `{ "en": "https://…" }`). */
+  logo?: Record<string, string>;
+  logoAltText?: Record<string, string>;
+  journeyLayout?: string;
+  fontFamily?: string;
 }
 
 /** Full `ui/themerealm` document shape — IDM stores every realm's themes
- * in one config entity. We filter by realm + id client-side. */
+ * in one config entity. The top-level key is `realm` (singular); its value
+ * maps each realm name directly to a `RawTheme[]` (no `.themes` wrapper). */
 export interface RawThemeRealmConfig {
-  realms?: Record<string, { themes?: RawTheme[] }>;
+  realm?: Record<string, RawTheme[]>;
 }
 
 export function mapTheme(realm: string, raw: RawTheme): Theme {
-  return { id: raw._id ?? "", name: raw.name ?? "", realm };
+  return {
+    id: raw._id ?? "",
+    name: raw.name ?? "",
+    realm,
+    isDefault: raw.isDefault,
+    linkedTrees: raw.linkedTrees,
+    primaryColor: raw.primaryColor,
+    backgroundColor: raw.backgroundColor,
+    backgroundImage: raw.backgroundImage,
+    logo: raw.logo,
+    logoAltText: raw.logoAltText,
+    journeyLayout: raw.journeyLayout,
+    fontFamily: raw.fontFamily,
+  };
 }
 
 // ─── Email template ───────────────────────────────────────────────────────
@@ -275,6 +333,14 @@ export interface RawEmailTemplate {
   /** Localized subject per locale code (`en`, `fr`, …). */
   subject?: Record<string, string>;
   message?: Record<string, string>;
+  defaultLocale?: string;
+  mimeType?: string;
+  displayName?: string;
+  description?: string;
+  templateId?: string;
+  styles?: string;
+  html?: Record<string, string>;
+  advancedEditor?: boolean;
 }
 
 export function mapEmailTemplate(name: string, raw: RawEmailTemplate): EmailTemplate {
@@ -284,6 +350,14 @@ export function mapEmailTemplate(name: string, raw: RawEmailTemplate): EmailTemp
     from: raw.from,
     subject: raw.subject,
     message: raw.message,
+    defaultLocale: raw.defaultLocale,
+    mimeType: raw.mimeType,
+    displayName: raw.displayName,
+    description: raw.description,
+    templateId: raw.templateId,
+    styles: raw.styles,
+    html: raw.html,
+    advancedEditor: raw.advancedEditor,
   };
 }
 

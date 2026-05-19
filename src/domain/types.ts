@@ -20,6 +20,10 @@ export interface Realm {
   active: boolean;
   /** Parent realm path. "/" for top-level realms. */
   parentPath: string;
+  /** True for the platform root realm. On the wire this is identified by
+   * `parentPath === null` (no parent); on PAIC tenant service accounts have
+   * no access to its journey/script endpoints. */
+  isRoot: boolean;
 }
 
 /** A journey (tree) — skeleton plus per-node references. The `nodes` map
@@ -36,6 +40,12 @@ export interface Journey {
   entryNodeId: string;
   /** nodeId → node reference. */
   nodes: Record<string, NodeRef>;
+  /** Runtime flags passed through verbatim from the AIC config. Rendered
+   * raw on the inspector card per D23. */
+  innerTreeOnly?: boolean;
+  noSession?: boolean;
+  mustRun?: boolean;
+  transactionalOnly?: boolean;
 }
 
 /** A node as referenced inside a journey skeleton. External refs (script
@@ -189,14 +199,43 @@ export interface Script {
   language: string;
   /** Decoded script source. */
   body: string;
+  /** Runtime category — declares which subsystem invokes the script.
+   * Common values: `AUTHENTICATION_TREE_DECISION_NODE` (journey scripts),
+   * `CONFIG_PROVIDER_NODE`, `LIBRARY` (required modules),
+   * `OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OIDC_CLAIMS`, `SAML2_IDP_ADAPTER`,
+   * etc. See `poc/script-context-survey.mjs` for the full sb3 distribution. */
+  context?: string;
+  description?: string;
+  /** `true` for AIC-supplied seed/OOTB scripts; `false` for customer-written. */
+  isDefault?: boolean;
+  /** AIC script-engine version (`"1.0"` vs `"2.0"`). */
+  evaluatorVersion?: string;
+  /** LDAP-style DN of the last editor. */
+  lastModifiedBy?: string;
+  /** Epoch milliseconds — render with `new Date(ms).toISOString()`. */
+  lastModifiedDate?: number;
 }
 
-/** A UI theme registered in `ui/themerealm`. M3 surfaces id + name; later
- * milestones may expose colors / logos / etc. */
+/** A UI theme registered in `ui/themerealm`. Captures the inspector-relevant
+ * subset of AIC's ~80-field theme object; the rest (account-page styling,
+ * deep color customization) is intentionally ignored. */
 export interface Theme {
   id: string;
   name: string;
   realm: string;
+  /** Whether this is the realm's default theme. */
+  isDefault?: boolean;
+  /** Journey IDs that reference this theme. Free reverse-lookup baked
+   * into the response — useful for M5 back-search. */
+  linkedTrees?: string[];
+  primaryColor?: string;
+  backgroundColor?: string;
+  backgroundImage?: string;
+  /** Localized logo URL keyed by locale code (e.g. `{ "en": "https://…" }`). */
+  logo?: Record<string, string>;
+  logoAltText?: Record<string, string>;
+  journeyLayout?: string;
+  fontFamily?: string;
 }
 
 /** An IDM email template (`/openidm/config/emailTemplate/<name>`). */
@@ -207,6 +246,21 @@ export interface EmailTemplate {
   /** Localized — keyed by locale code (e.g. `en`, `fr`). */
   subject?: Record<string, string>;
   message?: Record<string, string>;
+  /** Default locale for the template (e.g. `"en"`). */
+  defaultLocale?: string;
+  /** MIME type of the message — almost always `"text/html"` in AIC. */
+  mimeType?: string;
+  /** Author-supplied label, often friendlier than the slug `name`. */
+  displayName?: string;
+  description?: string;
+  /** Echoed by the advanced editor; usually matches `name`. */
+  templateId?: string;
+  /** Separate CSS block authored alongside the message body. */
+  styles?: string;
+  /** Some advanced-editor templates store a parallel HTML container. */
+  html?: Record<string, string>;
+  /** True when the template was created via AIC's advanced editor. */
+  advancedEditor?: boolean;
 }
 
 /** A social-identity provider configured under a realm. */

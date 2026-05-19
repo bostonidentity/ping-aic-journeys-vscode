@@ -5,11 +5,10 @@ vi.mock("vscode", async () => (await import("../../util/vscode-mock")).makeVscod
 import { beforeEach, describe, expect, it } from "vitest";
 import type * as vscode from "vscode";
 import type { Connection, Journey } from "@/domain/types";
-import type { PaicNode } from "@/views/nodes/base";
 import { ConnectionNode } from "@/views/nodes/connection";
 import { JourneyNode } from "@/views/nodes/journey";
 import { ScriptNode } from "@/views/nodes/script";
-import { InspectorPanel } from "@/webview/inspector/panel";
+import { InspectorFactory } from "@/webview/inspector/panel";
 import { makeFakeCache, makeFakeLogger, makeFakePaicClient } from "../../views/fakes";
 
 const CONN: Connection = { host: "h.example.com", saId: "sa-1" };
@@ -37,55 +36,41 @@ function makeMockContext() {
   } as unknown as vscode.ExtensionContext;
 }
 
-function makeTreeView() {
-  const reveal = vi.fn(() => Promise.resolve());
-  return {
-    treeView: { reveal } as unknown as vscode.TreeView<PaicNode>,
-    revealFn: reveal,
-  };
-}
-
 beforeEach(async () => {
   const state = await getVscodeMockState();
   state.createWebviewPanel.mockClear();
   state.createdPanels.length = 0;
 });
 
-describe("InspectorPanel", () => {
-  it("creates the webview panel lazily on first show() and reuses it", async () => {
+/** Helper — wait for the next microtask drain so async webview post-messages
+ * land before we assert on them. */
+const flush = async () => {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+};
+
+describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
+  it("spawn() creates a fresh WebviewPanel on each call — no reuse", async () => {
     const state = await getVscodeMockState();
-    const fake = makeFakeCache(makeFakePaicClient({}));
+    const cache = makeFakeCache(makeFakePaicClient({}));
     const log = makeFakeLogger();
-    const { treeView } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache: fake,
-      log,
-      treeView,
-    });
-    const node = new ConnectionNode(CONN, fake, log);
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
 
-    await panel.show(node);
-    expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
-
-    await panel.show(node);
-    expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
+    const node = new ConnectionNode(CONN, cache, log);
+    factory.spawn(node);
+    factory.spawn(node);
+    factory.spawn(node);
+    expect(state.createWebviewPanel).toHaveBeenCalledTimes(3);
   });
 
-  it("routes a connection node to a select message with the connection payload", async () => {
+  it("spawn(connectionNode) posts a select message with the connection payload to its own webview", async () => {
     const state = await getVscodeMockState();
-    const fake = makeFakeCache(makeFakePaicClient({}));
+    const cache = makeFakeCache(makeFakePaicClient({}));
     const log = makeFakeLogger();
-    const { treeView } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache: fake,
-      log,
-      treeView,
-    });
-    const node = new ConnectionNode(CONN, fake, log);
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const node = new ConnectionNode(CONN, cache, log);
 
-    await panel.show(node);
+    const tab = factory.spawn(node);
+    await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
     expect(post).toHaveBeenCalledWith(
@@ -96,7 +81,7 @@ describe("InspectorPanel", () => {
     );
   });
 
-  it("fetches and posts journeyDeps when a journey node is selected", async () => {
+  it("spawn(journeyNode) fetches + posts journeyDeps with nodeIndex", async () => {
     const state = await getVscodeMockState();
     const journey: Journey = {
       id: "Login",
@@ -118,16 +103,11 @@ describe("InspectorPanel", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const { treeView } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache,
-      log,
-      treeView,
-    });
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
-    await panel.show(node);
+    const tab = factory.spawn(node);
+    await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
     const calls = post.mock.calls.map((c: unknown[]) => c[0]);
@@ -136,20 +116,18 @@ describe("InspectorPanel", () => {
         m,
       ): m is {
         type: "journeyDeps";
-        uid: string;
         scripts: unknown[];
         nodeIndex: Record<string, { kind: string; scriptId?: string; uid?: string }>;
       } => Boolean(m) && (m as { type?: unknown }).type === "journeyDeps",
     );
     expect(depsMsg).toBeDefined();
     expect(depsMsg?.scripts).toHaveLength(1);
-    // The nodeIndex maps the original nodeId ("n1") to its discovered script.
     expect(depsMsg?.nodeIndex.n1?.kind).toBe("script");
     expect(depsMsg?.nodeIndex.n1?.scriptId).toBe("s-1");
     expect(depsMsg?.nodeIndex.n1?.uid).toBe("script:h.example.com:alpha:s-1");
   });
 
-  it("journeyDeps uses the resolved script NAME (not the UUID) for the scripts deps list label + the nodeIndex entry", async () => {
+  it("journeyDeps uses the resolved script NAME (not the UUID) for the scripts deps list label", async () => {
     const state = await getVscodeMockState();
     const journey: Journey = {
       id: "Login",
@@ -174,16 +152,11 @@ describe("InspectorPanel", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const { treeView } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache,
-      log,
-      treeView,
-    });
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
-    await panel.show(node);
+    const tab = factory.spawn(node);
+    await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
     const calls = post.mock.calls.map((c: unknown[]) => c[0]);
@@ -193,64 +166,84 @@ describe("InspectorPanel", () => {
       ): m is {
         type: "journeyDeps";
         scripts: Array<{ label: string; uid: string }>;
-        nodeIndex: Record<string, { kind: string; scriptName?: string; scriptId?: string }>;
+        nodeIndex: Record<string, { scriptName?: string; scriptId?: string }>;
       } => Boolean(m) && (m as { type?: unknown }).type === "journeyDeps",
     );
-    expect(depsMsg).toBeDefined();
     expect(depsMsg?.scripts[0].label).toBe("AuthHelper");
     expect(depsMsg?.nodeIndex.n1?.scriptName).toBe("AuthHelper");
     expect(depsMsg?.nodeIndex.n1?.scriptId).toBe("s-1");
   });
 
-  it("on `navigate` message reveals the cached node in the tree view", async () => {
+  it("on `previewNode` message the factory spawns a NEW tab for the target uid", async () => {
     const state = await getVscodeMockState();
-    const fake = makeFakeCache(makeFakePaicClient({}));
-    const log = makeFakeLogger();
-    const { treeView, revealFn } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache: fake,
-      log,
-      treeView,
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: {
+        "alpha:ScriptedDecisionNode:n1": {
+          id: "n1",
+          nodeType: "ScriptedDecisionNode",
+          scriptId: "s-1",
+          outcomes: [],
+          inputs: [],
+          outputs: [],
+        },
+      },
     });
-    const node = new ConnectionNode(CONN, fake, log);
+    const cache = makeFakeCache(client);
+    const log = makeFakeLogger();
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
-    await panel.show(node);
+    const tab = factory.spawn(node);
+    await tab.ready;
+    // After the journey tab renders, its ScriptNode child is registered.
+    expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
 
-    const mockPanel = state.createdPanels[0];
-    mockPanel.webview.__fireReceive({ type: "navigate", uid: node.uid });
+    const journeyPanel = state.createdPanels[0];
+    journeyPanel.webview.__fireReceive({
+      type: "previewNode",
+      uid: "script:h.example.com:alpha:s-1",
+    });
+    await flush();
 
-    // The reveal call is async; wait a microtask for it to land.
-    await Promise.resolve();
-    expect(revealFn).toHaveBeenCalledWith(node, expect.objectContaining({ select: true }));
+    // A second panel was created for the script preview.
+    expect(state.createWebviewPanel).toHaveBeenCalledTimes(2);
+    const scriptPanel = state.createdPanels[1];
+    const calls = scriptPanel.webview.postMessage.mock.calls.map((c: unknown[]) => c[0]);
+    const selectMsg = calls.find((m) => (m as { type?: unknown }).type === "select");
+    expect(selectMsg).toMatchObject({
+      payload: expect.objectContaining({
+        kind: "script",
+        scriptId: "s-1",
+      }),
+    });
   });
 
-  it("ignores `navigate` for an unknown uid", async () => {
+  it("ignores `previewNode` for an unknown uid (no panel spawned, no throw)", async () => {
     const state = await getVscodeMockState();
-    const fake = makeFakeCache(makeFakePaicClient({}));
+    const cache = makeFakeCache(makeFakePaicClient({}));
     const log = makeFakeLogger();
-    const { treeView, revealFn } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache: fake,
-      log,
-      treeView,
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const node = new ConnectionNode(CONN, cache, log);
+
+    const tab = factory.spawn(node);
+    await tab.ready;
+    expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
+
+    state.createdPanels[0].webview.__fireReceive({
+      type: "previewNode",
+      uid: "script:never-registered:s-?",
     });
-    const node = new ConnectionNode(CONN, fake, log);
-
-    await panel.show(node);
-
-    const mockPanel = state.createdPanels[0];
-    mockPanel.webview.__fireReceive({ type: "navigate", uid: "script:unknown" });
-    await Promise.resolve();
-    expect(revealFn).not.toHaveBeenCalled();
-
-    // Silence unused import — ScriptNode is referenced via the import to assert
-    // the module compiles, but isn't directly used here.
-    void ScriptNode;
+    await flush();
+    expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
   });
 
-  it("show(scriptNode) posts a scriptDeps message derived from its expanded children", async () => {
+  it("spawn(scriptNode) posts a scriptDeps message derived from its expanded children", async () => {
     const state = await getVscodeMockState();
     const client = makeFakePaicClient({
       scriptsByKey: {
@@ -272,16 +265,11 @@ describe("InspectorPanel", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const { treeView } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache,
-      log,
-      treeView,
-    });
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
     const node = new ScriptNode("h.example.com", "alpha", "s-1", cache, log);
 
-    await panel.show(node);
+    const tab = factory.spawn(node);
+    await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
     const calls = post.mock.calls.map((c: unknown[]) => c[0]);
@@ -290,12 +278,10 @@ describe("InspectorPanel", () => {
         m,
       ): m is {
         type: "scriptDeps";
-        uid: string;
         libraryScripts: Array<{ uid: string; label: string; kind: string }>;
         esvs: Array<{ uid: string; label: string; kind: string }>;
       } => Boolean(m) && (m as { type?: unknown }).type === "scriptDeps",
     );
-    expect(depsMsg).toBeDefined();
     expect(depsMsg?.libraryScripts.map((l) => l.label)).toEqual(["helpers"]);
     expect(depsMsg?.esvs.map((e) => e.label)).toEqual(["esv.kyid.portal.name"]);
   });
@@ -335,16 +321,11 @@ describe("InspectorPanel", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const { treeView } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache,
-      log,
-      treeView,
-    });
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
-    await panel.show(node);
+    const tab = factory.spawn(node);
+    await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
     const calls = post.mock.calls.map((c: unknown[]) => c[0]);
@@ -353,12 +334,11 @@ describe("InspectorPanel", () => {
         m,
       ): m is {
         type: "journeyDeps";
-        themes: Array<{ label: string; kind: string }>;
-        emailTemplates: Array<{ label: string; kind: string }>;
-        socialIdps: Array<{ label: string; kind: string }>;
+        themes: Array<{ label: string }>;
+        emailTemplates: Array<{ label: string }>;
+        socialIdps: Array<{ label: string }>;
       } => Boolean(m) && (m as { type?: unknown }).type === "journeyDeps",
     );
-    expect(depsMsg).toBeDefined();
     expect(depsMsg?.themes.map((t) => t.label)).toEqual(["theme-1"]);
     expect(depsMsg?.emailTemplates.map((e) => e.label)).toEqual(["Welcome"]);
     expect(depsMsg?.socialIdps.map((s) => s.label)).toEqual(["google-oidc"]);
@@ -411,16 +391,11 @@ describe("InspectorPanel", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const { treeView } = makeTreeView();
-    const panel = new InspectorPanel({
-      context: makeMockContext(),
-      cache,
-      log,
-      treeView,
-    });
+    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
-    await panel.show(node);
+    const tab = factory.spawn(node);
+    await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
     const calls = post.mock.calls.map((c: unknown[]) => c[0]);
@@ -444,7 +419,6 @@ describe("InspectorPanel", () => {
         >;
       } => Boolean(m) && (m as { type?: unknown }).type === "journeyDeps",
     );
-    expect(depsMsg).toBeDefined();
     const idx = depsMsg!.nodeIndex;
     expect(idx.p1.kind).toBe("theme");
     expect(idx.p1.themeId).toBe("theme-1");
@@ -452,15 +426,12 @@ describe("InspectorPanel", () => {
     expect(idx.e1.kind).toBe("emailTemplate");
     expect(idx.e1.emailTemplateName).toBe("Welcome");
     expect(idx.e1.uid).toBe("email-template:h.example.com:alpha:Welcome");
-    // SocialProviderHandlerNode w/ scriptId → script wins for click; socialIdpNames decorate.
     expect(idx.s1.kind).toBe("script");
     expect(idx.s1.scriptId).toBe("s-social");
     expect(idx.s1.socialIdpNames).toEqual(["google-oidc"]);
-    // SelectIdPNode → socialIdp; uid points to first IdP leaf.
     expect(idx.i1.kind).toBe("socialIdp");
     expect(idx.i1.socialIdpNames).toEqual(["apple-oidc"]);
     expect(idx.i1.uid).toBe("social-idp:h.example.com:alpha:apple-oidc");
-    // DeviceMatchNode w/ useScript=false → other + useScript false propagates.
     expect(idx.d1.kind).toBe("other");
     expect(idx.d1.useScript).toBe(false);
   });

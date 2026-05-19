@@ -32,8 +32,8 @@ describe("LibraryScriptCard", () => {
     );
   });
 
-  it("renders deps and fires onNavigate when a library / ESV link is clicked", () => {
-    const onNavigate = vi.fn();
+  it("renders deps and fires onPreview when a library / ESV link is clicked", () => {
+    const onPreview = vi.fn();
     const libs: NodeRef[] = [
       {
         uid: "library-script:h:alpha:nested:helpers,parent",
@@ -46,12 +46,12 @@ describe("LibraryScriptCard", () => {
       <LibraryScriptCard
         payload={payload}
         deps={{ libraryScripts: libs, esvs }}
-        onNavigate={onNavigate}
+        onPreview={onPreview}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "nested" }));
-    expect(onNavigate).toHaveBeenLastCalledWith(libs[0].uid);
+    expect(onPreview).toHaveBeenLastCalledWith(libs[0].uid);
     fireEvent.click(screen.getByRole("button", { name: "PUBLIC_URL" }));
-    expect(onNavigate).toHaveBeenLastCalledWith(esvs[0].uid);
+    expect(onPreview).toHaveBeenLastCalledWith(esvs[0].uid);
   });
 });

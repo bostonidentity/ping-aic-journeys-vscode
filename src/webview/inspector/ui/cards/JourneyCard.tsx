@@ -1,3 +1,4 @@
+import type { Journey } from "../../../../domain/types";
 import type { NodeInfo, NodeRef, SelectPayload } from "../../../messages";
 import { JourneyDiagram } from "../diagram/JourneyDiagram";
 
@@ -13,11 +14,13 @@ export interface JourneyCardDeps {
 interface Props {
   payload: Extract<SelectPayload, { kind: "journey" }>;
   deps: JourneyCardDeps | null;
-  onNavigate: (uid: string) => void;
-  onOpenBody: (host: string, realm: string, scriptId: string, language?: string) => void;
+  /** Card-internal hyperlink clicks go through here per D24 — opens the
+   * target's card in the preview panel beside; main inspector + tree stay
+   * put. */
+  onPreview: (uid: string) => void;
 }
 
-export function JourneyCard({ payload, deps, onNavigate, onOpenBody }: Props) {
+export function JourneyCard({ payload, deps, onPreview }: Props) {
   const { journey, realmName, host } = payload;
   const nodeCount = Object.keys(journey.nodes).length;
   return (
@@ -55,28 +58,22 @@ export function JourneyCard({ payload, deps, onNavigate, onOpenBody }: Props) {
         </dd>
         <dt>Node count</dt>
         <dd>{nodeCount}</dd>
+        <JourneyFlags journey={journey} />
       </dl>
       {deps?.nodeIndex ? (
-        <JourneyDiagram
-          journey={journey}
-          nodeIndex={deps.nodeIndex}
-          host={host}
-          realm={realmName}
-          onNavigate={onNavigate}
-          onOpenBody={onOpenBody}
-        />
+        <JourneyDiagram journey={journey} nodeIndex={deps.nodeIndex} onPreview={onPreview} />
       ) : null}
-      <DepsBlock deps={deps} onNavigate={onNavigate} />
+      <DepsBlock deps={deps} onPreview={onPreview} />
     </article>
   );
 }
 
 interface DepsProps {
   deps: JourneyCardDeps | null;
-  onNavigate: (uid: string) => void;
+  onPreview: (uid: string) => void;
 }
 
-export function DepsBlock({ deps, onNavigate }: DepsProps) {
+export function DepsBlock({ deps, onPreview }: DepsProps) {
   if (!deps) {
     return (
       <section className="deps-loading">
@@ -99,23 +96,48 @@ export function DepsBlock({ deps, onNavigate }: DepsProps) {
   }
   return (
     <section className="deps">
-      <DepsSection title="Scripts" items={deps.scripts} onNavigate={onNavigate} />
-      <DepsSection title="Inner journeys" items={deps.inners} onNavigate={onNavigate} />
-      <DepsSection title="Themes" items={deps.themes} onNavigate={onNavigate} />
-      <DepsSection title="Email templates" items={deps.emailTemplates} onNavigate={onNavigate} />
-      <DepsSection title="Social IdPs" items={deps.socialIdps} onNavigate={onNavigate} />
+      <DepsSection title="Scripts" items={deps.scripts} onPreview={onPreview} />
+      <DepsSection title="Inner journeys" items={deps.inners} onPreview={onPreview} />
+      <DepsSection title="Themes" items={deps.themes} onPreview={onPreview} />
+      <DepsSection title="Email templates" items={deps.emailTemplates} onPreview={onPreview} />
+      <DepsSection title="Social IdPs" items={deps.socialIdps} onPreview={onPreview} />
     </section>
+  );
+}
+
+/** Renders the four boolean runtime flags (innerTreeOnly / noSession /
+ * mustRun / transactionalOnly) as raw true/false. Per D23: skip rows whose
+ * value is undefined; render true/false as-is (no humanization). Exported
+ * via implicit module-scope; used by JourneyCard + InnerJourneyCard. */
+export function JourneyFlags({ journey }: { journey: Journey }) {
+  return (
+    <>
+      <FlagRow label="innerTreeOnly" value={journey.innerTreeOnly} />
+      <FlagRow label="noSession" value={journey.noSession} />
+      <FlagRow label="mustRun" value={journey.mustRun} />
+      <FlagRow label="transactionalOnly" value={journey.transactionalOnly} />
+    </>
+  );
+}
+
+function FlagRow({ label, value }: { label: string; value: boolean | undefined }) {
+  if (value === undefined) return null;
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{String(value)}</dd>
+    </>
   );
 }
 
 function DepsSection({
   title,
   items,
-  onNavigate,
+  onPreview,
 }: {
   title: string;
   items: NodeRef[];
-  onNavigate: (uid: string) => void;
+  onPreview: (uid: string) => void;
 }) {
   if (items.length === 0) return null;
   return (
@@ -126,7 +148,7 @@ function DepsSection({
       <ul>
         {items.map((i) => (
           <li key={i.uid}>
-            <button type="button" className="link" onClick={() => onNavigate(i.uid)}>
+            <button type="button" className="link" onClick={() => onPreview(i.uid)}>
               {i.label}
             </button>
           </li>

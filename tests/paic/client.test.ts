@@ -99,8 +99,8 @@ describe("PaicClient", () => {
     expect(fake.calls[0].url).toBe("/am/json/global-config/realms?_queryFilter=true");
     expect(fake.calls[0].apiVersion).toBe("protocol=2.0,resource=1.0");
     expect(realms).toEqual([
-      { name: "alpha", active: true, parentPath: "/" },
-      { name: "beta", active: false, parentPath: "/" },
+      { name: "alpha", active: true, parentPath: "/", isRoot: false },
+      { name: "beta", active: false, parentPath: "/", isRoot: false },
     ]);
   });
 
@@ -200,26 +200,58 @@ describe("PaicClient", () => {
   });
 
   it("getTheme fetches the whole themerealm config and filters by realm + id", async () => {
+    // The wire shape uses `realm` (singular) and the value is the theme
+    // array directly — no `.themes` wrapper. Verified against sb3 via the
+    // theme-probe POC.
     fake.enqueueGet({
-      realms: {
-        alpha: {
-          themes: [
-            { _id: "theme-1", name: "Default" },
-            { _id: "theme-2", name: "Custom" },
-          ],
-        },
-        beta: { themes: [{ _id: "theme-3", name: "Other" }] },
+      realm: {
+        alpha: [
+          { _id: "theme-1", name: "Default", isDefault: true },
+          {
+            _id: "theme-2",
+            name: "Custom",
+            primaryColor: "#3057A4",
+            linkedTrees: ["JourneyA", "JourneyB"],
+            logo: { en: "https://example.com/logo.svg" },
+            logoAltText: { en: "Logo" },
+          },
+        ],
+        beta: [{ _id: "theme-3", name: "Other" }],
       },
     });
     const found = await client.getTheme("alpha", "theme-2");
     expect(fake.calls[0].url).toBe("/openidm/config/ui/themerealm");
-    expect(found).toEqual({ id: "theme-2", name: "Custom", realm: "alpha" });
+    expect(found).toMatchObject({
+      id: "theme-2",
+      name: "Custom",
+      realm: "alpha",
+      primaryColor: "#3057A4",
+      linkedTrees: ["JourneyA", "JourneyB"],
+      logo: { en: "https://example.com/logo.svg" },
+    });
 
     fake.enqueueGet({
-      realms: { alpha: { themes: [{ _id: "theme-1", name: "Default" }] } },
+      realm: { alpha: [{ _id: "theme-1", name: "Default" }] },
     });
     const miss = await client.getTheme("alpha", "no-such-theme");
     expect(miss).toBeNull();
+  });
+
+  it("listThemes fetches /openidm/config/ui/themerealm once and returns all mapped themes for the realm", async () => {
+    fake.enqueueGet({
+      realm: {
+        alpha: [
+          { _id: "t1", name: "First", isDefault: true },
+          { _id: "t2", name: "Second", primaryColor: "#3057A4" },
+        ],
+        beta: [{ _id: "t3", name: "BetaTheme" }],
+      },
+    });
+    const themes = await client.listThemes("alpha");
+    expect(fake.calls[0].url).toBe("/openidm/config/ui/themerealm");
+    expect(themes.map((t) => t.id)).toEqual(["t1", "t2"]);
+    expect(themes[0].isDefault).toBe(true);
+    expect(themes[1].primaryColor).toBe("#3057A4");
   });
 
   it("getEmailTemplate fetches /openidm/config/emailTemplate/<name> and maps the result", async () => {

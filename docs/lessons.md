@@ -16,6 +16,13 @@ Corrections and patterns to avoid repeating. Append entries here whenever a user
 
 <!-- Entries below, newest first. -->
 
+## 2026-05-18 — `/openidm/config/ui/themerealm` uses `realm` (singular), value is the theme array directly
+
+**Context:** Implementing `client.getTheme(realm, themeId)` for the M3 theme leaf + card. Initial code looked under `json.realms[realm].themes` (plural, with `.themes` wrapper).
+**Mistake:** Assumed the response wrapper shape. Code silently returned `null` for every theme lookup; ThemeCard showed only the UUID. Surfaced during a smoke-test session against sb3 — user noticed the heading was a UUID and asked "is there a name field?"
+**Correction:** The actual wire shape is `{ _id: "ui/themerealm", realm: { <realmName>: RawTheme[] } }` — **singular** `realm`, and the per-realm value is the theme array **directly** (no `.themes` wrapper). Each theme has ~80+ fields including `name`, `isDefault`, `linkedTrees` (journey IDs that link to this theme — free reverse-lookup baked into the response), plus extensive branding/color fields.
+**How to avoid next time:** Always probe the actual response shape against a live tenant during initial implementation. A tiny `poc/<resource>-probe.mjs` that dumps `Object.keys` of the first result is cheap insurance. Applies to any AIC resource. The original frodo-lib reference can be wrong / out-of-date for newer endpoints.
+
 ## 2026-05-17 — `PreToolUse` Bash hooks fire **before** the shell command runs
 
 **Context:** Built `check-secrets.sh` to scan staged files before `git commit`.

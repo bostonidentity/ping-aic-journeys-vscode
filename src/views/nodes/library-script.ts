@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { Script } from "../../domain/types";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import { PaicNode } from "./base";
@@ -11,6 +12,9 @@ import { expandScript } from "./script-expand";
  * for cycle detection. */
 export class LibraryScriptNode extends PaicNode {
   readonly uid: string;
+  /** Full resolved script (set by `script-expand`'s `getScriptByName`).
+   * Drives the inspector card's audit/context fields per D23. */
+  readonly resolved?: Script;
   constructor(
     public readonly host: string,
     public readonly realm: string,
@@ -24,9 +28,11 @@ export class LibraryScriptNode extends PaicNode {
     private readonly log: Logger,
     public readonly visited: readonly string[],
     parent?: PaicNode,
+    resolved?: Script,
   ) {
     super(name, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
+    this.resolved = resolved;
     this.uid = `library-script:${host}:${realm}:${name}:${visited.join(",")}`;
     this.contextValue = "libraryScript";
     this.iconPath = new vscode.ThemeIcon("library");

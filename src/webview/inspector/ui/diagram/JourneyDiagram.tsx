@@ -25,10 +25,10 @@ import { SocialProviderHandlerNodeView } from "./nodes/SocialProviderHandlerNode
 interface Props {
   journey: Journey;
   nodeIndex: Record<string, NodeInfo>;
-  host: string;
-  realm: string;
-  onNavigate: (uid: string) => void;
-  onOpenBody: (host: string, realm: string, scriptId: string, language?: string) => void;
+  /** Open the clicked node's card in a separate preview panel beside the
+   * main inspector. Does NOT change tree selection or replace the current
+   * inspector content. */
+  onPreview: (uid: string) => void;
 }
 
 /** Map AIC node types to the registered ReactFlow node component. Unknown
@@ -54,7 +54,7 @@ function rfNodeType(aicType: string): keyof typeof nodeTypes {
   return "Other";
 }
 
-export function JourneyDiagram({ journey, nodeIndex, host, realm, onNavigate, onOpenBody }: Props) {
+export function JourneyDiagram({ journey, nodeIndex, onPreview }: Props) {
   const { rfNodes, rfEdges } = useMemo(() => {
     const layout = computeLayout(journey);
     const nodes: Node[] = layout.nodes.map((n) => ({
@@ -81,21 +81,12 @@ export function JourneyDiagram({ journey, nodeIndex, host, realm, onNavigate, on
 
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
+      // Any node with a resolved tree-leaf uid opens its card in the
+      // separate preview panel. No-op for "other" / unmapped kinds.
       const info = nodeIndex[node.id];
-      if (!info) return;
-      if (info.kind === "script" && info.scriptId) {
-        onOpenBody(host, realm, info.scriptId);
-      } else if (info.kind === "inner" && info.uid) {
-        onNavigate(info.uid);
-      } else if (info.kind === "theme" && info.uid) {
-        onNavigate(info.uid);
-      } else if (info.kind === "emailTemplate" && info.uid) {
-        onNavigate(info.uid);
-      } else if (info.kind === "socialIdp" && info.uid) {
-        onNavigate(info.uid);
-      }
+      if (info?.uid) onPreview(info.uid);
     },
-    [nodeIndex, host, realm, onNavigate, onOpenBody],
+    [nodeIndex, onPreview],
   );
 
   if (rfNodes.length === 0) {

@@ -29,7 +29,14 @@ export class ConnectionNode extends PaicNode {
 
   protected async loadChildren(): Promise<PaicNode[]> {
     const client = await this.cache.get(this.connection.host);
-    const realms = await client.listRealms();
+    const all = await client.listRealms();
+    // PAIC reserves the root realm for the platform; service accounts always
+    // 403 on its journey/script endpoints. Identify it by `isRoot` (wire-level
+    // `parentPath === null`) rather than name, since some deployments report
+    // the root name as "/" and others as something else. Hide it so the tree
+    // stays clean. If on-prem AM support is added later, gate on connection
+    // type instead.
+    const realms = all.filter((r) => !r.isRoot && r.name !== "/");
     if (realms.length === 0) {
       return [new MessageNode("No realms found", "info")];
     }

@@ -31,6 +31,51 @@ describe("ScriptCard", () => {
     expect(screen.getByText("JAVASCRIPT")).toBeTruthy();
   });
 
+  it("renders the new fields (context / description / default / evaluatorVersion / lastModified pair) when present", () => {
+    const ts = Date.UTC(2025, 0, 15, 12, 30, 0);
+    render(
+      <ScriptCard
+        payload={{
+          ...baseline,
+          script: {
+            id: "s-1",
+            name: "AuthDecision",
+            language: "JAVASCRIPT",
+            body: "",
+            context: "AUTHENTICATION_TREE_DECISION_NODE",
+            description: "Sets session assurance",
+            isDefault: false,
+            evaluatorVersion: "2.0",
+            lastModifiedBy: "id=admin,ou=user,ou=am-config",
+            lastModifiedDate: ts,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("AUTHENTICATION_TREE_DECISION_NODE")).toBeTruthy();
+    expect(screen.getByText("Sets session assurance")).toBeTruthy();
+    expect(screen.getByText("false")).toBeTruthy(); // isDefault
+    expect(screen.getByText("2.0")).toBeTruthy();
+    expect(screen.getByText("id=admin,ou=user,ou=am-config")).toBeTruthy();
+    expect(screen.getByText(new Date(ts).toISOString())).toBeTruthy();
+  });
+
+  it("skips new-field rows when the values are undefined", () => {
+    render(
+      <ScriptCard
+        payload={{
+          ...baseline,
+          script: { id: "s-1", name: "Minimal", language: "JAVASCRIPT", body: "" },
+        }}
+      />,
+    );
+    expect(screen.queryByText("Context")).toBeNull();
+    expect(screen.queryByText("Default (OOTB)")).toBeNull();
+    expect(screen.queryByText("Evaluator version")).toBeNull();
+    expect(screen.queryByText("Last modified by")).toBeNull();
+    expect(screen.queryByText("Last modified")).toBeNull();
+  });
+
   it("renders no Open-body action when onOpenBody is not provided", () => {
     render(<ScriptCard payload={baseline} />);
     expect(screen.queryByRole("button", { name: /Open body in editor/ })).toBeNull();
@@ -56,22 +101,18 @@ describe("ScriptCard", () => {
     );
   });
 
-  it("renders the script-deps block with library + ESV links and fires onNavigate on click", () => {
-    const onNavigate = vi.fn();
+  it("renders the script-deps block with library + ESV links and fires onPreview on click", () => {
+    const onPreview = vi.fn();
     const libs: NodeRef[] = [
       { uid: "library-script:h:alpha:helpers:s-1", label: "helpers", kind: "libraryScript" },
     ];
     const esvs: NodeRef[] = [{ uid: "esv:h:alpha:PUBLIC_URL", label: "PUBLIC_URL", kind: "esv" }];
     render(
-      <ScriptCard
-        payload={baseline}
-        deps={{ libraryScripts: libs, esvs }}
-        onNavigate={onNavigate}
-      />,
+      <ScriptCard payload={baseline} deps={{ libraryScripts: libs, esvs }} onPreview={onPreview} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "helpers" }));
-    expect(onNavigate).toHaveBeenLastCalledWith(libs[0].uid);
+    expect(onPreview).toHaveBeenLastCalledWith(libs[0].uid);
     fireEvent.click(screen.getByRole("button", { name: "PUBLIC_URL" }));
-    expect(onNavigate).toHaveBeenLastCalledWith(esvs[0].uid);
+    expect(onPreview).toHaveBeenLastCalledWith(esvs[0].uid);
   });
 });

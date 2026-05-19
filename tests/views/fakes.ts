@@ -69,6 +69,13 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
     getTheme: vi.fn((realm: string, themeId: string) => {
       return Promise.resolve(data.themesByKey?.[`${realm}:${themeId}`] ?? null);
     }),
+    listThemes: vi.fn((realm: string) => {
+      const prefix = `${realm}:`;
+      const list = Object.entries(data.themesByKey ?? {})
+        .filter(([k]) => k.startsWith(prefix))
+        .map(([, v]) => v);
+      return Promise.resolve(list);
+    }),
     getEmailTemplate: vi.fn((name: string) => {
       return Promise.resolve(data.emailTemplatesByName?.[name] ?? null);
     }),

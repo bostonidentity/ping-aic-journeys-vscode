@@ -9,7 +9,7 @@ function payload(active: boolean): Extract<SelectPayload, { kind: "realm" }> {
     kind: "realm",
     uid: "realm:h:alpha",
     host: "openam-tenant.example.forgeblocks.com",
-    realm: { name: "alpha", active, parentPath: "/" },
+    realm: { name: "alpha", active, parentPath: "/", isRoot: false },
   };
 }
 

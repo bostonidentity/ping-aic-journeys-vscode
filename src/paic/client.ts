@@ -58,6 +58,9 @@ export interface PaicClient {
   /** Fetch a single theme by id from a realm. Internally fetches the whole
    * `ui/themerealm` IDM config and filters; returns null if not found. */
   getTheme(realm: string, themeId: string): Promise<Theme | null>;
+  /** Return every theme in a realm. Single fetch of `ui/themerealm`; lets
+   * the tree pre-resolve multiple PageNode.themeIds in one round-trip. */
+  listThemes(realm: string): Promise<Theme[]>;
   /** Fetch a single IDM email template by name. Returns null on 404. */
   getEmailTemplate(name: string): Promise<EmailTemplate | null>;
   /** List all social IdPs in a realm (one POST via `_action=nextdescendents`). */
@@ -171,14 +174,26 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async getTheme(realm: string, themeId: string): Promise<Theme | null> {
+      // AIC stores all themes for all realms in one IDM config doc. The
+      // top-level key is `realm` (singular) and the per-realm value is the
+      // theme array directly — no `.themes` wrapper. Verified against sb3.
       const resp = await http.get<RawThemeRealmConfig>("/openidm/config/ui/themerealm");
-      const themes = resp.data.realms?.[realm]?.themes ?? [];
+      const themes = resp.data.realm?.[realm] ?? [];
       const found = themes.find((t) => t._id === themeId);
       if (!found) {
         log.debug({ event: "client.getTheme.miss", realm, theme_id: themeId }, "Theme not found");
         return null;
       }
       return mapTheme(realm, found);
+    },
+
+    async listThemes(realm: string): Promise<Theme[]> {
+      // One fetch of the whole themerealm doc; the tree uses this to
+      // pre-resolve multiple PageNode.themeIds in one round-trip during a
+      // journey expansion.
+      const resp = await http.get<RawThemeRealmConfig>("/openidm/config/ui/themerealm");
+      const raws = resp.data.realm?.[realm] ?? [];
+      return raws.map((raw) => mapTheme(realm, raw));
     },
 
     async getEmailTemplate(name: string): Promise<EmailTemplate | null> {

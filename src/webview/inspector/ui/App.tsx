@@ -69,9 +69,11 @@ export function App({ vscode }: Props) {
     return () => window.removeEventListener("message", onMsg);
   }, []);
 
-  const navigate = (uid: string) => vscode.postMessage({ type: "navigate", uid });
   const openBody = (host: string, realm: string, scriptId: string, language?: string) =>
     vscode.postMessage({ type: "openScriptBody", host, realm, scriptId, language });
+  const openEmailBody = (host: string, name: string, locale: string) =>
+    vscode.postMessage({ type: "openEmailTemplateBody", host, name, locale });
+  const previewNode = (uid: string) => vscode.postMessage({ type: "previewNode", uid });
 
   if (!selection) {
     return <div className="empty">Select a tree node to inspect.</div>;
@@ -91,29 +93,17 @@ export function App({ vscode }: Props) {
     case "realm":
       return <RealmCard payload={selection} />;
     case "journey":
-      return (
-        <JourneyCard
-          payload={selection}
-          deps={matchingJourneyDeps}
-          onNavigate={navigate}
-          onOpenBody={openBody}
-        />
-      );
+      return <JourneyCard payload={selection} deps={matchingJourneyDeps} onPreview={previewNode} />;
     case "innerJourney":
       return (
-        <InnerJourneyCard
-          payload={selection}
-          deps={matchingJourneyDeps}
-          onNavigate={navigate}
-          onOpenBody={openBody}
-        />
+        <InnerJourneyCard payload={selection} deps={matchingJourneyDeps} onPreview={previewNode} />
       );
     case "script":
       return (
         <ScriptCard
           payload={selection}
           deps={matchingScriptDeps}
-          onNavigate={navigate}
+          onPreview={previewNode}
           onOpenBody={openBody}
         />
       );
@@ -122,7 +112,7 @@ export function App({ vscode }: Props) {
         <LibraryScriptCard
           payload={selection}
           deps={matchingScriptDeps}
-          onNavigate={navigate}
+          onPreview={previewNode}
           onOpenBody={openBody}
         />
       );
@@ -131,7 +121,7 @@ export function App({ vscode }: Props) {
     case "theme":
       return <ThemeCard payload={selection} />;
     case "emailTemplate":
-      return <EmailTemplateCard payload={selection} />;
+      return <EmailTemplateCard payload={selection} onOpenBody={openEmailBody} />;
     case "socialIdp":
       return <SocialIdpCard payload={selection} />;
     case "message":

@@ -4,11 +4,11 @@ import { type ScriptCardDeps, ScriptDepsBlock } from "./ScriptCard";
 interface Props {
   payload: Extract<SelectPayload, { kind: "libraryScript" }>;
   deps?: ScriptCardDeps | null;
-  onNavigate?: (uid: string) => void;
+  onPreview?: (uid: string) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
 }
 
-export function LibraryScriptCard({ payload, deps, onNavigate, onOpenBody }: Props) {
+export function LibraryScriptCard({ payload, deps, onPreview, onOpenBody }: Props) {
   const { name, scriptId, host, realmName, script } = payload;
   return (
     <article className="card">
@@ -45,7 +45,7 @@ export function LibraryScriptCard({ payload, deps, onNavigate, onOpenBody }: Pro
           </button>
         </div>
       ) : null}
-      <ScriptDepsBlock deps={deps ?? null} onNavigate={onNavigate} />
+      <ScriptDepsBlock deps={deps ?? null} onPreview={onPreview} />
     </article>
   );
 }

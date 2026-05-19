@@ -51,26 +51,12 @@ const noop = () => undefined;
 
 describe("InnerJourneyCard", () => {
   it("renders the inner journey id as the heading", () => {
-    render(
-      <InnerJourneyCard
-        payload={placeholderPayload}
-        deps={null}
-        onNavigate={noop}
-        onOpenBody={noop}
-      />,
-    );
+    render(<InnerJourneyCard payload={placeholderPayload} deps={null} onPreview={noop} />);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("PasswordReset");
   });
 
   it("shows the ancestor chain", () => {
-    render(
-      <InnerJourneyCard
-        payload={placeholderPayload}
-        deps={null}
-        onNavigate={noop}
-        onOpenBody={noop}
-      />,
-    );
+    render(<InnerJourneyCard payload={placeholderPayload} deps={null} onPreview={noop} />);
     expect(screen.getByText("Login")).toBeTruthy();
   });
 
@@ -86,8 +72,7 @@ describe("InnerJourneyCard", () => {
           socialIdps: [],
           nodeIndex: {},
         }}
-        onNavigate={noop}
-        onOpenBody={noop}
+        onPreview={noop}
       />,
     );
     expect(screen.queryByTestId("rf-canvas")).toBeNull();
@@ -105,8 +90,7 @@ describe("InnerJourneyCard", () => {
           socialIdps: [],
           nodeIndex,
         }}
-        onNavigate={noop}
-        onOpenBody={noop}
+        onPreview={noop}
       />,
     );
     expect(screen.getByTestId("rf-canvas")).toBeTruthy();
