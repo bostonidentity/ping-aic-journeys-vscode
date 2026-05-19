@@ -1,14 +1,28 @@
+import type { ResolvedNode } from "../../../../domain/resolved-graph";
 import type { SelectPayload } from "../../../messages";
 import { JourneyDiagram } from "../diagram/JourneyDiagram";
 import { DepsBlock, type JourneyCardDeps, JourneyFlags } from "./JourneyCard";
+import { ResolvedView, type ResolveState } from "./ResolvedView";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "innerJourney" }>;
   deps: JourneyCardDeps | null;
+  resolved: ResolveState;
   onPreview: (uid: string) => void;
+  onResolve: () => void;
+  onRefresh: () => void;
+  onPreviewResolved: (node: ResolvedNode) => void;
 }
 
-export function InnerJourneyCard({ payload, deps, onPreview }: Props) {
+export function InnerJourneyCard({
+  payload,
+  deps,
+  resolved,
+  onPreview,
+  onResolve,
+  onRefresh,
+  onPreviewResolved,
+}: Props) {
   const { journey, realmName, host, visited } = payload;
   const nodeCount = Object.keys(journey.nodes).length;
   return (
@@ -57,7 +71,13 @@ export function InnerJourneyCard({ payload, deps, onPreview }: Props) {
       {deps?.nodeIndex && nodeCount > 0 ? (
         <JourneyDiagram journey={journey} nodeIndex={deps.nodeIndex} onPreview={onPreview} />
       ) : null}
-      <DepsBlock deps={deps} onPreview={onPreview} />
+      <ResolvedView
+        directContent={<DepsBlock deps={deps} onPreview={onPreview} />}
+        resolved={resolved}
+        onResolve={onResolve}
+        onRefresh={onRefresh}
+        onPreviewResolved={onPreviewResolved}
+      />
     </article>
   );
 }

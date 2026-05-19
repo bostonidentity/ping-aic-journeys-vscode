@@ -53,7 +53,7 @@ describe("ScriptNode expansion", () => {
       },
     });
     const node = new ScriptNode(HOST, REALM, "s-1", makeFakeCache(client), makeFakeLogger());
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(LibraryScriptNode);
     const lib = kids[0] as LibraryScriptNode;
@@ -63,7 +63,7 @@ describe("ScriptNode expansion", () => {
 
   it('emits an EsvNode for a systemEnv.getProperty("esv.X.Y.Z") reference', async () => {
     const { node } = makeNode(`var t = systemEnv.getProperty("esv.kyid.portal.name");`);
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(EsvNode);
     expect((kids[0] as EsvNode).name).toBe("esv.kyid.portal.name");
@@ -82,7 +82,7 @@ describe("ScriptNode expansion", () => {
       },
     });
     const node = new ScriptNode(HOST, REALM, "s-1", makeFakeCache(client), makeFakeLogger());
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     // D33: 2 kinds present → 2 category headers + 2 data nodes = 4 total.
     const dataKids = kids.filter((k) => !(k instanceof CategoryHeaderNode));
     expect(dataKids).toHaveLength(2);
@@ -114,7 +114,7 @@ describe("ScriptNode expansion", () => {
       ],
     });
     const node = new ScriptNode(HOST, REALM, "s-1", makeFakeCache(client), makeFakeLogger());
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     const esvKids = kids.filter((k) => k instanceof EsvNode) as EsvNode[];
     expect(esvKids.map((e) => e.name).sort()).toEqual([
       "esv.ad.creds",

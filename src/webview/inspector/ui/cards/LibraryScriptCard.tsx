@@ -1,14 +1,29 @@
+import type { ResolvedNode } from "../../../../domain/resolved-graph";
 import type { SelectPayload } from "../../../messages";
+import { ResolvedView, type ResolveState } from "./ResolvedView";
 import { type ScriptCardDeps, ScriptDepsBlock } from "./ScriptCard";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "libraryScript" }>;
   deps?: ScriptCardDeps | null;
+  resolved: ResolveState;
   onPreview?: (uid: string) => void;
+  onResolve: () => void;
+  onRefresh: () => void;
+  onPreviewResolved: (node: ResolvedNode) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
 }
 
-export function LibraryScriptCard({ payload, deps, onPreview, onOpenBody }: Props) {
+export function LibraryScriptCard({
+  payload,
+  deps,
+  resolved,
+  onPreview,
+  onResolve,
+  onRefresh,
+  onPreviewResolved,
+  onOpenBody,
+}: Props) {
   const { name, scriptId, host, realmName, script } = payload;
   return (
     <article className="card">
@@ -45,7 +60,13 @@ export function LibraryScriptCard({ payload, deps, onPreview, onOpenBody }: Prop
           </button>
         </div>
       ) : null}
-      <ScriptDepsBlock deps={deps ?? null} onPreview={onPreview} />
+      <ResolvedView
+        directContent={<ScriptDepsBlock deps={deps ?? null} onPreview={onPreview} />}
+        resolved={resolved}
+        onResolve={onResolve}
+        onRefresh={onRefresh}
+        onPreviewResolved={onPreviewResolved}
+      />
     </article>
   );
 }

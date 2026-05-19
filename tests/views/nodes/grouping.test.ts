@@ -51,8 +51,8 @@ function theme(id: string, name: string): ThemeNode {
   );
 }
 
-function esv(name: string): EsvNode {
-  return new EsvNode(HOST, REALM, name);
+function esv(name: string, kind?: "variable" | "secret" | "missing"): EsvNode {
+  return new EsvNode(HOST, REALM, name, undefined, kind);
 }
 
 describe("kindOf", () => {
@@ -73,17 +73,19 @@ describe("groupAndSort", () => {
     expect(groupAndSort([])).toEqual([]);
   });
 
-  it("does NOT insert a header when only one kind is present (single-kind rule)", () => {
+  it("inserts a header even when only one kind is present, with the bucket count", () => {
     const out = groupAndSort([script("s1", "Bravo"), script("s2", "Alpha")]);
-    expect(out.some((n) => n instanceof CategoryHeaderNode)).toBe(false);
-    // Sorted alphabetically by name: "Alpha" before "Bravo".
-    expect((out[0] as ScriptNode).scriptId).toBe("s2");
-    expect((out[1] as ScriptNode).scriptId).toBe("s1");
+    const headers = out.filter((n) => n instanceof CategoryHeaderNode).map((n) => n.label);
+    expect(headers).toEqual(["── Scripts (2) ──"]);
+    // Header → ScriptAlpha → ScriptBravo
+    expect(out).toHaveLength(3);
+    expect((out[1] as ScriptNode).scriptId).toBe("s2");
+    expect((out[2] as ScriptNode).scriptId).toBe("s1");
   });
 
-  it("inserts headers in priority order when 2+ kinds are present", () => {
-    // 1 theme + 2 scripts + 1 inner-journey → emit inner header, inner,
-    // script header, scripts alphabetical, theme header, theme.
+  it("inserts headers in priority order when 2+ kinds are present, each with its bucket count", () => {
+    // 1 theme + 2 scripts + 1 inner-journey → emit inner header(1), inner,
+    // script header(2), scripts alphabetical, theme header(1), theme.
     const out = groupAndSort([
       theme("t", "ThemeX"),
       script("s1", "Bravo"),
@@ -91,7 +93,7 @@ describe("groupAndSort", () => {
       script("s2", "Alpha"),
     ]);
     const headers = out.filter((n) => n instanceof CategoryHeaderNode).map((n) => n.label);
-    expect(headers).toEqual(["── Inner Journeys ──", "── Scripts ──", "── Themes ──"]);
+    expect(headers).toEqual(["── Inner Journeys (1) ──", "── Scripts (2) ──", "── Themes (1) ──"]);
     // Header → InnerJourney → Header → ScriptAlpha → ScriptBravo → Header → Theme
     expect(out).toHaveLength(7);
     expect(out[1]).toBeInstanceOf(InnerJourneyNode);
@@ -102,9 +104,36 @@ describe("groupAndSort", () => {
 
   it("sorts case-insensitively within a kind (locale-aware)", () => {
     const out = groupAndSort([script("s1", "abe"), script("s2", "ABD"), script("s3", "abc")]);
-    expect((out[0] as ScriptNode).scriptId).toBe("s3"); // abc
-    expect((out[1] as ScriptNode).scriptId).toBe("s2"); // ABD
-    expect((out[2] as ScriptNode).scriptId).toBe("s1"); // abe
+    // First row is the always-on header, then alphabetized scripts.
+    expect(out[0]).toBeInstanceOf(CategoryHeaderNode);
+    expect((out[1] as ScriptNode).scriptId).toBe("s3"); // abc
+    expect((out[2] as ScriptNode).scriptId).toBe("s2"); // ABD
+    expect((out[3] as ScriptNode).scriptId).toBe("s1"); // abe
+  });
+
+  it("splits ESVs into Variables / Secrets / Missing buckets based on `EsvNode.kind` (D22)", () => {
+    const out = groupAndSort([
+      esv("esv.gone", "missing"),
+      esv("esv.b", "variable"),
+      esv("esv.sec", "secret"),
+      esv("esv.a", "variable"),
+    ]);
+    const headers = out.filter((n) => n instanceof CategoryHeaderNode).map((n) => n.label);
+    expect(headers).toEqual([
+      "── ESV Variables (2) ──",
+      "── ESV Secrets (1) ──",
+      "── ESVs (missing) (1) ──",
+    ]);
+    // Each header is followed by its node(s) in alphabetical order.
+    expect((out[1] as EsvNode).name).toBe("esv.a");
+    expect((out[2] as EsvNode).name).toBe("esv.b");
+    expect((out[4] as EsvNode).name).toBe("esv.sec");
+    expect((out[6] as EsvNode).name).toBe("esv.gone");
+  });
+
+  it("ESVs without a `kind` fall back to the unclassified 'ESVs' group", () => {
+    const out = groupAndSort([esv("esv.a"), esv("esv.b")]); // no kind argument
+    expect((out[0] as CategoryHeaderNode).label).toBe("── ESVs (2) ──");
   });
 
   it("appends unknown-kind nodes (e.g. MessageNode for cycles) at the end", () => {

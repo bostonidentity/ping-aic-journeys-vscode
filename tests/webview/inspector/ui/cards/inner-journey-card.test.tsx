@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { InnerJourneyCard } from "@/webview/inspector/ui/cards/InnerJourneyCard";
+import type { ResolveState } from "@/webview/inspector/ui/cards/ResolvedView";
 import type { NodeInfo, SelectPayload } from "@/webview/messages";
 
 vi.mock("reactflow", async () => {
@@ -69,15 +70,36 @@ const nodeIndex: Record<string, NodeInfo> = {
 };
 
 const noop = () => undefined;
+const idle: ResolveState = { status: "idle" };
 
 describe("InnerJourneyCard", () => {
   it("renders the inner journey id as the heading", () => {
-    render(<InnerJourneyCard payload={placeholderPayload} deps={null} onPreview={noop} />);
+    render(
+      <InnerJourneyCard
+        payload={placeholderPayload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("PasswordReset");
   });
 
   it("shows the ancestor chain", () => {
-    render(<InnerJourneyCard payload={placeholderPayload} deps={null} onPreview={noop} />);
+    render(
+      <InnerJourneyCard
+        payload={placeholderPayload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
     expect(screen.getByText("Login")).toBeTruthy();
   });
 
@@ -93,7 +115,11 @@ describe("InnerJourneyCard", () => {
           socialIdps: [],
           nodeIndex: {},
         }}
+        resolved={idle}
         onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
       />,
     );
     expect(screen.queryByTestId("rf-canvas")).toBeNull();
@@ -111,10 +137,50 @@ describe("InnerJourneyCard", () => {
           socialIdps: [],
           nodeIndex,
         }}
+        resolved={idle}
         onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
       />,
     );
     expect(screen.getByTestId("rf-canvas")).toBeTruthy();
     expect(screen.getByTestId("rf-node-n0")).toBeTruthy();
+  });
+
+  // ─── D35 — Dependencies segmented control ──────────────────────────────
+
+  it("renders the Direct / Full tree / Flat segmented control", () => {
+    render(
+      <InnerJourneyCard
+        payload={placeholderPayload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "Direct" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Full tree" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Flat" })).toBeTruthy();
+  });
+
+  it("clicking Full tree fires onResolve when status is idle", () => {
+    const onResolve = vi.fn();
+    render(
+      <InnerJourneyCard
+        payload={placeholderPayload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={onResolve}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Full tree" }));
+    expect(onResolve).toHaveBeenCalledTimes(1);
   });
 });

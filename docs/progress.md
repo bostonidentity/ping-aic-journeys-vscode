@@ -191,7 +191,7 @@ Tech locked: **D19** (conditional script-ref predicate table) + **D20** (regex s
 
 ### Script-body parsing (script-level edges, D20) ✅ — Slice 2
 
-- [x] `src/resolver/script-body-parser.ts` — `extractScriptBodyRefs(body): { libraryScripts: string[]; esvs: string[] }`. Single regex set: `require('<name>')` (both quote styles, whitespace-tolerant), `&{esv.<NAME>}`, `systemEnv.<NAME>`. Returns deduped + sorted arrays. 9 unit tests cover every form + the dedup paths.
+- [x] `src/util/script-body-parser.ts` — `extractScriptBodyRefs(body): { libraryScripts: string[]; esvs: string[] }`. Single regex set: `require('<name>')` (both quote styles, whitespace-tolerant), `&{esv.<NAME>}`, `systemEnv.<NAME>`. Returns deduped + sorted arrays. 9 unit tests cover every form + the dedup paths. (Originally placed in `src/resolver/`; moved to `src/util/` during M4 Slice 1 because the D21 boundary test caught the pre-existing `src/views/` → `src/resolver/` import.)
 - [x] `src/paic/client.ts` — `getScriptByName(realm, name): Promise<Script | null>`. Uses `_queryFilter=name eq "<name>"` against `/am/json/<realmPath>/scripts`. Returns first result mapped via `mapScript`, or null on miss. Frodo's `scriptQueryURLTemplate` shape verbatim.
 - [x] `src/views/nodes/script-expand.ts` — shared `expandScript({host, realm, body, selfKey, visited, cache, log, parent})` helper. Resolves `require()` names → UUIDs via concurrency-capped `getScriptByName` (cap=10), emits `LibraryScriptNode` for hits, `MessageNode("[cycle: <name>]")` when the name is in `visited`, `MessageNode("[missing library: <name>]")` for misses. Emits one `EsvNode` per unique ESV reference.
 - [x] `src/views/nodes/script.ts` — `ScriptNode` collapsible (Collapsed by default). New `ensureBody()` lazy-fetches + caches the script body (shared in-flight Promise). `loadChildren()` runs `expandScript`. `refresh()` clears the body cache. New `visited?: readonly string[]` parameter, default `[]`.
@@ -330,21 +330,147 @@ Implementation worked technically (297/297 tests passing, lint clean, build clea
 - **Deferred** to a later milestone: `product-Saml2Node` (SAML2 entities + circles of trust — narrower customer segment, needs two-fetch resolution); `designer-*` custom marketplace nodes (minority of customers).
 - **Deferred to M4** per D21: `listEsvs()` for the realm-index scan stays out of the tree's per-expansion path; the RealmIndex owns its own ESV index with its own refresh cycle. M5 back-search will consume that index, not the tree's per-expansion data.
 
-## M4 — RealmIndex background scan ⏳
+## M4 — Resolver cache + inspector dependency view ✅
 
-- [ ] `src/resolver/realm-index.ts` — `buildIndex(client, realm) → RealmIndex` pure logic
-- [ ] Wire to realm-expand event in tree provider
-- [ ] Indexes all edge kinds from M3 (journey→script, journey→inner, journey→theme, script→library-script, script→ESV)
-- [ ] Status indicator while indexing (Q-8)
-- [ ] Cancellation policy when realm collapsed mid-scan (Q-9)
+> Per D35 + D21. Per-root cache for forward transitive dep resolution; isolated from the lazy-tree cache and the realm index (D36) — enforced by the boundary test in D21.
 
-## M5 — Query panel (reverse lookups + orphans) ⏳
+### Slice 1 — Resolver data layer + D21 boundary test ✅
 
-- [ ] `src/webview/query/` — second React panel (D15 already in place from M1)
-- [ ] Tabs: Reverse Lookup / Orphans / Impact (placeholder)
-- [ ] "Open Query Panel" command on realm node
-- [ ] Index-not-ready state with progress
-- [ ] Queries span all edge kinds from M3
+- [x] `src/domain/resolved-graph.ts` — wire-shape types (`ResolvedNode`, `ResolvedEdge`, `ResolvedGraph`, `ResolvedNodeKind`, `RootDescriptor`, `RootKind`) + `keyOf` helper. Lives in `domain/` (not `resolver/`) so the webview message protocol can import these in later slices without violating the D21 webview→resolver boundary.
+- [x] `src/resolver/walk.ts` — `walkRoot(deps, root): Promise<ResolvedGraph>`. BFS over the root's transitive dep tree, concurrency-bounded via `mapConcurrent` (cap 10). Covers every dep kind the M3 lazy walker produces: script (incl. all D19 conditional kinds), inner-journey, library-script via `require()`, ESV via `extractScriptBodyRefs`, theme via `PageNode.themeId`, email-template via `EmailSuspendNode`/`EmailTemplateNode`, social-IdP via `filteredProviders`. Single-level PageNode container walk matches the lazy tree's behavior.
+- [x] Collapsed `ResolvedNodeKind` so that journeys and inner-journeys both map to kind `"journey"` (same AIC entity; only the entry point differs — required for J → IJ → J cycle detection) and scripts and library-scripts both map to kind `"script"`. `RootKind` preserves the user-facing entry distinction.
+- [x] **Architectural cleanup:** moved `script-body-parser.ts` from `src/resolver/` to `src/util/` (it's a pure parser with no resolver-cache coupling — the new D21 boundary test caught the pre-existing `src/views/nodes/script-expand.ts` → `src/resolver/` import this caused).
+- [x] `tests/resolver/walk.test.ts` — 12 cases against `makeFakePaicClient`: empty journey, one-script child, inner-journey recursion (depth chain), J→IJ→J cycle (back-edge marked `cycle: true`, no re-walk), PageNode container walk (composite `via`), theme via PageNode, script-root with `require()` + ESV literal, library-script recursion (A→B→C), same-layer dup (one node, one non-cycle edge), D19 conditional predicate (DeviceMatchNode `useScript` on/off), email + social-idp + multi-script combo, `durationMs` is finite non-negative.
+- [x] `tests/architecture/layer-boundaries.test.ts` — D21 import-boundary enforcement (4 rules: realm-index / resolver / views / webview). Regex matches `@/` aliased and any-depth relative imports. Guards missing dirs (`src/realm-index/` not existing yet trivially passes).
+- [x] `tests/util/script-body-parser.test.ts` — relocated alongside the moved source file.
+
+**Verification (Slice 1):** lint 0 errors / 154 warnings (+2 baseline-style complexity warnings on the new walker, matching `journey-expand.ts` + `script-expand.ts`); typecheck clean across both tsconfigs; tests 312 → **328** (+16 new outcomes: 12 walk + 4 boundary); all three bundles emit (`out/extension.js` + `out/webview.js` + `out/connection-form.js`).
+
+### Slice 2 — Resolver cache + sidebar refresh wiring ✅
+
+- [x] `src/resolver/cache.ts` — `makeResolverCache(deps)` factory + `ResolverCache` interface. Keyed by `{host, realm, kind, id}`; in-flight dedup via a parallel `inFlight: Map<string, Promise<ResolvedGraph>>`. API: `resolve(key, walkDeps)`, `dropOne(key)`, `dropAllForHost(host)`, `dispose()`. Walker injected via `deps.walk` (defaults to `walkRoot`) so the cache is unit-testable in isolation. Walker errors are NOT cached — the `finally` clears `inFlight` whether the walk resolves or rejects.
+- [x] **D21-compliant invalidation pattern.** Per the boundary test from Slice 1, `src/resolver/cache.ts` cannot import `TenantsRegistry`. Per-host invalidation is wired from `src/extension.ts` (the one site that imports both layers) — the cache exposes `dropAllForHost(host)` and the extension calls it on `registry.onDidChange` for each prior host. Mirrors exactly how `clientCache.drop(h)` is invalidated today.
+- [x] `src/extension.ts` — four small wiring edits next to existing `clientCache` touchpoints:
+  - Construct `resolverCache = makeResolverCache({ log })` after `clientCache`; push `dispose` onto `context.subscriptions`.
+  - `registry.onDidChange` handler: also `resolverCache.dropAllForHost(h)` for each prior host.
+  - `paicJourneys.refresh` command: also `resolverCache.dropAllForHost(h)` for each prior host.
+  - `paicJourneys.refreshNode` command: `resolverCache.dropAllForHost(node.host)` when the node carries a `host` field (defensive `"host" in node` + typeof check rather than `instanceof` per-class checks).
+- [x] `tests/resolver/cache.test.ts` — 10 cases against a stub walker (`vi.fn`): miss-walks-and-stores, hit-returns-cached, in-flight dedup of concurrent calls, `dropOne`, `dropAllForHost` evicts target host, `dropAllForHost` preserves other hosts, `dispose` clears all, walker errors not cached (retry), key isolation across `kind` (journey vs script with same id), `dispose` is a callable Disposable.
+
+**Verification (Slice 2):** lint 0 errors / 154 warnings (no new warnings); typecheck clean; tests 328 → **338** (+10 new outcomes); build emits all three bundles cleanly.
+
+### Slice 3 — Protocol additions + JourneyCard segmented control ✅
+
+- [x] **Protocol additions** in `src/webview/messages.ts`:
+  - W2E: `{ type: "resolveFull" }` — the tab derives the root identity from its node, so no payload is needed.
+  - E2W: `{ type: "resolveResult"; ok: true; graph: ResolvedGraph } | { type: "resolveResult"; ok: false; message: string }`.
+  - `isW2E` / `isE2W` guards updated.
+- [x] **Panel handler** in `src/webview/inspector/panel.ts`:
+  - `InspectorFactoryDeps` + `InspectorTabDeps` carry `resolverCache: ResolverCache`.
+  - `InspectorTab` stashes the constructor `node` as a class field.
+  - `handleResolveFull()` uses a new `nodeToResolverKey(node)` helper that maps each of the 4 root-capable PaicNode subclasses (`JourneyNode` → kind+`journey.id`, `InnerJourneyNode` → kind+`id`, `ScriptNode` / `LibraryScriptNode` → kind+`scriptId`) to a `ResolverKey`. Unsupported kinds (`Connection`, `Realm`, `Esv`, `Theme`, `EmailTemplate`, `SocialIdp`) silently no-op.
+  - Calls `cache.get(host)` → `resolverCache.resolve(key, { client, log })` → posts `resolveResult` (ok or err).
+- [x] **Wiring** — `src/extension.ts` passes `resolverCache` to `new InspectorFactory({ ... })`.
+- [x] **App.tsx state slot** — `resolveState: ResolveState` (idle / loading / ok / err). Reset on `select` E2W. `onResolve()` callback posts `resolveFull` W2E. Passed to `JourneyCard` as `resolved` + `onResolve` props.
+- [x] **New shared component** `src/webview/inspector/ui/cards/ResolvedView.tsx`:
+  - `ResolvedView({ directContent, resolved, onResolve, onPreview })` — section wrapper with header (h2 + summary + segmented control) and conditional body.
+  - Inline `SegmentedControl` (Direct / Full tree / Flat) with `role="radiogroup"` + `role="radio"` buttons (the standard segmented idiom; `// biome-ignore lint/a11y/useSemanticElements`).
+  - `ResolvedTree` — recursive `<ul>` from root. `(dup)` marker for `edge.cycle === true` (does NOT recurse). Loading/error/empty states.
+  - `ResolvedFlat` — sorted unique non-root nodes with ref-count + shortest depth. Empty state.
+  - `ResolvedFooter` — `Cycles: N · Depth: M · Resolved in T ms`.
+  - `labelFor(kind)` translates `ResolvedNodeKind` → display label.
+- [x] **JourneyCard wires `ResolvedView`** — `<DepsBlock>` is now wrapped: the segmented control sits above the existing direct-deps rendering; Full/Flat modes delegate to `ResolvedView` internals.
+- [x] **CSS additions** in `INSPECTOR_CSS` (`src/webview/inspector/panel.ts`):
+  - `.deps-section-header` (flex row), `.deps-summary`, `.deps-segment-control[.active]`, `.deps-tree[-list,-row,-dup]`, `.deps-flat[-row,-meta]`, `.deps-kind`, `.deps-resolve-loading[-error,-footer]`. All use VS Code semantic vars per D27.
+- [x] **D21 boundary-test refinement** in `tests/architecture/layer-boundaries.test.ts`:
+  - Dropped the broad `src/webview` rule (which would have forbidden panel.ts from importing the resolver).
+  - Added narrower rules for `src/webview/inspector/ui` and `src/webview/connection-form/ui` (the React runtime sandboxes) that forbid `resolver | realm-index | tenants | paic` imports.
+  - The spirit of D21 is preserved: runtime UI files stay cache-free; extension-side panel files are the wiring shim.
+- [x] **Test setup additions**:
+  - `makeFakeResolverCache(opts)` factory in `tests/views/fakes.ts` — supports per-key canned graphs + a `rejectWith` mode for the error-path test.
+  - All existing `new InspectorFactory({...})` calls in `tests/webview/inspector/panel.test.ts` updated to pass `resolverCache`.
+- [x] **New tests** — total 338 → 356 (+18):
+  - `tests/webview/messages.test.ts` — extended `isW2E` / `isE2W` cases for the new message types.
+  - `tests/webview/inspector/panel.test.ts` — 3 cases for `resolveFull` (ok roundtrip, err roundtrip, unsupported-kind no-op).
+  - `tests/webview/inspector/ui/cards/resolved-view.test.tsx` — 12 cases (segmented control rendering, default mode, click-fires-onResolve, click-skips-onResolve-when-ok, summary visibility, loading/err states, tree rendering, `(dup)` cycle marker, click-to-preview, flat sorting + ref counts, flat empty state).
+  - `tests/webview/inspector/ui/cards/journey-card.test.tsx` — 3 cases for the segmented control + existing tests updated to pass `resolved`/`onResolve` props.
+- [x] **`docs/design-plan.md` D21** — the "Import-direction rule" subsection (mechanism 2) now splits webview into `<surface>/ui/*` (UI sandbox — strictly cache-free) and `<surface>/panel.ts` files (extension-side wiring shim — allowed to import any layer).
+
+**Verification (Slice 3):** lint 0 errors / 154 warnings (no new warnings); typecheck clean across both tsconfigs; tests 338 → **356** (+18 new outcomes); build emits all three bundles cleanly.
+
+### Slice 4 — Extend segmented control to InnerJourneyCard / ScriptCard / LibraryScriptCard ✅
+
+- [x] **`src/webview/inspector/ui/cards/InnerJourneyCard.tsx`** — added `resolved: ResolveState` + `onResolve: () => void` props; wrapped `<DepsBlock>` in `<ResolvedView>` below the journey diagram.
+- [x] **`src/webview/inspector/ui/cards/ScriptCard.tsx`** — added `resolved: ResolveState` + `onResolve: () => void` props; wrapped `<ScriptDepsBlock>` in `<ResolvedView>`. `onPreview` stays optional on the card; `ResolvedView`'s required `onPreview` is satisfied with a module-scope `noopPreview` fallback (defensive — App.tsx always passes a real `previewNode`).
+- [x] **`src/webview/inspector/ui/cards/LibraryScriptCard.tsx`** — same pattern as ScriptCard.
+- [x] **`src/webview/inspector/ui/App.tsx`** — kind-switch router now passes `resolved={resolveState}` + `onResolve={onResolve}` to InnerJourneyCard / ScriptCard / LibraryScriptCard (JourneyCard already had them from Slice 3). No new state — Slice 3's `resolveState` slot serves all four cards; the panel-side `nodeToResolverKey` already maps each PaicNode subclass to the correct `RootKind`.
+- [x] **`tests/webview/inspector/ui/cards/inner-journey-card.test.tsx`** — existing tests' render calls updated to pass `resolved={idle}` + `onResolve={noop}`. 2 new segmented-control cases (renders Direct/Full/Flat radios; clicking Full tree fires `onResolve` when idle).
+- [x] **`tests/webview/inspector/ui/cards/script-card.test.tsx`** — same prop updates. 2 new cases (segmented control present; switching to Full with `status: "ok"` renders the resolved tree with the linked entity's displayName + duration footer).
+- [x] **`tests/webview/inspector/ui/cards/library-script-card.test.tsx`** — same pattern as inner-journey (2 new cases: segmented control present; clicking Full fires `onResolve`).
+
+**Verification (Slice 4):** lint 0 errors / 156 warnings (+2 baseline-style warnings from the `noopPreview` `const`s in Script/LibraryScript cards); typecheck clean across both tsconfigs; tests 356 → **362** (+6 new outcomes); build emits all three bundles cleanly. After Slice 4, every card kind with a forward-dep walk (Journey / InnerJourney / Script / LibraryScript) shows the segmented control end-to-end.
+
+### Slice 5 — Per-card refresh button + `refreshResolved` protocol ✅
+
+- [x] **Protocol addition** in `src/webview/messages.ts` — added `{ type: "refreshResolved" }` to W2E (no payload; the tab derives the root from its node identically to `resolveFull`). `isW2E` guard extended.
+- [x] **Panel handler refactor** in `src/webview/inspector/panel.ts`:
+  - `handleResolveFull(forceRefresh: boolean)` — when true, calls `resolverCache.dropOne(key)` (Slice 2 API) before re-resolving. Single code path; one extra log line for the drop.
+  - `onMessage` routes `resolveFull` → `handleResolveFull(false)` and `refreshResolved` → `handleResolveFull(true)`.
+- [x] **`ResolvedView` refresh button** in `src/webview/inspector/ui/cards/ResolvedView.tsx`:
+  - Added `onRefresh: () => void` to `ResolvedViewProps`.
+  - Renders `<button class="deps-refresh">↻</button>` inside `.deps-section-header` after the segmented control.
+  - Conditional on `resolved.status === "ok" || resolved.status === "err"` — hidden during idle/loading, so the user only sees "refresh" when there IS something to refresh (matches D35's visibility rule).
+  - `title` + `aria-label` provide the accessible "Refresh dependencies" hint.
+- [x] **CSS** — `.deps-refresh` styles added to `INSPECTOR_CSS` (transparent background, panel-border outline, hover swap, focus-visible ring; uses VS Code semantic vars per D27).
+- [x] **App.tsx** — new `onRefresh` callback (sets `resolveState` to `loading` synchronously, posts `refreshResolved` W2E). Passed to all four root-capable cards.
+- [x] **Four card prop pass-throughs** — `JourneyCard.tsx`, `InnerJourneyCard.tsx`, `ScriptCard.tsx`, `LibraryScriptCard.tsx` each add `onRefresh: () => void` to their `Props` and forward it to `<ResolvedView>`.
+- [x] **Placement note (deviates from D35's literal text):** D35 placed the refresh button "on the card header next to `[↗ open]`"; we placed it inside `ResolvedView`'s section header instead — single code change (touch one shared component, all 4 cards inherit), visually grouped with the data it refreshes. The spirit of "visible + per-card" is preserved. Easy to move to the card header later if a `[↗ open]` action lands there.
+- [x] **Tests** — total 362 → **366** (+4):
+  - `tests/webview/messages.test.ts` — extended the existing `isW2E` test to cover `refreshResolved`.
+  - `tests/webview/inspector/panel.test.ts` — +1 case for the `refreshResolved` roundtrip (verifies `resolverCache.dropOne` is called with the right `ResolverKey` before `resolve`, and a fresh `resolveResult` is posted).
+  - `tests/webview/inspector/ui/cards/resolved-view.test.tsx` — +3 cases (button hidden in idle/loading; visible in ok/err; clicking fires `onRefresh`).
+  - All 4 card tests had `onRefresh={noop}` threaded into every existing `render(...)` invocation (no new test cases — coverage already provided by ResolvedView's segmented + refresh tests).
+
+**Verification (Slice 5):** lint 0 errors / 156 warnings (no new warnings); typecheck clean across both tsconfigs; tests 362 → **366** (+4 new outcomes); build emits all three bundles cleanly.
+
+**M4 complete.** After Slice 5, every root-capable card (Journey / InnerJourney / Script / LibraryScript) supports Direct / Full tree / Flat toggling + per-card refresh end-to-end. Next milestone: **M5 — Search page (reverse-dep + name + orphans)** per D36.
+
+## M5 — Search page (reverse-dep + name + orphans) ⏳
+
+> Per D36 + D21. Standalone Search webview backed by a per-`{host, realm}` realm index. Lazy, user-explicit, isolated.
+
+### Data layer (`src/realm-index/`)
+
+- [ ] `src/realm-index/types.ts` — `RealmIndexEntry`, `ReverseRef`, `EntityKey`, per-kind summary types.
+- [ ] `src/realm-index/build.ts` — `buildRealmIndex(client, realm)` pure scanner. Walks every journey + script + ESV + theme + library script in the realm; builds inbound-ref maps + the lowercased name index. Concurrency-bounded (uses `src/paic/concurrency.ts`).
+- [ ] `src/realm-index/cache.ts` — `{host, realm}` → entry map. `get(host, realm)`, `dropOne(host, realm)`, `dropAllForHost(host)`. Subscribes to `registry.onDidChange`. **Does NOT** subscribe to sidebar-refresh events (deliberate per D36).
+- [ ] `src/realm-index/queries.ts` — pure: `findUsages(entry, target)`, `searchByName(entry, pattern, kinds)`, `findUnused(entry, kinds)`.
+
+### Webview (`src/webview/search/`)
+
+- [ ] `src/webview/search/messages.ts` — typed W2E/E2W protocol.
+- [ ] `src/webview/search/panel.ts` — extension-side `openSearchPage(context, opts)`. Single instance per `(host, realm)` — repeat opens focus the existing tab. Wires index cache lookups + query dispatch.
+- [ ] `src/webview/search/ui/{main, App}.tsx` — three query modes (Find usages / By name / Unused), header cache-status panel with `Build index` / `Rescan` controls, results list with `kind · name → via` rows.
+- [ ] New esbuild target `build:search` → `out/search.js`; parent `build` chains all four bundles.
+
+### Wiring
+
+- [ ] `package.json` — `view/title` icon entry (`$(search)`, command `paicJourneys.openSearch`).
+- [ ] Right-click context menus — connection + realm tree items get "Search…" entries.
+- [ ] Card portal — Inspector cards for script, library script, ESV, theme, inner journey gain a `[🔍 find usages]` button that opens / focuses the Search page with the query pre-filled.
+- [ ] `extension.ts` — register `paicJourneys.openSearch` command.
+
+### Enforcement (per D21)
+
+- [ ] `tests/architecture/layer-boundaries.test.ts` — boundary test scanning `src/realm-index/*`, `src/resolver/*`, `src/views/*`, `src/webview/*` for forbidden cross-layer imports.
+- [ ] `.claude/rules/conventions.md` — Import conventions section updated with the D21 rules covering `src/realm-index/*` and the symmetric `src/resolver/*` rule.
+
+### Tests
+
+- [ ] `src/realm-index/build.test.ts` — synthetic small-realm fixture; verifies entity collection + inboundRefs population + nameIndex.
+- [ ] `src/realm-index/cache.test.ts` — `dropOne`, `dropAllForHost`, registry-change subscription, sidebar-refresh-does-NOT-invalidate.
+- [ ] `src/realm-index/queries.test.ts` — `findUsages` / `searchByName` / `findUnused` happy paths + edge cases (empty index, missing target, kind filter).
+- [ ] Search-page UI tests — three modes, empty state, queued-query-after-build flow, single-instance behavior (re-opening for same realm focuses existing tab).
 
 ## M6 — Realm-wide graph webview ⏳
 

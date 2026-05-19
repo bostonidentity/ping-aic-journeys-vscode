@@ -1,8 +1,8 @@
 import type { Esv, Script } from "../../domain/types";
 import { mapConcurrent } from "../../paic/concurrency";
-import { extractScriptBodyRefs } from "../../resolver/script-body-parser";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
+import { extractScriptBodyRefs } from "../../util/script-body-parser";
 import { MessageNode, type PaicNode } from "./base";
 import { type EsvKind, EsvNode } from "./esv";
 import { groupAndSort } from "./grouping";

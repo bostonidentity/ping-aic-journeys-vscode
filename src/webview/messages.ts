@@ -7,6 +7,7 @@
  *   - `E2W` — extension → webview (host pushes selection / dep data to UI)
  *   - `W2E` — webview → extension (UI requests navigation, signals ready)
  */
+import type { ResolvedGraph } from "../domain/resolved-graph";
 import type {
   Connection,
   EmailTemplate,
@@ -35,6 +36,12 @@ export interface NodeRef {
     | "theme"
     | "emailTemplate"
     | "socialIdp";
+  /** Only meaningful for `kind === "esv"`. Sub-classification from D22's
+   * per-script-expansion ESV index fetch. Lets the Direct view in
+   * `ScriptCard` split the level-1 ESV list into "ESV Variables" /
+   * "ESV Secrets" / "ESVs (missing)" sections. Absent on older nodes or
+   * when the index fetch failed → renders as a single `── ESVs ──` group. */
+  esvKind?: "variable" | "secret" | "missing";
 }
 
 /** Per-node info attached to journey-diagram nodes for click handling + hover. */
@@ -92,6 +99,11 @@ export type E2W =
       libraryScripts: NodeRef[];
       esvs: NodeRef[];
     }
+  /** D35 — result of a `resolveFull` W2E. The card switches its Full / Flat
+   * view from "Resolving…" to rendering the graph. `ok: false` carries an
+   * error message (e.g. tenant fetch failed mid-walk). */
+  | { type: "resolveResult"; ok: true; graph: ResolvedGraph }
+  | { type: "resolveResult"; ok: false; message: string }
   | { type: "error"; uid?: string; message: string };
 
 export type SelectPayload =
@@ -180,6 +192,35 @@ export type W2E =
        * state. Triggered by clicks on the journey diagram. */
       type: "previewNode";
       uid: string;
+    }
+  /** D35 — kick off a forward-dep walk for THIS tab's root. The extension
+   * derives the root identity from the tab's node (one tab = one card =
+   * one root), runs the walker (or hits the resolver cache), and replies
+   * with `resolveResult`. Cards with no resolve support (e.g. Connection,
+   * Realm) ignore this. */
+  | { type: "resolveFull" }
+  /** D35 — re-resolve THIS tab's root. The extension drops the resolver
+   * cache entry for this root, then runs `resolveFull`'s flow. Triggered
+   * by the per-card `↻` refresh button. */
+  | { type: "refreshResolved" }
+  /** D35 — open the card for a node clicked inside the Full / Flat tree.
+   * The resolver's composite key (`${kind}:${id}`) doesn't match the
+   * sidebar's `uidIndex` format, so we can't reuse `previewNode`. The
+   * panel constructs a `PaicNode` for the descriptor (host/realm come
+   * from the tab's own node) and spawns a fresh tab via the factory. */
+  | {
+      type: "previewResolved";
+      /** Resolved graph kind ("journey" → inner-journey card, "script"
+       * → script or library-script depending on `isLibrary`). */
+      kind: "journey" | "script" | "esv" | "theme" | "emailTemplate" | "socialIdp";
+      /** Domain id (journey name / script UUID / dotted ESV name / etc.). */
+      id: string;
+      /** Display name carried so the new card can show something while
+       * the tab's render fetches richer metadata. */
+      displayName: string;
+      /** When `kind === "script"`, distinguishes regular scripts from
+       * library scripts (`context === "LIBRARY"`). */
+      isLibrary?: boolean;
     };
 
 // ─── Type-guard helpers ───────────────────────────────────────────────────
@@ -188,13 +229,25 @@ export type W2E =
 export function isE2W(msg: unknown): msg is E2W {
   if (!msg || typeof msg !== "object") return false;
   const t = (msg as { type?: unknown }).type;
-  return t === "select" || t === "journeyDeps" || t === "scriptDeps" || t === "error";
+  return (
+    t === "select" ||
+    t === "journeyDeps" ||
+    t === "scriptDeps" ||
+    t === "resolveResult" ||
+    t === "error"
+  );
 }
 
 export function isW2E(msg: unknown): msg is W2E {
   if (!msg || typeof msg !== "object") return false;
   const t = (msg as { type?: unknown }).type;
   return (
-    t === "ready" || t === "openScriptBody" || t === "openEmailTemplateBody" || t === "previewNode"
+    t === "ready" ||
+    t === "openScriptBody" ||
+    t === "openEmailTemplateBody" ||
+    t === "previewNode" ||
+    t === "resolveFull" ||
+    t === "refreshResolved" ||
+    t === "previewResolved"
   );
 }

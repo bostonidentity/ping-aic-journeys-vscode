@@ -5,6 +5,7 @@ vi.mock("vscode", async () => (await import("../../util/vscode-mock")).makeVscod
 import { describe, expect, it } from "vitest";
 import type { Journey, NodePayload } from "@/domain/types";
 import { MessageNode } from "@/views/nodes/base";
+import { CategoryHeaderNode } from "@/views/nodes/category-header";
 import { InnerJourneyNode } from "@/views/nodes/inner-journey";
 import { ScriptNode } from "@/views/nodes/script";
 import { makeFakeCache, makeFakeLogger, makeFakePaicClient } from "../fakes";
@@ -40,7 +41,7 @@ describe("InnerJourneyNode", () => {
       makeFakeLogger(),
       ["Login"],
     );
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(ScriptNode);
     expect((kids[0] as ScriptNode).scriptId).toBe("s-inner");
@@ -56,7 +57,7 @@ describe("InnerJourneyNode", () => {
       makeFakeLogger(),
       ["Login", "PasswordReset"],
     );
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(MessageNode);
     expect(kids[0].label).toBe("[cycle: PasswordReset]");

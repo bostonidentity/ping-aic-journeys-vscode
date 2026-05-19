@@ -16,6 +16,20 @@ Corrections and patterns to avoid repeating. Append entries here whenever a user
 
 <!-- Entries below, newest first. -->
 
+## 2026-05-19 — Card data preparation needs ONE source of truth (`buildSelectPayload`), not pre-population from each producer
+
+**Context:** During M4 Slice 6 the user reported that a script clicked from the Full / Flat resolved view rendered an "id-only" card (just Script ID + UUID title), while the SAME script clicked from the sidebar or Direct deps list rendered the full D23 metadata (name / language / context / lastModified / etc.).
+
+**Mistake:** Several PaicNode subclasses carry rich data on an OPTIONAL constructor param (`ScriptNode.resolved?: Script`, `ThemeNode.resolved?: Theme`, `EsvNode.resolved?: Esv` + `EsvNode.kind?`). The inspector's `buildSelectPayload` in `src/webview/inspector/panel.ts` READS these fields directly without a fallback fetch. The architecture relied on a hidden contract: *"every producer of `<Node>` must pre-fetch the rich data and pass it to the constructor."* `src/views/nodes/journey-expand.ts` honors the contract (it pre-fetches every script for tree-label naming and stashes the result); `src/views/nodes/script-expand.ts` honors it for ESVs. But any NEW producer (my Slice 6 `handlePreviewResolved` for Full/Flat row clicks; future M5 Search-page card spawns; potentially others) that doesn't pre-populate gets a deficient card. The audit also caught two LATENT versions of the same bug: clicking a Theme or ESV hyperlink from a card spawned via `previewResolved` would have produced id-only cards too (`ThemeNode` and `EsvNode` are constructed without `resolved`).
+
+**Correction:** Treat **`buildSelectPayload` as the SINGLE source of truth** for "the card has the rich data it needs to render." It already does this defensively for `EmailTemplateNode` / `SocialIdpNode` (no optional `resolved` field; fetch always happens inside the `instanceof` branch). The same pattern needs to apply to `ScriptNode`, `LibraryScriptNode`, `ThemeNode`, `EsvNode` — read `node.resolved` if present (fast path for sidebar's pre-warmed nodes), otherwise fetch via `cache.get(node.host).then(client => client.getScript(realm, id))` or similar.
+
+**How to avoid next time:** When designing a domain object that flows into a renderer:
+1. Either make the rich data REQUIRED on the constructor (forces every producer to fetch — Library scripts work this way today: `name` + `body` are required) — OR —
+2. Make the rich data OPTIONAL, but have the FINAL consumer always populate it before rendering. Never split the responsibility between producer and consumer.
+3. Watch for "hidden contracts" where a side-effect (`journey-expand` happens to pre-fetch as a side-effect of tree expansion) is what keeps a downstream renderer healthy. Side-effect contracts break the moment a new producer is added.
+4. Optional fields on a constructor are a flag for "consumer must have a defensive path." Audit when you add a new field — does every consumer either fetch on null OR have its producers reliably pre-warm? If not, refactor before the bug surfaces.
+
 ## 2026-05-18 — AIC platform terminal-node IDs: verify against fixtures, never reconstruct from memory
 
 **Context:** Implementing D28 (synthesize Success/Failure terminals). I wrote the constants by recalling the UUIDs from earlier in the session and reading my own prior code.

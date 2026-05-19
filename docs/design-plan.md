@@ -145,22 +145,35 @@ Rationale at original lock-in: while the tree had only one level (connections), 
 
 **Shipped in M1**: cutover landed alongside the L2-L4 tree task. `src/views/nodes/{base,connection,realm,journey,inner-journey,script,journey-expand}.ts` implements the hierarchy; `PaicTreeProvider` delegates `getChildren` to each node and implements `getParent` so `TreeView.reveal()` can be driven from the inspector.
 
-### D13 — RealmIndex: background skeleton scan on realm-expand
+### D13 — RealmIndex: background skeleton scan on realm-expand (SUPERSEDED 2026-05-19 by D36)
 
-When a realm node is expanded, the tree populates instantly from `listJourneys` (~1 call). A background worker simultaneously walks every journey's skeleton + reference-bearing node payloads, building an in-memory `RealmIndex` keyed by `(host, realm)`. Measured cost: **~1,060 calls, ~15 s** at concurrency 10 for sb3's 84-journey realm.
+**Status: superseded.** The original plan was to start a background realm scan when a realm node expands, so the index would be warm by the time the user opened the query panel. D36 reverses this: scans are always **user-explicit and foreground**, never background.
 
-Index contains:
-- journey list with skeletons
-- `journey → script` edges
-- `journey → inner-journey` edges
-- (later) `journey → theme`, `script → library-script`, `script → esv`
-- inverted indexes for reverse lookups
+Reasons for the change:
+- Implicit work on tree expansion is surprising — users don't expect "I clicked to see the journey list" to start a multi-second tenant-wide call pattern.
+- Aligns the realm-index cache with the same "lazy, on user click" rule as the resolver cache (D35), keeping the project's cache-invalidation story uniform across the three independent subsystems (per the updated D21).
+- Users who never open the Search page never pay for an index build they don't use.
 
-In-memory only (per D8). Reload re-pays the scan on next realm-expand.
+See D36 for the replacement design. The historical text below is kept for context only.
 
-### D14 — Query panel: separate surface, multi-query
+> When a realm node is expanded, the tree populates instantly from `listJourneys` (~1 call). A background worker simultaneously walks every journey's skeleton + reference-bearing node payloads, building an in-memory `RealmIndex` keyed by `(host, realm)`. Measured cost: **~1,060 calls, ~15 s** at concurrency 10 for sb3's 84-journey realm.
+>
+> Index contains:
+> - journey list with skeletons
+> - `journey → script` edges
+> - `journey → inner-journey` edges
+> - (later) `journey → theme`, `script → library-script`, `script → esv`
+> - inverted indexes for reverse lookups
+>
+> In-memory only (per D8). Reload re-pays the scan on next realm-expand.
 
-Reverse lookup / orphans / impact analysis live on a dedicated query panel (webview), opened via right-click on a realm or a top-bar button. Not inlined as badges in the tree. Same panel hosts all query types as tabs. Driven by the RealmIndex; if index isn't ready, panel shows "indexing… N/total" progress.
+### D14 — Query panel (SUPERSEDED 2026-05-19 by D36)
+
+**Status: superseded.** D14 originally framed reverse-lookup / orphans / impact as a generic multi-tab panel on top of an already-running RealmIndex. D36 reshapes this into a per-realm **Search page** with three modes (Find usages / By name / Unused), an explicit `Build index` flow, and entry-point pre-fills (header / connection / realm / card portal). The key reframing: D14 treated the panel as a UI on top of an index lifecycle; D36 makes the Search page the *primary surface* for the realm-index data — there is no separate index lifecycle and no other surface that consumes the index.
+
+See D36 for the replacement design. The historical text below is kept for context only.
+
+> Reverse lookup / orphans / impact analysis live on a dedicated query panel (webview), opened via right-click on a realm or a top-bar button. Not inlined as badges in the tree. Same panel hosts all query types as tabs. Driven by the RealmIndex; if index isn't ready, panel shows "indexing… N/total" progress.
 
 ### D15 — Webview framework: React + esbuild, introduced at M1
 
@@ -239,23 +252,58 @@ const ESV     = /['"](esv\.[A-Za-z0-9_.-]+?)['"]/g;
 
 **Acorn-AST fallback** still available as Plan B if customers report meaningful false-positives the comment-stripped regex can't handle. Retires Q-13.
 
-### D21 — Tree (lazy/fresh) and back-search (eager/cached) are separate data systems
+### D21 — Three independent cache subsystems (tree-lazy, resolver, realm-index)
 
-Two completely decoupled data subsystems, each owning its own freshness:
+Three completely decoupled data subsystems, each owning its own freshness, lifetime, and invalidation rules. None reads from or writes to any other subsystem's cache.
 
 | Layer | Mode | Cache scope | Refresh trigger |
 |---|---|---|---|
-| **Tree / inspector** | Lazy, always-fresh | Per-expansion, throwaway | Each tree expansion fetches fresh |
-| **Back-search panel** (M5+) | Eager, persistent | Realm-wide index | Own TTL / explicit refresh button |
-
-The two systems **never share cache state**. The back-search index never serves the tree. The tree's per-expansion data never populates the back-search index. Even when the back-search cache is warm, the tree still issues fresh HTTP calls.
+| **Tree / inspector — Direct view** | Lazy, always-fresh | Per-expansion, throwaway | Each tree expansion fetches fresh |
+| **Resolver cache** (D35) | Lazy, on user click | Per-root: `{host, realm, kind, id}` | Per-card refresh + sidebar refresh + `registry.onDidChange` |
+| **Realm index** (D36) | Lazy, on user click | Per realm: `{host, realm}` | `Rescan realm` button + `registry.onDidChange` (sidebar refresh deliberately does NOT clear it — see D36) |
 
 Rationale:
-- Tree = "show what's there *right now*" → freshness wins
-- Back-search = "give me everything to query against" → completeness wins; staleness acceptable
-- Coupling them would make refresh behavior unpredictable
+- **Tree Direct view** = "show what's there *right now*" → freshness wins; never serves from a cache.
+- **Resolver cache** = "the full forward dep truth for one root" → reused across Full/Flat toggles on the inspector card. Per D35.
+- **Realm index** = "everything in this realm, inverted for reverse-lookup queries" → reused across Search-page queries. Per D36.
 
-Within the tree's lazy model, **per-expansion eager batching is allowed** (and used for ESV kind pre-labeling, see D22). That batching is scoped to one expansion event, fetched fresh, discarded on refresh — it does not leak into the back-search subsystem.
+The three caches **never share state.** The realm index never serves the tree or the resolver. The resolver cache never feeds the realm index. Coupling any two would make refresh behavior unpredictable and break the per-subsystem invalidation contracts.
+
+Within the tree's lazy model, **per-expansion eager batching is allowed** (and used for ESV kind pre-labeling, see D22). That batching is scoped to one expansion event, fetched fresh, discarded on refresh — it does not leak into the other two subsystems.
+
+**Enforcement — five mechanisms:**
+
+1. **Physical layering.** Each subsystem lives in its own directory; all three sit on top of `src/paic/` (the only shared dependency):
+   ```
+   src/paic/         ← HTTP + auth substrate (no caches live here)
+   src/resolver/     ← resolver cache (D35), per-root forward graphs
+   src/realm-index/  ← realm index (D36), per realm inverted index
+   src/views/        ← tree (lazy expand cache)
+   src/webview/      ← UI; never reads cache state directly
+   ```
+
+2. **Import-direction rule** (codified in `conventions.md`):
+   - `src/resolver/*` and `src/realm-index/*` may import from `src/paic/*`, `src/domain/*`, `src/util/*` only. Neither imports the other; neither imports `src/views/*`, `src/webview/*`, or `src/tenants/*`.
+   - `src/views/*` may NOT import from `src/resolver/*` or `src/realm-index/*`.
+   - **`src/webview/<surface>/ui/*` (the React runtime sandbox)** must NOT import from `src/resolver/*`, `src/realm-index/*`, `src/tenants/*`, or `src/paic/*`. UI talks to the extension via `postMessage` only.
+   - **`src/webview/<surface>/panel.ts` files** (the extension-side wiring shim) MAY import from any layer — they are the bridge between UI and caches.
+
+3. **Independent invalidation subscriptions.** Both `src/resolver/cache.ts` and `src/realm-index/cache.ts` subscribe to `registry.onDidChange` directly. Neither calls into the other; neither queries the other for state.
+
+4. **Boundary test** (`tests/architecture/layer-boundaries.test.ts`). Vitest scans the source tree for forbidden imports and fails the build on violation. This is the load-bearing enforcement — convention docs drift, tests don't. Implementation sketch:
+
+   ```ts
+   const forbidden: Array<[string, RegExp]> = [
+     ["src/realm-index", /from\s+["'](@\/|\.\.?\/)(views|resolver|webview|tenants)/],
+     ["src/resolver",    /from\s+["'](@\/|\.\.?\/)(views|realm-index|webview|tenants)/],
+     ["src/views",       /from\s+["'](@\/|\.\.?\/)(realm-index|resolver)/],
+     ["src/webview",     /from\s+["'](@\/|\.\.?\/)(realm-index|resolver)/],
+   ];
+   ```
+
+5. **Naming conventions.** Resolver exports `Resolved*` (`ResolvedGraph`, `ResolverCache`); realm-index exports `RealmIndex*` (`RealmIndexEntry`, `RealmIndexCache`, `ReverseRef`). Cross-layer imports show up in PR diffs immediately, before the boundary test even runs.
+
+The boundary test is the load-bearing enforcement; the rest make violations obvious in code review.
 
 ### D22 — ESV resolution: REST id translation, kind pre-labeling, card field set
 
@@ -489,6 +537,168 @@ Initial payload (mode + initial values + existingHosts) is embedded in the page 
 - The two command files (`add-connection`, `edit-connection`) — their `openConnectionForm()` calls are unchanged.
 - The `tenants/registry.ts` save/edit logic.
 
+### D35 — Inspector dependency view: three modes (Direct / Full tree / Flat) + per-root resolver cache
+
+The inspector card's "Dependencies" section grows from M2's level-1-only view into three explicit modes via a segmented control:
+
+| Mode | Behavior | Resolver work |
+|---|---|---|
+| **Direct** (default) | Renders the level-1 deps that journey/script expansion already computed | None — no resolver call |
+| **Full tree** | Transitive tree to leaves. Repeated subtrees collapse to a single `(dup)` marker. Footer shows cycle count, max depth, resolve duration | First click triggers one resolver run |
+| **Flat** | Deduplicated unique-node list. One row per distinct dep, annotated with ref-count and depth set | Free after Full has run |
+
+Full and Flat share the **same in-memory result** — toggling between them after the first resolve is free. Direct never triggers a resolver call. Every row's name is a hyperlink that routes through the same selection plumbing the sidebar uses; clicking opens the target's card in a new tab per D24. The section header always shows `N unique · M refs` so the user has a sense of scale before they expand.
+
+**Mockup** (Login journey):
+
+```
+Dependencies     ( • Direct )  ( ○ Full tree )  ( ○ Flat )    7 unique · 9 refs
+
+Direct:
+├─ Inner Journey   sub-login-mfa            →
+├─ Script          email-validator          →
+├─ Library Script  helpers                  →
+├─ ESV             API_KEY                  →
+└─ Theme           corporate                →
+
+Full tree:
+├─ Inner Journey   sub-login-mfa                    →
+│   ├─ Script          mfa-decision                 →
+│   │   └─ Library Script  helpers                  →  (dup)
+│   └─ ESV             MFA_SECRET                   →
+├─ Script          email-validator                  →
+│   └─ Library Script  helpers                      →  (dup)
+├─ Library Script  helpers                          →
+├─ ESV             API_KEY                          →
+└─ Theme           corporate                        →
+Cycles: none  ·  Depth: 3  ·  Resolved in 412 ms
+
+Flat:
+Inner Journey   sub-login-mfa          →  1 ref   (depth 1)
+Script          mfa-decision           →  1 ref   (depth 2)
+Script          email-validator        →  1 ref   (depth 1)
+Library Script  helpers                →  3 refs  (depth 1,2,3)
+ESV             API_KEY                →  1 ref   (depth 1)
+ESV             MFA_SECRET             →  1 ref   (depth 2)
+Theme           corporate              →  1 ref   (depth 1)
+```
+
+**Resolver cache** (lives in `src/resolver/`, isolated per D21):
+
+- **Key:** `{host, realm, kind, id}` — root node identity scoped by connection. `kind ∈ {journey, innerJourney, script, libraryScript}`.
+- **Population:** lazy. First Full/Flat click for a given root builds the entry. Direct view never populates.
+- **Lifetime:** in-memory, session-scoped. Cleared on `deactivate()`.
+
+Invalidation:
+
+| Trigger | Scope cleared |
+|---|---|
+| Per-card refresh button | One entry — just that root |
+| Sidebar tree refresh on the connection | Every entry under that host |
+| Connection edited or removed (`registry.onDidChange`) | Every entry under that host |
+| Session end | Everything |
+
+**Not** invalidated by: opening another card, toggling Direct/Full/Flat, re-opening the same root, token expiry (orthogonal — `PaicClient`'s concern).
+
+**Per-card refresh button** lives on the card header next to `[↗ open]`. Visible only after a Full or Flat resolve has happened for that card (no cache to refresh otherwise). Clearing scope is just the one root — the surgical equivalent of the sidebar's connection-wide refresh.
+
+**Implementation order:**
+1. `src/resolver/walk.ts` — pure graph builder over `PaicClient`. Returns `{nodes, edges, depth, cycles, durationMs}`. Cycles detected and broken; edges to the cycle target carry a `cycle` marker.
+2. `src/resolver/cache.ts` — keyed map + invalidation API + `registry.onDidChange` subscription.
+3. Inspector protocol additions (`resolveFull` / `resolveResult` / `refreshResolved` in `src/webview/messages.ts`).
+4. Card UI changes — segmented control + Full/Flat render + per-card refresh button on Journey/InnerJourney/Script/LibraryScript cards.
+5. Sidebar refresh path (`paicJourneys.refresh` + per-row `refreshNode`) also calls `resolverCache.dropAllForHost(host)`.
+6. Tests — `src/resolver/walk.test.ts` (fixtures with inner tree, library script, ScriptedDecisionNode, PageNode, cycle), `src/resolver/cache.test.ts`, inspector UI tests for the three modes + refresh-button visibility.
+
+### D36 — Standalone Search page (reverse-dep + name + orphans) + realm index
+
+Reverse-dependency lookups, name search, and dead-code detection live on their own webview surface, **not** inside the inspector card. Backed by a per-realm index that is **lazy**, **user-explicit**, and **isolated** from every other cache in the codebase per D21.
+
+This decision **supersedes D13** (RealmIndex background scan on realm-expand) and **D14** (generic multi-tab query panel). No data fetches on realm-expand; every Search page action waits for explicit user intent.
+
+**Three query modes** (segmented control, mutually exclusive):
+
+| Mode | Question answered |
+|---|---|
+| **Find usages** | Which journeys reference this entity? |
+| **By name** | Substring/glob match across selected kinds |
+| **Unused / dead code** | Orphans — entities with 0 inbound references in this realm |
+
+**Entry points** (each pre-fills more of the query as scope narrows):
+
+| Trigger | Pre-fill |
+|---|---|
+| Sidebar title-bar 🔍 icon (next to `+`) | nothing |
+| Right-click connection → "Search…" | connection |
+| Right-click realm → "Search…" | connection + realm |
+| Card portal `[🔍 find usages]` button | connection + realm + query |
+
+**Single instance per `(host, realm)`** — multiple entry points opening "search for alpha" land on the same tab and share the same index. Different realm = different tab.
+
+**Lazy execution contract — no background work ever:**
+
+- Opening the Search page never triggers a scan.
+- After selecting connection + realm, the page shows cache status and stops. Empty state shows `[ Build index ]`; built state shows stamp + `[ ↻ Rescan ]`.
+- A queued query from the card portal is parked in the input box until the user clicks `Build index` (if needed). After the index builds, the held query auto-runs.
+
+**Page layout sketch:**
+
+```
+🔍 Search — alpha @ openam-tenant.example.forgeblocks.com         [× close]
+─────────────────────────────────────────────────────────────────────────────
+Realm index:  142 journeys · 87 scripts · 23 ESVs · 4 themes · 12 lib scripts
+Last scan:    3m 12s ago                            [↻ Rescan realm]
+─────────────────────────────────────────────────────────────────────────────
+Query mode:   ( • Find usages )  ( ○ By name )  ( ○ Unused / dead code )
+
+Find what references:
+  Kind:    [ Script ▾ ]
+  Name:    [ email-validator                                           ▾ ]
+  Id:      00000000-0000-0000-0000-000000000004
+                                                          [ Search ]
+─────────────────────────────────────────────────────────────────────────────
+Results — 4 references
+  Journey         Login                       →  direct script ref
+  Journey         Login-MFA                   →  direct script ref
+  Inner Journey   sub-registration-verify     →  PageNode → script ref
+  Inner Journey   sub-password-reset          →  direct script ref
+```
+
+**Realm index** (`src/realm-index/`):
+
+- **Key:** `{host, realm}`. One entry per (connection, realm) pair.
+- **Value shape:** `entities` (per-kind id→summary maps), `inboundRefs` (entity-key → list of `{fromKind, fromId, via}` references), `nameIndex` (lowercased substring → entity keys, for By-name mode), `builtAt`, `scanDurationMs`.
+- **Population:** explicit. `Build index` / `Rescan` click only.
+- **Lifetime:** in-memory, session-scoped.
+
+Invalidation:
+
+| Trigger | Scope cleared |
+|---|---|
+| `Rescan realm` button | One entry — that `(host, realm)` |
+| Connection edited/removed (`registry.onDidChange`) | Every entry under that host |
+| Session end | Everything |
+| **Sidebar tree refresh** | **NOT cleared** — rebuilding a realm index is a 10-second-class operation and shouldn't be silently triggered. Users opt in via `Rescan` |
+
+**Result rows** mirror inspector-card row format (`kind · name → via`); click opens the target's card via the same selection plumbing the sidebar uses.
+
+**VS Code surface constraints:**
+- Title-bar icon is `$(search)` against the view's `view/title` menu, command `paicJourneys.openSearch`.
+- Right-click "Search…" entries on the connection node (alongside Edit / Delete) and on the realm node (new context menu).
+- Search webview is its own esbuild bundle (`out/search.js`), following the connection-form pattern (D34).
+
+**Implementation order:**
+1. `src/realm-index/types.ts` — `RealmIndexEntry`, `ReverseRef`, `EntityKey`, per-kind summary types.
+2. `src/realm-index/build.ts` — pure realm scanner taking a `PaicClient`. Concurrency-bounded (matches `src/paic/concurrency.ts`).
+3. `src/realm-index/cache.ts` — `{host, realm}` → entry map; `dropOne(host, realm)`, `dropAllForHost(host)`, `registry.onDidChange` subscription.
+4. `src/realm-index/queries.ts` — pure functions over a `RealmIndexEntry`: `findUsages`, `searchByName`, `findUnused`.
+5. New webview surface under `src/webview/search/` — its own bundle (mirrors D34's connection-form structure).
+6. `src/extension.ts` — register `paicJourneys.openSearch` command + title-bar + connection/realm context menus.
+7. Card portal — add `[🔍 find usages]` button to inspector card headers for kinds with reverse-dep relevance (script, library script, ESV, theme, inner journey).
+8. Boundary test (`tests/architecture/layer-boundaries.test.ts`) — see D21.
+9. Per-kind unit tests + UI tests (three modes + empty-state + queued-query-after-build flow).
+10. `conventions.md` import-rule additions — see D21.
+
 ### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
 
 Today the sidebar tree builds a journey's (or script's) children in **discovery order** — whatever order the dependency walker emits as it crawls a journey's nodes. A real journey can mix Inner Journeys, Scripts, Themes, Email Templates, and Social IdPs in any sequence, and the result is hard to scan.
@@ -518,7 +728,7 @@ Within each kind: case-insensitive sort by display name (the resolved human name
 
 Sort is locale-aware case-insensitive (`localeCompare(..., { sensitivity: "base" })`) everywhere for consistency.
 
-**Skip the divider when only one kind is present.** A journey with only scripts (no inner journeys, themes, etc.) shows the scripts directly, no `─── Scripts ───` header — would be redundant clutter. The divider only appears when **2+ kinds** are present at the same level.
+**Always emit the divider with its bucket count — `── <Kind> (N) ──`.** Original D33 spec skipped the divider when a single kind was present at one level ("redundant clutter"); this was reversed on **2026-05-19** because in deep transitive trees (Full / Flat view), single-kind levels lost their visual marker and made the structure hard to follow — especially on copy-paste, where the HTML indent is gone but the divider text would have remained. The rule now applies uniformly across the sidebar AND the inspector's Full / Flat resolved views. The sidebar's `CategoryHeaderNode` was updated to render `── <Kind> (<count>) ──` and the `multi >= 2` gate was dropped from both `groupAndSort` implementations (`src/views/nodes/grouping.ts` + `src/webview/inspector/ui/cards/grouping.ts`). Lesson recorded in `docs/lessons.md` 2026-05-19.
 
 **Divider rendering:**
 
@@ -923,26 +1133,32 @@ Two distinct widenings — node-level (more payload fields → more journey edge
 
 **Done here on purpose**: ship breadth before the index, so when M4 (RealmIndex) lands the indexable graph already covers every edge kind.
 
-### M4 — RealmIndex background scan
+### M4 — Resolver cache + inspector dependency view
 
-**User-facing outcome:** *"When I expand a realm, the tree appears instantly and a background indexer prepares the realm for analysis. I see indexing progress somewhere subtle."*
+**User-facing outcome:** *"When I'm looking at a journey or script card, I can switch the Dependencies section from level-1 view to a Full transitive tree or a Flat deduplicated list — and toggling between Full and Flat is instant after the first compute. A per-card refresh button lets me re-resolve that one root without invalidating everything else."*
 
-- `src/resolver/realm-index.ts` — `buildIndex(client, realm) → RealmIndex` (pure logic).
-- Wire to realm-expand event in the tree.
-- Indexes all edge kinds shipped through M3 (journey→script, journey→inner, journey→theme, script→library-script, script→ESV).
-- Status indicator (status-bar or sidebar title — open question Q-8).
-- Cancellation when realm collapsed mid-scan (open question Q-9).
+Implements D35; lives under `src/resolver/`; isolated from the lazy-tree cache and the realm index per D21.
 
-Still no UI for queries — that's M5.
+- `src/resolver/walk.ts` — pure graph builder. Forward BFS over a single root; captures depth, cycle markers, ref counts; returns `{nodes, edges, depth, cycles, durationMs}`.
+- `src/resolver/cache.ts` — keyed by `{host, realm, kind, id}`; subscribes to `registry.onDidChange` for per-host invalidation; exposes `dropOne(rootKey)` for per-card refresh and `dropAllForHost(host)` for sidebar refresh + registry events.
+- Inspector protocol additions: `resolveFull` / `resolveResult` / `refreshResolved`.
+- Card UI: segmented control on Journey/InnerJourney/Script/LibraryScript cards (Direct / Full tree / Flat) + per-card refresh button visible after first resolve.
+- Sidebar refresh paths (`paicJourneys.refresh` + `paicJourneys.refreshNode`) also call `resolverCache.dropAllForHost(host)`.
 
-### M5 — Query panel (reverse lookups + orphans)
+D13's background-scan goal is dropped per D36. M4 no longer does a realm-wide scan; that's M5's job and only on explicit user click.
 
-**User-facing outcome:** *"I right-click a realm or click 'Open Query Panel', pick 'Reverse Lookup', enter a script ID, and see every journey that uses it. Or I pick 'Orphans' and see scripts referenced by nothing."*
+### M5 — Search page (reverse-dep + name + orphans)
 
-- Query panel = second React webview (D15 already paid for in M1, so this is purely additive).
-- Tabs: Reverse Lookup / Orphans / Impact (impact full-power lands in M7).
-- Re-uses the typed message protocol from M1.
-- Queries span all dep kinds from M3 (script, library-script, ESV, theme, inner-journey).
+**User-facing outcome:** *"From the sidebar 🔍 icon, a right-click on a connection or realm, or a card portal button, I can open a Search page scoped to one realm. After clicking `Build index`, I can find which journeys reference any entity, search entities by name across kinds, or list orphans. Multiple entry points for the same realm land on the same tab and share the same index."*
+
+Implements D36; lives under `src/realm-index/` (data layer) + `src/webview/search/` (UI bundle); isolated from the lazy-tree cache and the resolver cache per D21.
+
+- `src/realm-index/{types, build, cache, queries}.ts` per D36.
+- New webview bundle `out/search.js` from `src/webview/search/{messages, panel, ui/main.tsx, ui/App.tsx}`.
+- Title-bar `$(search)` icon (`view/title`); context-menu "Search…" on connection + realm tree items.
+- Inspector cards (script, library script, ESV, theme, inner journey) gain a `[🔍 find usages]` button portal.
+- `tests/architecture/layer-boundaries.test.ts` enforces D21's import rules.
+- `conventions.md` import-section additions per D21.
 
 ### M6 — Realm-wide graph webview
 
@@ -972,9 +1188,9 @@ Still no UI for queries — that's M5.
 - Q-6 — Concurrency cap value: 10 (POC-tested) vs 20 (~2× faster, untested)?
 
 **Index / queries**
-- Q-7 — Query panel surface: webview panel vs sidebar view vs activity-bar entry?
-- Q-8 — Status indicator location while indexing: sidebar title, status bar, both?
-- Q-9 — Cancellation policy when user collapses a realm mid-scan?
+- ~~Q-7~~ — Retired by D36 (standalone Search webview, single instance per `(host, realm)`; not a sidebar view or activity-bar entry).
+- ~~Q-8~~ — Retired by D36 (status lives in the Search page's "Realm index:" header; no global indicator since builds are always foreground/user-initiated).
+- ~~Q-9~~ — Retired by D36 (no background scan to cancel; user closes the Search tab to abandon a build).
 
 **Frontend**
 - Q-10 — Connection form rewrite to React: still a template string after M1 — when does it earn the rewrite?

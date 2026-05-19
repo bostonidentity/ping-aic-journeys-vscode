@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import type { NodePayload } from "../../domain/types";
+import type { ResolverCache, ResolverKey } from "../../resolver/cache";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
 import type { PaicNode } from "../../views/nodes/base";
@@ -19,6 +20,9 @@ import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../messages";
 export interface InspectorFactoryDeps {
   context: vscode.ExtensionContext;
   cache: ClientCache;
+  /** Per-root forward-dep cache (D35). Tabs call `resolve()` on a
+   * `resolveFull` W2E and post the result back via `resolveResult`. */
+  resolverCache: ResolverCache;
   log: Logger;
 }
 
@@ -47,8 +51,12 @@ export class InspectorFactory implements vscode.Disposable {
       {
         context: this.deps.context,
         cache: this.deps.cache,
+        resolverCache: this.deps.resolverCache,
         log: this.deps.log,
         spawnByUid: (uid) => this.spawnByUid(uid),
+        spawnNode: (n) => {
+          this.spawn(n);
+        },
         registerNode: (n) => this.uidIndex.set(n.uid, n),
         onClosed: (t) => this.tabs.delete(t),
       },
@@ -87,10 +95,16 @@ export class InspectorFactory implements vscode.Disposable {
 interface InspectorTabDeps {
   context: vscode.ExtensionContext;
   cache: ClientCache;
+  resolverCache: ResolverCache;
   log: Logger;
   /** Called when the webview posts `previewNode` — the factory creates a
    * new tab for that uid. */
   spawnByUid: (uid: string) => void;
+  /** Called when the webview posts `previewResolved` — the panel
+   * constructed a `PaicNode` from the resolved-graph descriptor and the
+   * factory needs to spawn a fresh tab for it. Bypasses `uidIndex`
+   * because the entity may never have been visited in the sidebar. */
+  spawnNode: (node: PaicNode) => void;
   /** Called as tabs discover child nodes (deps blocks) — the factory's
    * uid registry grows so future `previewNode` clicks can resolve. */
   registerNode: (node: PaicNode) => void;
@@ -115,7 +129,7 @@ export class InspectorTab implements vscode.Disposable {
 
   constructor(
     private readonly deps: InspectorTabDeps,
-    node: PaicNode,
+    private readonly node: PaicNode,
   ) {
     this.childLog = deps.log.child({ component: "webview.inspector.tab" });
     const extensionUri = deps.context.extensionUri;
@@ -236,7 +250,14 @@ export class InspectorTab implements vscode.Disposable {
         if (k instanceof LibraryScriptNode) {
           libraryScripts.push({ uid: k.uid, label: k.name, kind: "libraryScript" });
         } else if (k instanceof EsvNode) {
-          esvs.push({ uid: k.uid, label: k.name, kind: "esv" });
+          esvs.push({
+            uid: k.uid,
+            label: k.name,
+            kind: "esv",
+            // D22-classified kind from script-expand's ESV index fetch.
+            // Drives the Direct view's variable/secret/missing split.
+            ...(k.kind === undefined ? {} : { esvKind: k.kind }),
+          });
         }
       }
       this.post({ type: "scriptDeps", uid: node.uid, libraryScripts, esvs });
@@ -258,6 +279,9 @@ export class InspectorTab implements vscode.Disposable {
     const stylesUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.deps.context.extensionUri, "out", "webview.css"),
     );
+    const codiconUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.deps.context.extensionUri, "out", "codicon.css"),
+    );
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource} 'unsafe-inline'`,
@@ -271,6 +295,7 @@ export class InspectorTab implements vscode.Disposable {
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <title>PAIC Inspector</title>
+<link rel="stylesheet" href="${codiconUri.toString()}" />
 <link rel="stylesheet" href="${stylesUri.toString()}" />
 <style>${INSPECTOR_CSS}</style>
 </head>
@@ -312,8 +337,146 @@ export class InspectorTab implements vscode.Disposable {
         name: m.name,
         locale: m.locale,
       });
+      return;
+    }
+    if (m.type === "resolveFull") {
+      await this.handleResolveFull(false);
+      return;
+    }
+    if (m.type === "refreshResolved") {
+      await this.handleResolveFull(true);
+      return;
+    }
+    if (m.type === "previewResolved") {
+      await this.handlePreviewResolved(m);
     }
   }
+
+  private async handlePreviewResolved(m: Extract<W2E, { type: "previewResolved" }>): Promise<void> {
+    const ctx = this.node as unknown as { host?: unknown; realm?: unknown };
+    if (typeof ctx.host !== "string" || typeof ctx.realm !== "string") {
+      this.childLog.debug(
+        { event: "tab.previewResolved.noHostRealm", uid: this.node.uid },
+        "previewResolved on a card kind without host/realm — ignoring",
+      );
+      return;
+    }
+    const host = ctx.host;
+    const realm = ctx.realm;
+    try {
+      const node = await this.buildResolvedPreviewNode(host, realm, m);
+      if (!node) return;
+      this.deps.registerNode(node);
+      this.deps.spawnNode(node);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.childLog.warn(
+        { event: "tab.previewResolved.failed", kind: m.kind, id: m.id, message },
+        "previewResolved failed to construct a node — ignoring click",
+      );
+    }
+  }
+
+  private async buildResolvedPreviewNode(
+    host: string,
+    realm: string,
+    m: Extract<W2E, { type: "previewResolved" }>,
+  ): Promise<PaicNode | null> {
+    const { cache, log } = this.deps;
+    switch (m.kind) {
+      case "journey":
+        // Every journey-kind row in the Full/Flat tree is reached
+        // transitively → open as an inner-journey card.
+        return new InnerJourneyNode(host, realm, m.id, cache, log, []);
+      case "script": {
+        // Regular scripts: `buildSelectPayload` now defensively fetches when
+        // `node.resolved` is absent, so we can construct bare and skip a
+        // duplicate HTTP call. Library scripts still need an up-front fetch
+        // because the LibraryScriptNode constructor REQUIRES name + body
+        // (they are not optional like `resolved`).
+        if (!m.isLibrary) {
+          return new ScriptNode(host, realm, m.id, cache, log);
+        }
+        const client = await cache.get(host);
+        const resolved = await client.getScript(realm, m.id);
+        return new LibraryScriptNode(
+          host,
+          realm,
+          m.id,
+          resolved.name,
+          resolved.body,
+          cache,
+          log,
+          [],
+          undefined,
+          resolved,
+        );
+      }
+      case "esv":
+        return new EsvNode(host, realm, m.id);
+      case "theme":
+        return new ThemeNode(host, realm, m.id, cache, log);
+      case "emailTemplate":
+        return new EmailTemplateNode(host, realm, m.id, cache, log);
+      case "socialIdp":
+        return new SocialIdpNode(host, realm, m.id, cache, log);
+    }
+  }
+
+  private async handleResolveFull(forceRefresh: boolean): Promise<void> {
+    const key = nodeToResolverKey(this.node);
+    if (!key) {
+      this.childLog.debug(
+        { event: "tab.resolveFull.unsupported", uid: this.node.uid },
+        "resolveFull received for a card kind without root support — ignoring",
+      );
+      return;
+    }
+    if (forceRefresh) {
+      this.deps.resolverCache.dropOne(key);
+      this.childLog.debug(
+        { event: "tab.refreshResolved", uid: this.node.uid },
+        "Dropped cached graph; re-resolving",
+      );
+    }
+    try {
+      const client = await this.deps.cache.get(key.host);
+      const graph = await this.deps.resolverCache.resolve(key, {
+        client,
+        log: this.childLog,
+      });
+      this.post({ type: "resolveResult", ok: true, graph });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.childLog.warn(
+        { event: "tab.resolveFull.failed", uid: this.node.uid, message },
+        "Forward-dep resolve failed",
+      );
+      this.post({ type: "resolveResult", ok: false, message });
+    }
+  }
+}
+
+/** Translate a `PaicNode` to its `ResolverKey`, or null if the kind has no
+ * forward-dep resolve story (Connection, Realm, ESV, Theme, EmailTemplate,
+ * SocialIdp — leaves or top-level container nodes). The four kinds with
+ * resolve support each expose the entity id differently: JourneyNode via
+ * `journey.id`, InnerJourneyNode via `id`, ScriptNode / LibraryScriptNode
+ * via `scriptId`. */
+function nodeToResolverKey(node: PaicNode): ResolverKey | null {
+  if (node instanceof JourneyNode) {
+    return { host: node.host, realm: node.realm, kind: "journey", id: node.journey.id };
+  }
+  if (node instanceof InnerJourneyNode) {
+    return { host: node.host, realm: node.realm, kind: "innerJourney", id: node.id };
+  }
+  if (node instanceof LibraryScriptNode) {
+    return { host: node.host, realm: node.realm, kind: "libraryScript", id: node.scriptId };
+  }
+  if (node instanceof ScriptNode) {
+    return { host: node.host, realm: node.realm, kind: "script", id: node.scriptId };
+  }
+  return null;
 }
 
 function tabTitle(node: PaicNode): string {
@@ -371,18 +534,50 @@ export async function buildSelectPayload(
     };
   }
   if (node instanceof ScriptNode) {
+    // `buildSelectPayload` is the single source of truth for "the card has
+    // its rich data": use `node.resolved` if a producer already populated
+    // it (the sidebar's journey-expand pre-fetches every script for tree
+    // labelling — fast path); otherwise fetch defensively. This eliminates
+    // the latent class of bugs where a new producer of `ScriptNode` forgets
+    // to pre-warm `resolved`. Lesson 2026-05-19 in `docs/lessons.md`.
+    let script = node.resolved;
+    if (!script) {
+      try {
+        const client = await cache.get(node.host);
+        script = await client.getScript(node.realm, node.scriptId);
+      } catch (err) {
+        log.warn(
+          { event: "buildSelectPayload.script.fetchFailed", uid: node.uid, message: errMsg(err) },
+          "Script fetch failed — card will show id-only",
+        );
+      }
+    }
     return {
       kind: "script",
       uid: node.uid,
       host: node.host,
       realmName: node.realm,
       scriptId: node.scriptId,
-      // Pre-resolved during journey-expand's eager fetch — drives the card's
-      // name heading + context / description / audit fields.
-      script: node.resolved,
+      script,
     };
   }
   if (node instanceof LibraryScriptNode) {
+    let script = node.resolved;
+    if (!script) {
+      try {
+        const client = await cache.get(node.host);
+        script = await client.getScript(node.realm, node.scriptId);
+      } catch (err) {
+        log.warn(
+          {
+            event: "buildSelectPayload.libraryScript.fetchFailed",
+            uid: node.uid,
+            message: errMsg(err),
+          },
+          "Library script fetch failed — card will show id-only",
+        );
+      }
+    }
     return {
       kind: "libraryScript",
       uid: node.uid,
@@ -390,27 +585,51 @@ export async function buildSelectPayload(
       realmName: node.realm,
       scriptId: node.scriptId,
       name: node.name,
-      script: node.resolved,
+      script,
     };
   }
   if (node instanceof EsvNode) {
+    let esv = node.resolved;
+    if (!esv) {
+      try {
+        const client = await cache.get(node.host);
+        esv = (await client.getEsv(node.name)) ?? undefined;
+      } catch (err) {
+        log.warn(
+          { event: "buildSelectPayload.esv.fetchFailed", uid: node.uid, message: errMsg(err) },
+          "ESV fetch failed — card will show name only",
+        );
+      }
+    }
     return {
       kind: "esv",
       uid: node.uid,
       host: node.host,
       realmName: node.realm,
       name: node.name,
-      esv: node.resolved,
+      esv,
     };
   }
   if (node instanceof ThemeNode) {
+    let theme = node.resolved;
+    if (!theme) {
+      try {
+        const client = await cache.get(node.host);
+        theme = (await client.getTheme(node.realm, node.themeId)) ?? undefined;
+      } catch (err) {
+        log.warn(
+          { event: "buildSelectPayload.theme.fetchFailed", uid: node.uid, message: errMsg(err) },
+          "Theme fetch failed — card will show id only",
+        );
+      }
+    }
     return {
       kind: "theme",
       uid: node.uid,
       host: node.host,
       realmName: node.realm,
       themeId: node.themeId,
-      theme: node.resolved,
+      theme,
     };
   }
   if (node instanceof EmailTemplateNode) {
@@ -623,6 +842,34 @@ body {
 .deps li { margin: 2px 0; }
 button.link { background: none; border: none; padding: 0; font: inherit; color: var(--vscode-textLink-foreground); cursor: pointer; text-align: left; }
 button.link:hover { text-decoration: underline; color: var(--vscode-textLink-activeForeground); }
+/* D35 — Dependencies section: segmented control + tree + flat views. */
+.deps-section-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.deps-summary { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+.deps-segment-control { display: inline-flex; gap: 0; border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); border-radius: 4px; overflow: hidden; margin-left: auto; }
+.deps-segment-button { background: transparent; border: none; padding: 3px 10px; font: inherit; color: var(--vscode-foreground); cursor: pointer; }
+.deps-segment-button + .deps-segment-button { border-left: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.deps-segment-button:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-editorWidget-background)); }
+.deps-segment-button.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.deps-segment-button:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.deps-tree { margin-top: 8px; }
+/* Higher specificity than \`.deps ul\` so the indent + dotted-border actually apply. */
+.deps ul.deps-tree-list { list-style: none; margin: 0; padding-left: 16px; border-left: 1px dotted var(--vscode-panel-border, var(--vscode-editorWidget-border)); }
+.deps ul.deps-tree-list > .deps-tree-row > ul.deps-tree-list { margin-top: 2px; }
+.deps-tree-row { margin: 2px 0; }
+.deps-tree-dup { color: var(--vscode-descriptionForeground); font-style: italic; }
+.deps-tree-divider, .deps-flat-divider { color: var(--vscode-descriptionForeground); font-size: 0.85em; margin: 8px 0 4px; letter-spacing: 0.02em; font-family: var(--vscode-editor-font-family, monospace); }
+.deps-kind { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+.deps-name { word-break: break-word; }
+.deps-icon { color: var(--vscode-descriptionForeground); font-size: 0.95em; vertical-align: text-bottom; margin-right: 2px; }
+.deps ul.deps-flat { list-style: none; margin: 8px 0 0 0; padding: 0; }
+.deps-flat-row { margin: 2px 0; }
+.deps-flat-meta { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+.deps-resolve-loading { color: var(--vscode-descriptionForeground); margin-top: 8px; }
+.deps-resolve-error { color: var(--vscode-errorForeground); margin-top: 8px; }
+.deps-resolve-footer { margin-top: 10px; padding-top: 6px; border-top: 1px dotted var(--vscode-panel-border, var(--vscode-editorWidget-border)); color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+.deps-refresh { background: transparent; border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); border-radius: 4px; padding: 2px 8px; font: inherit; color: var(--vscode-foreground); cursor: pointer; }
+.deps-refresh:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-editorWidget-background)); }
+.deps-refresh:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
 .card-actions { margin-top: 16px; }
 .card-actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid var(--vscode-button-border, transparent); padding: 6px 14px; border-radius: 2px; cursor: pointer; font: inherit; }
 .card-actions button.primary:hover { background: var(--vscode-button-hoverBackground); }

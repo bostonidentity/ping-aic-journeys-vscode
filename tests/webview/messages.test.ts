@@ -72,9 +72,30 @@ describe("messages protocol", () => {
       nodeIndex: {},
     };
     const err: E2W = { type: "error", message: "boom" };
+    const resolveOk: E2W = {
+      type: "resolveResult",
+      ok: true,
+      graph: {
+        rootKey: "journey:Login",
+        nodes: {
+          "journey:Login": {
+            key: "journey:Login",
+            kind: "journey",
+            id: "Login",
+            displayName: "Login",
+            depth: 0,
+          },
+        },
+        edges: [],
+        durationMs: 1,
+      },
+    };
+    const resolveErr: E2W = { type: "resolveResult", ok: false, message: "boom" };
     expect(isE2W(select)).toBe(true);
     expect(isE2W(deps)).toBe(true);
     expect(isE2W(err)).toBe(true);
+    expect(isE2W(resolveOk)).toBe(true);
+    expect(isE2W(resolveErr)).toBe(true);
 
     expect(isE2W({ type: "previewNode", uid: "x" })).toBe(false); // W2E shape
     expect(isE2W(null)).toBe(false);
@@ -85,8 +106,12 @@ describe("messages protocol", () => {
   it("W2E type guard accepts known types and rejects others", () => {
     const ready: W2E = { type: "ready" };
     const preview: W2E = { type: "previewNode", uid: "u1" };
+    const resolveFull: W2E = { type: "resolveFull" };
+    const refreshResolved: W2E = { type: "refreshResolved" };
     expect(isW2E(ready)).toBe(true);
     expect(isW2E(preview)).toBe(true);
+    expect(isW2E(resolveFull)).toBe(true);
+    expect(isW2E(refreshResolved)).toBe(true);
 
     expect(isW2E({ type: "select", payload: {} })).toBe(false); // E2W shape
     expect(isW2E(undefined)).toBe(false);

@@ -65,7 +65,7 @@ describe("JourneyNode", () => {
       n1: { nodeType: "ScriptedDecisionNode", payload: scriptedDecisionPayload("n1", "s-1") },
       n2: { nodeType: "InnerTreeEvaluatorNode", payload: innerTreePayload("n2", "Inner") },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     // D33: headers added for multi-kind children (Inner Journeys + Scripts).
     const dataKids = kids.filter((k) => !(k instanceof CategoryHeaderNode));
     expect(dataKids).toHaveLength(2);
@@ -99,7 +99,7 @@ describe("JourneyNode", () => {
     });
     const cache = makeFakeCache(client);
     const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     const script = kids.find((k) => k instanceof ScriptNode) as ScriptNode;
     expect(script.scriptName).toBe("AuthHelper");
     expect(script.label).toBe("AuthHelper");
@@ -114,7 +114,7 @@ describe("JourneyNode", () => {
     const { node } = makeFixture("Login", {
       n1: { nodeType: "ScriptedDecisionNode", payload: scriptedDecisionPayload("n1", "s-1") },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     const script = kids.find((k) => k instanceof ScriptNode) as ScriptNode;
     // No scriptsByKey fixture → getScript rejected → ScriptNode falls back.
     expect(script.scriptName).toBeUndefined();
@@ -127,7 +127,7 @@ describe("JourneyNode", () => {
       n1: { nodeType: "ScriptedDecisionNode", payload: scriptedDecisionPayload("n1", "s-1") },
       n2: { nodeType: "ScriptedDecisionNode", payload: scriptedDecisionPayload("n2", "s-1") },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(ScriptNode);
   });
@@ -137,7 +137,7 @@ describe("JourneyNode", () => {
       n1: { nodeType: "PageNode", payload: otherPayload("n1") },
       n2: { nodeType: "ScriptedDecisionNode", payload: scriptedDecisionPayload("n2", "s-1") },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(ScriptNode);
   });
@@ -146,7 +146,7 @@ describe("JourneyNode", () => {
     const { node } = makeFixture("Login", {
       n1: { nodeType: "PageNode", payload: otherPayload("n1") },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(MessageNode);
     expect(kids[0].label).toBe("No dependencies discovered");
@@ -173,7 +173,7 @@ describe("JourneyNode", () => {
     const { node } = makeFixture("Login", {
       n1: { nodeType: "ClientScriptNode", payload: clientScriptPayload },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(ScriptNode);
     expect((kids[0] as ScriptNode).scriptId).toBe("s-client");
@@ -201,7 +201,7 @@ describe("JourneyNode", () => {
     });
     const cache = makeFakeCache(client);
     const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     const tn = kids[0] as InstanceType<typeof ThemeNode>;
     expect(tn).toBeInstanceOf(ThemeNode);
@@ -224,7 +224,7 @@ describe("JourneyNode", () => {
     const { node } = makeFixture("Login", {
       n1: { nodeType: "PageNode", payload: pagePayload },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     const tn = kids[0] as InstanceType<typeof ThemeNode>;
     expect(tn.label).toBe("theme-not-there");
     expect(tn.resolved).toBeUndefined();
@@ -240,7 +240,7 @@ describe("JourneyNode", () => {
     const { node } = makeFixture("Login", {
       n1: { nodeType: "EmailSuspendNode", payload: emailPayload },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(EmailTemplateNode);
     expect((kids[0] as InstanceType<typeof EmailTemplateNode>).name).toBe("PasswordResetMail");
@@ -266,7 +266,7 @@ describe("JourneyNode", () => {
     const client = makeFakePaicClient({ nodesByKey });
     const cache = makeFakeCache(client);
     const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     const scriptKid = kids.find((k) => k instanceof ScriptNode) as ScriptNode | undefined;
     expect(scriptKid).toBeDefined();
     expect(scriptKid?.scriptId).toBe("s-nested");
@@ -290,7 +290,7 @@ describe("JourneyNode", () => {
     const client = makeFakePaicClient({ nodesByKey });
     const cache = makeFakeCache(client);
     const node = new JourneyNode(HOST, REALM, journey, cache, makeFakeLogger());
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     const innerKid = kids.find((k) => k instanceof InnerJourneyNode) as
       | InnerJourneyNode
       | undefined;
@@ -315,7 +315,7 @@ describe("JourneyNode", () => {
       n1: { nodeType: "SelectIdPNode", payload: selectPayload },
       n2: { nodeType: "SocialProviderHandlerNode", payload: handlerPayload },
     });
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     const socialKids = kids.filter((k) => k instanceof SocialIdpNode);
     expect(socialKids).toHaveLength(2);
     const names = socialKids.map((k) => (k as InstanceType<typeof SocialIdpNode>).name).sort();

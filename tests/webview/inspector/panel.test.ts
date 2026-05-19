@@ -9,7 +9,12 @@ import { ConnectionNode } from "@/views/nodes/connection";
 import { JourneyNode } from "@/views/nodes/journey";
 import { ScriptNode } from "@/views/nodes/script";
 import { InspectorFactory } from "@/webview/inspector/panel";
-import { makeFakeCache, makeFakeLogger, makeFakePaicClient } from "../../views/fakes";
+import {
+  makeFakeCache,
+  makeFakeLogger,
+  makeFakePaicClient,
+  makeFakeResolverCache,
+} from "../../views/fakes";
 
 const CONN: Connection = { host: "h.example.com", saId: "sa-1" };
 
@@ -53,7 +58,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const state = await getVscodeMockState();
     const cache = makeFakeCache(makeFakePaicClient({}));
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
 
     const node = new ConnectionNode(CONN, cache, log);
     factory.spawn(node);
@@ -66,7 +76,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const state = await getVscodeMockState();
     const cache = makeFakeCache(makeFakePaicClient({}));
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new ConnectionNode(CONN, cache, log);
 
     const tab = factory.spawn(node);
@@ -103,7 +118,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
@@ -152,7 +172,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
@@ -196,7 +221,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
@@ -228,7 +258,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const state = await getVscodeMockState();
     const cache = makeFakeCache(makeFakePaicClient({}));
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new ConnectionNode(CONN, cache, log);
 
     const tab = factory.spawn(node);
@@ -265,7 +300,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new ScriptNode("h.example.com", "alpha", "s-1", cache, log);
 
     const tab = factory.spawn(node);
@@ -321,7 +361,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
@@ -391,7 +436,12 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     });
     const cache = makeFakeCache(client);
     const log = makeFakeLogger();
-    const factory = new InspectorFactory({ context: makeMockContext(), cache, log });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
@@ -434,5 +484,213 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     expect(idx.i1.uid).toBe("social-idp:h.example.com:alpha:apple-oidc");
     expect(idx.d1.kind).toBe("other");
     expect(idx.d1.useScript).toBe(false);
+  });
+});
+
+describe("InspectorTab.onMessage — resolveFull (D35)", () => {
+  it("posts an ok-shaped resolveResult after resolving a JourneyNode root", async () => {
+    const state = await getVscodeMockState();
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: {
+        "alpha:ScriptedDecisionNode:n1": {
+          id: "n1",
+          nodeType: "ScriptedDecisionNode",
+          scriptId: "s-1",
+          outcomes: [],
+          inputs: [],
+          outputs: [],
+        },
+      },
+    });
+    const graph = {
+      rootKey: "journey:Login",
+      nodes: {
+        "journey:Login": {
+          key: "journey:Login",
+          kind: "journey" as const,
+          id: "Login",
+          displayName: "Login",
+          depth: 0,
+        },
+        "script:s-1": {
+          key: "script:s-1",
+          kind: "script" as const,
+          id: "s-1",
+          displayName: "auth-decision",
+          depth: 1,
+        },
+      },
+      edges: [{ fromKey: "journey:Login", toKey: "script:s-1", via: "ScriptedDecisionNode" }],
+      durationMs: 7,
+    };
+    const cache = makeFakeCache(client);
+    const log = makeFakeLogger();
+    const resolverCache = makeFakeResolverCache({
+      graphsByKey: { "h.example.com|alpha|journey|Login": graph },
+    });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache,
+      log,
+    });
+    const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
+
+    const tab = factory.spawn(node);
+    await tab.ready;
+    state.createdPanels[0].webview.__fireReceive({ type: "resolveFull" });
+    await flush();
+
+    const calls = state.createdPanels[0].webview.postMessage.mock.calls.map((c: unknown[]) => c[0]);
+    const result = calls.find(
+      (m: unknown) => Boolean(m) && (m as { type?: unknown }).type === "resolveResult",
+    ) as { ok: boolean; graph?: typeof graph; message?: string } | undefined;
+    expect(result?.ok).toBe(true);
+    expect(result?.graph?.rootKey).toBe("journey:Login");
+  });
+
+  it("posts an err-shaped resolveResult when the resolver rejects", async () => {
+    const state = await getVscodeMockState();
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: {
+        "alpha:ScriptedDecisionNode:n1": {
+          id: "n1",
+          nodeType: "ScriptedDecisionNode",
+          scriptId: "s-1",
+          outcomes: [],
+          inputs: [],
+          outputs: [],
+        },
+      },
+    });
+    const cache = makeFakeCache(client);
+    const log = makeFakeLogger();
+    const resolverCache = makeFakeResolverCache({ rejectWith: new Error("tenant 503") });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache,
+      log,
+    });
+    const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
+
+    const tab = factory.spawn(node);
+    await tab.ready;
+    state.createdPanels[0].webview.__fireReceive({ type: "resolveFull" });
+    await flush();
+
+    const calls = state.createdPanels[0].webview.postMessage.mock.calls.map((c: unknown[]) => c[0]);
+    const result = calls.find(
+      (m: unknown) => Boolean(m) && (m as { type?: unknown }).type === "resolveResult",
+    ) as { ok: boolean; message?: string } | undefined;
+    expect(result?.ok).toBe(false);
+    expect(result?.message).toMatch(/tenant 503/);
+  });
+
+  it("ignores resolveFull on a card kind with no root support (no resolveResult posted)", async () => {
+    const state = await getVscodeMockState();
+    const cache = makeFakeCache(makeFakePaicClient({}));
+    const log = makeFakeLogger();
+    const resolverCache = makeFakeResolverCache();
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache,
+      log,
+    });
+    const node = new ConnectionNode(CONN, cache, log);
+
+    const tab = factory.spawn(node);
+    await tab.ready;
+    state.createdPanels[0].webview.__fireReceive({ type: "resolveFull" });
+    await flush();
+
+    const calls = state.createdPanels[0].webview.postMessage.mock.calls.map((c: unknown[]) => c[0]);
+    const result = calls.find(
+      (m: unknown) => Boolean(m) && (m as { type?: unknown }).type === "resolveResult",
+    );
+    expect(result).toBeUndefined();
+    // The fake resolver's `resolve` must not have been invoked.
+    expect(resolverCache.resolve).not.toHaveBeenCalled();
+  });
+
+  it("refreshResolved drops the cache entry then posts a fresh resolveResult", async () => {
+    const state = await getVscodeMockState();
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: {
+        "alpha:ScriptedDecisionNode:n1": {
+          id: "n1",
+          nodeType: "ScriptedDecisionNode",
+          scriptId: "s-1",
+          outcomes: [],
+          inputs: [],
+          outputs: [],
+        },
+      },
+    });
+    const graph = {
+      rootKey: "journey:Login",
+      nodes: {
+        "journey:Login": {
+          key: "journey:Login",
+          kind: "journey" as const,
+          id: "Login",
+          displayName: "Login",
+          depth: 0,
+        },
+      },
+      edges: [],
+      durationMs: 3,
+    };
+    const cache = makeFakeCache(client);
+    const log = makeFakeLogger();
+    const resolverCache = makeFakeResolverCache({
+      graphsByKey: { "h.example.com|alpha|journey|Login": graph },
+    });
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache,
+      log,
+    });
+    const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
+
+    const tab = factory.spawn(node);
+    await tab.ready;
+    state.createdPanels[0].webview.__fireReceive({ type: "refreshResolved" });
+    await flush();
+
+    // `dropOne` was called with the expected ResolverKey shape before `resolve`.
+    expect(resolverCache.dropOne).toHaveBeenCalledWith({
+      host: "h.example.com",
+      realm: "alpha",
+      kind: "journey",
+      id: "Login",
+    });
+    expect(resolverCache.resolve).toHaveBeenCalledTimes(1);
+
+    const calls = state.createdPanels[0].webview.postMessage.mock.calls.map((c: unknown[]) => c[0]);
+    const result = calls.find(
+      (m: unknown) => Boolean(m) && (m as { type?: unknown }).type === "resolveResult",
+    ) as { ok: boolean } | undefined;
+    expect(result?.ok).toBe(true);
   });
 });

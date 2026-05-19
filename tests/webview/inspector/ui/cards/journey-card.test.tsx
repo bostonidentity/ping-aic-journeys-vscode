@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { ResolvedGraph } from "@/domain/resolved-graph";
 import { JourneyCard } from "@/webview/inspector/ui/cards/JourneyCard";
+import type { ResolveState } from "@/webview/inspector/ui/cards/ResolvedView";
 import type { NodeInfo, NodeRef, SelectPayload } from "@/webview/messages";
 
 // Stub reactflow so the diagram renders deterministically as a few divs
@@ -84,10 +86,21 @@ const nodeIndex: Record<string, NodeInfo> = {
 };
 
 const noop = () => undefined;
+const idle: ResolveState = { status: "idle" };
 
 describe("JourneyCard", () => {
   it("renders metadata: id, description, identityResource, entry node, node count", () => {
-    render(<JourneyCard payload={payload} deps={null} onPreview={noop} />);
+    render(
+      <JourneyCard
+        payload={payload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Login");
     expect(screen.getByText("Standard sign-in")).toBeTruthy();
     expect(screen.getByText("managed/alpha_user")).toBeTruthy();
@@ -106,7 +119,17 @@ describe("JourneyCard", () => {
         transactionalOnly: false,
       },
     };
-    render(<JourneyCard payload={payloadWithFlags} deps={null} onPreview={noop} />);
+    render(
+      <JourneyCard
+        payload={payloadWithFlags}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
     expect(screen.getByText("innerTreeOnly")).toBeTruthy();
     expect(screen.getByText("noSession")).toBeTruthy();
     expect(screen.getByText("mustRun")).toBeTruthy();
@@ -117,7 +140,17 @@ describe("JourneyCard", () => {
   });
 
   it("skips flag rows when undefined (no '—' placeholder)", () => {
-    render(<JourneyCard payload={payload} deps={null} onPreview={noop} />);
+    render(
+      <JourneyCard
+        payload={payload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
     expect(screen.queryByText("innerTreeOnly")).toBeNull();
     expect(screen.queryByText("noSession")).toBeNull();
     expect(screen.queryByText("mustRun")).toBeNull();
@@ -125,7 +158,17 @@ describe("JourneyCard", () => {
   });
 
   it("shows the loading message while deps are pending", () => {
-    render(<JourneyCard payload={payload} deps={null} onPreview={noop} />);
+    render(
+      <JourneyCard
+        payload={payload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
     expect(screen.getByText(/Resolving dependencies/)).toBeTruthy();
   });
 
@@ -141,7 +184,11 @@ describe("JourneyCard", () => {
           socialIdps: [],
           nodeIndex: {},
         }}
+        resolved={idle}
         onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
       />,
     );
     expect(screen.getByText(/No dependencies discovered/)).toBeTruthy();
@@ -160,7 +207,11 @@ describe("JourneyCard", () => {
           socialIdps: [],
           nodeIndex,
         }}
+        resolved={idle}
         onPreview={onPreview}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
       />,
     );
 
@@ -185,10 +236,96 @@ describe("JourneyCard", () => {
           socialIdps: [],
           nodeIndex,
         }}
+        resolved={idle}
         onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
       />,
     );
     expect(screen.getByTestId("rf-canvas")).toBeTruthy();
     expect(screen.getByTestId("rf-node-n0")).toBeTruthy();
+  });
+
+  // ─── D35 — Dependencies segmented control ───────────────────────────────
+
+  it("renders the Direct / Full tree / Flat segmented control", () => {
+    render(
+      <JourneyCard
+        payload={payload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "Direct" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Full tree" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Flat" })).toBeTruthy();
+    // Direct is the default — aria-checked is `"true"` on the Direct radio.
+    expect(screen.getByRole("radio", { name: "Direct" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("clicking Full tree fires onResolve when status is idle", () => {
+    const onResolve = vi.fn();
+    render(
+      <JourneyCard
+        payload={payload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={onResolve}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Full tree" }));
+    expect(onResolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the resolved tree when status is ok and mode switches to Full tree", () => {
+    const graph: ResolvedGraph = {
+      rootKey: "journey:Login",
+      nodes: {
+        "journey:Login": {
+          key: "journey:Login",
+          kind: "journey",
+          id: "Login",
+          displayName: "Login",
+          depth: 0,
+        },
+        "script:s-1": {
+          key: "script:s-1",
+          kind: "script",
+          id: "s-1",
+          displayName: "auth-decision",
+          depth: 1,
+        },
+      },
+      edges: [
+        {
+          fromKey: "journey:Login",
+          toKey: "script:s-1",
+          via: "ScriptedDecisionNode",
+        },
+      ],
+      durationMs: 42,
+    };
+    render(
+      <JourneyCard
+        payload={payload}
+        deps={null}
+        resolved={{ status: "ok", graph }}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Full tree" }));
+    expect(screen.getByText("auth-decision")).toBeTruthy();
+    expect(screen.getByText(/Resolved in 42 ms/)).toBeTruthy();
   });
 });

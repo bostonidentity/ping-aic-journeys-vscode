@@ -1,4 +1,6 @@
+import type { ResolvedNode } from "../../../../domain/resolved-graph";
 import type { NodeRef, SelectPayload } from "../../../messages";
+import { ResolvedView, type ResolveState } from "./ResolvedView";
 
 export interface ScriptCardDeps {
   libraryScripts: NodeRef[];
@@ -8,14 +10,27 @@ export interface ScriptCardDeps {
 interface Props {
   payload: Extract<SelectPayload, { kind: "script" }>;
   deps?: ScriptCardDeps | null;
+  resolved: ResolveState;
   /** Card-internal hyperlink clicks (deps-list library + ESV links) go
    * through here per D24 — opens the target's card in the preview panel
    * beside; main inspector + tree stay put. */
   onPreview?: (uid: string) => void;
+  onResolve: () => void;
+  onRefresh: () => void;
+  onPreviewResolved: (node: ResolvedNode) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
 }
 
-export function ScriptCard({ payload, deps, onPreview, onOpenBody }: Props) {
+export function ScriptCard({
+  payload,
+  deps,
+  resolved,
+  onPreview,
+  onResolve,
+  onRefresh,
+  onPreviewResolved,
+  onOpenBody,
+}: Props) {
   const { scriptId, host, realmName, script } = payload;
   return (
     <article className="card">
@@ -96,7 +111,13 @@ export function ScriptCard({ payload, deps, onPreview, onOpenBody }: Props) {
           </button>
         </div>
       ) : null}
-      <ScriptDepsBlock deps={deps ?? null} onPreview={onPreview} />
+      <ResolvedView
+        directContent={<ScriptDepsBlock deps={deps ?? null} onPreview={onPreview} />}
+        resolved={resolved}
+        onResolve={onResolve}
+        onRefresh={onRefresh}
+        onPreviewResolved={onPreviewResolved}
+      />
     </article>
   );
 }
@@ -107,7 +128,8 @@ interface ScriptDepsProps {
 }
 
 /** Shared deps block — reused by `LibraryScriptCard` too. Renders the
- * library-script + ESV lists discovered by parsing the script body. */
+ * library-script + ESV lists discovered by parsing the script body.
+ * Uses the same divider + codicon style as Full / Flat for parity. */
 export function ScriptDepsBlock({ deps, onPreview }: ScriptDepsProps) {
   if (!deps) {
     return (
@@ -123,46 +145,45 @@ export function ScriptDepsBlock({ deps, onPreview }: ScriptDepsProps) {
       </section>
     );
   }
+  // Split ESVs by their D22 sub-kind so the Direct view matches the
+  // sidebar / Full / Flat grouping (ESV Variables, ESV Secrets, ESVs
+  // (missing), and an unclassified-fallback ESVs bucket).
+  const esvVariables = deps.esvs.filter((e) => e.esvKind === "variable");
+  const esvSecrets = deps.esvs.filter((e) => e.esvKind === "secret");
+  const esvMissing = deps.esvs.filter((e) => e.esvKind === "missing");
+  const esvUnclassified = deps.esvs.filter((e) => e.esvKind === undefined);
+  const sections: Array<{ label: string; icon: string; items: NodeRef[] }> = [
+    { label: "Library scripts", icon: "library", items: deps.libraryScripts },
+    { label: "ESV Variables", icon: "symbol-variable", items: esvVariables },
+    { label: "ESV Secrets", icon: "lock", items: esvSecrets },
+    { label: "ESVs (missing)", icon: "warning", items: esvMissing },
+    { label: "ESVs", icon: "symbol-variable", items: esvUnclassified },
+  ];
+  const populated = sections.filter((s) => s.items.length > 0);
+  const sortByLabel = (xs: readonly NodeRef[]) =>
+    [...xs].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
   return (
     <section className="deps">
-      {deps.libraryScripts.length > 0 ? (
-        <>
-          <h2>Library scripts ({deps.libraryScripts.length})</h2>
-          <ul>
-            {deps.libraryScripts.map((l) => (
-              <li key={l.uid}>
-                <button
-                  type="button"
-                  className="link"
-                  onClick={() => onPreview?.(l.uid)}
-                  disabled={!onPreview}
-                >
-                  {l.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-      {deps.esvs.length > 0 ? (
-        <>
-          <h2>ESVs ({deps.esvs.length})</h2>
-          <ul>
-            {deps.esvs.map((e) => (
-              <li key={e.uid}>
-                <button
-                  type="button"
-                  className="link"
-                  onClick={() => onPreview?.(e.uid)}
-                  disabled={!onPreview}
-                >
-                  {e.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+      <ul className="deps-flat">
+        {populated.flatMap((s) => [
+          <li key={`d:${s.label}`} className="deps-flat-divider">
+            ── {s.label} ({s.items.length}) ──
+          </li>,
+          ...sortByLabel(s.items).map((i) => (
+            <li key={i.uid} className="deps-flat-row">
+              <button
+                type="button"
+                className="link"
+                onClick={() => onPreview?.(i.uid)}
+                disabled={!onPreview}
+              >
+                <i className={`codicon codicon-${s.icon} deps-icon`} aria-hidden />
+                <span className="deps-name"> {i.label}</span>
+              </button>
+            </li>
+          )),
+        ])}
+      </ul>
     </section>
   );
 }

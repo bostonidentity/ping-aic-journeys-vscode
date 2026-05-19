@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractScriptBodyRefs } from "@/resolver/script-body-parser";
+import { extractScriptBodyRefs } from "@/util/script-body-parser";
 
 describe("extractScriptBodyRefs", () => {
   it("returns empty arrays for an empty body", () => {

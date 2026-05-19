@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import type { ResolvedGraph } from "@/domain/resolved-graph";
 import type {
   EmailTemplate,
   Esv,
@@ -12,6 +13,7 @@ import type {
   Theme,
 } from "@/domain/types";
 import type { PaicClient } from "@/paic/client";
+import type { ResolverCache } from "@/resolver/cache";
 import type { ClientCache } from "@/tenants/client-cache";
 
 /** In-memory `PaicClient` driven by canned data the test puts into the deps.
@@ -103,6 +105,31 @@ export function makeFakeCache(client: PaicClient): ClientCache {
   return {
     get: vi.fn(() => Promise.resolve(client)),
     drop: vi.fn(() => undefined),
+    dispose: vi.fn(() => undefined),
+  };
+}
+
+/** Stub `ResolverCache` whose `resolve` returns whatever the caller stuffed
+ * into `graphsByKey` (keyed by `${host}|${realm}|${kind}|${id}`). Misses
+ * reject with `Error("no fixture")` so tests must wire what they expect. */
+export interface FakeResolverCacheOpts {
+  graphsByKey?: Record<string, ResolvedGraph>;
+  /** Hand a rejection back from `resolve` regardless of key. Useful for the
+   * error-path test. */
+  rejectWith?: Error;
+}
+
+export function makeFakeResolverCache(opts: FakeResolverCacheOpts = {}): ResolverCache {
+  return {
+    resolve: vi.fn((key) => {
+      if (opts.rejectWith) return Promise.reject(opts.rejectWith);
+      const k = `${key.host}|${key.realm}|${key.kind}|${key.id}`;
+      const g = opts.graphsByKey?.[k];
+      if (!g) return Promise.reject(new Error(`no fake graph for ${k}`));
+      return Promise.resolve(g);
+    }),
+    dropOne: vi.fn(() => undefined),
+    dropAllForHost: vi.fn(() => undefined),
     dispose: vi.fn(() => undefined),
   };
 }

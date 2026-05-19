@@ -11,6 +11,7 @@ import {
   PaicScriptFileSystemProvider,
   SCRIPT_URI_SCHEME,
 } from "./providers/script-fs-provider";
+import { makeResolverCache, type ResolverCache } from "./resolver/cache";
 import { type ClientCache, makeClientCache } from "./tenants/client-cache";
 import { makeProductionDeps, makeTenantsRegistry, type TenantsRegistry } from "./tenants/registry";
 import { type Logger, makeLogger } from "./util/logger";
@@ -29,6 +30,7 @@ const LOG_FILE_ENABLED_SETTING = "paicJourneys.logging.fileEnabled";
 let log: Logger;
 let registry: TenantsRegistry;
 let clientCache: ClientCache;
+let resolverCache: ResolverCache;
 
 export function activate(context: vscode.ExtensionContext): void {
   const channel = vscode.window.createOutputChannel("PAIC Journeys", { log: true });
@@ -50,6 +52,12 @@ export function activate(context: vscode.ExtensionContext): void {
   clientCache = makeClientCache({ registry, log });
   context.subscriptions.push({ dispose: () => clientCache.dispose() });
 
+  // D35 — per-root forward-dep cache. Isolated from clientCache and the
+  // lazy tree per D21. Per-host invalidation is wired from this file
+  // (the one site that imports both registry and resolver).
+  resolverCache = makeResolverCache({ log });
+  context.subscriptions.push({ dispose: () => resolverCache.dispose() });
+
   const provider = new PaicTreeProvider(() =>
     registry.list().map((c) => new ConnectionNode(c, clientCache, log)),
   );
@@ -62,7 +70,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // Per D24, every "show a card" gesture (tree click, card hyperlink click,
   // diagram node click) spawns a fresh inspector tab via the factory — no
   // reuse, no in-place updates.
-  const inspectorFactory = new InspectorFactory({ context, cache: clientCache, log });
+  const inspectorFactory = new InspectorFactory({
+    context,
+    cache: clientCache,
+    resolverCache,
+    log,
+  });
   context.subscriptions.push(inspectorFactory);
 
   // Register the FileSystemProvider that surfaces script bodies as
@@ -102,7 +115,10 @@ export function activate(context: vscode.ExtensionContext): void {
   let priorHosts = registry.list().map((c) => c.host);
   context.subscriptions.push(
     registry.onDidChange(() => {
-      for (const h of priorHosts) clientCache.drop(h);
+      for (const h of priorHosts) {
+        clientCache.drop(h);
+        resolverCache.dropAllForHost(h);
+      }
       priorHosts = registry.list().map((c) => c.host);
       inspectorFactory.clearRegistry();
       provider.reload();
@@ -112,7 +128,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("paicJourneys.refresh", () => {
       log.info({ event: "tree.refresh" }, "Refreshing tree");
-      for (const h of priorHosts) clientCache.drop(h);
+      for (const h of priorHosts) {
+        clientCache.drop(h);
+        resolverCache.dropAllForHost(h);
+      }
       inspectorFactory.clearRegistry();
       provider.reload();
     }),
@@ -218,6 +237,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("paicJourneys.refreshNode", (node: PaicNode) => {
       if (!node || typeof node.refresh !== "function") return;
       log.debug({ event: "tree.refreshNode", uid: node.uid }, "Refreshing tree node");
+      if ("host" in node && typeof (node as { host?: unknown }).host === "string") {
+        resolverCache.dropAllForHost((node as { host: string }).host);
+      }
       node.refresh();
       provider.reload(node);
     }),

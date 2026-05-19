@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import type { ResolvedNode } from "../../../domain/resolved-graph";
 import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../../messages";
 import { ConnectionCard } from "./cards/ConnectionCard";
 import { EmailTemplateCard } from "./cards/EmailTemplateCard";
@@ -7,6 +8,7 @@ import { InnerJourneyCard } from "./cards/InnerJourneyCard";
 import { JourneyCard } from "./cards/JourneyCard";
 import { LibraryScriptCard } from "./cards/LibraryScriptCard";
 import { RealmCard } from "./cards/RealmCard";
+import type { ResolveState } from "./cards/ResolvedView";
 import { ScriptCard } from "./cards/ScriptCard";
 import { SocialIdpCard } from "./cards/SocialIdpCard";
 import { ThemeCard } from "./cards/ThemeCard";
@@ -39,6 +41,7 @@ export function App({ vscode }: Props) {
   const [selection, setSelection] = useState<SelectPayload | null>(null);
   const [journeyDeps, setJourneyDeps] = useState<JourneyDepsState | null>(null);
   const [scriptDeps, setScriptDeps] = useState<ScriptDepsState | null>(null);
+  const [resolveState, setResolveState] = useState<ResolveState>({ status: "idle" });
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -48,6 +51,7 @@ export function App({ vscode }: Props) {
         setSelection(m.payload);
         setJourneyDeps(null);
         setScriptDeps(null);
+        setResolveState({ status: "idle" });
         setError(null);
       } else if (m.type === "journeyDeps") {
         setJourneyDeps({
@@ -61,6 +65,9 @@ export function App({ vscode }: Props) {
         });
       } else if (m.type === "scriptDeps") {
         setScriptDeps({ uid: m.uid, libraryScripts: m.libraryScripts, esvs: m.esvs });
+      } else if (m.type === "resolveResult") {
+        if (m.ok) setResolveState({ status: "ok", graph: m.graph });
+        else setResolveState({ status: "err", message: m.message });
       } else if (m.type === "error") {
         setError(m.message);
       }
@@ -74,6 +81,26 @@ export function App({ vscode }: Props) {
   const openEmailBody = (host: string, name: string, locale: string) =>
     vscode.postMessage({ type: "openEmailTemplateBody", host, name, locale });
   const previewNode = (uid: string) => vscode.postMessage({ type: "previewNode", uid });
+  const onResolve = useCallback(() => {
+    setResolveState({ status: "loading" });
+    vscode.postMessage({ type: "resolveFull" });
+  }, [vscode]);
+  const onRefresh = useCallback(() => {
+    setResolveState({ status: "loading" });
+    vscode.postMessage({ type: "refreshResolved" });
+  }, [vscode]);
+  const onPreviewResolved = useCallback(
+    (node: ResolvedNode) => {
+      vscode.postMessage({
+        type: "previewResolved",
+        kind: node.kind,
+        id: node.id,
+        displayName: node.displayName,
+        ...(node.isLibrary === undefined ? {} : { isLibrary: node.isLibrary }),
+      });
+    },
+    [vscode],
+  );
 
   if (!selection) {
     return <div className="empty">Select a tree node to inspect.</div>;
@@ -93,17 +120,39 @@ export function App({ vscode }: Props) {
     case "realm":
       return <RealmCard payload={selection} />;
     case "journey":
-      return <JourneyCard payload={selection} deps={matchingJourneyDeps} onPreview={previewNode} />;
+      return (
+        <JourneyCard
+          payload={selection}
+          deps={matchingJourneyDeps}
+          resolved={resolveState}
+          onPreview={previewNode}
+          onResolve={onResolve}
+          onRefresh={onRefresh}
+          onPreviewResolved={onPreviewResolved}
+        />
+      );
     case "innerJourney":
       return (
-        <InnerJourneyCard payload={selection} deps={matchingJourneyDeps} onPreview={previewNode} />
+        <InnerJourneyCard
+          payload={selection}
+          deps={matchingJourneyDeps}
+          resolved={resolveState}
+          onPreview={previewNode}
+          onResolve={onResolve}
+          onRefresh={onRefresh}
+          onPreviewResolved={onPreviewResolved}
+        />
       );
     case "script":
       return (
         <ScriptCard
           payload={selection}
           deps={matchingScriptDeps}
+          resolved={resolveState}
           onPreview={previewNode}
+          onResolve={onResolve}
+          onRefresh={onRefresh}
+          onPreviewResolved={onPreviewResolved}
           onOpenBody={openBody}
         />
       );
@@ -112,7 +161,11 @@ export function App({ vscode }: Props) {
         <LibraryScriptCard
           payload={selection}
           deps={matchingScriptDeps}
+          resolved={resolveState}
           onPreview={previewNode}
+          onResolve={onResolve}
+          onRefresh={onRefresh}
+          onPreviewResolved={onPreviewResolved}
           onOpenBody={openBody}
         />
       );

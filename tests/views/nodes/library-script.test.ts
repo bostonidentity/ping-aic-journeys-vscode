@@ -5,6 +5,7 @@ vi.mock("vscode", async () => (await import("../../util/vscode-mock")).makeVscod
 import { describe, expect, it } from "vitest";
 import type { Script } from "@/domain/types";
 import { MessageNode } from "@/views/nodes/base";
+import { CategoryHeaderNode } from "@/views/nodes/category-header";
 import { LibraryScriptNode } from "@/views/nodes/library-script";
 import { makeFakeCache, makeFakeLogger, makeFakePaicClient } from "../fakes";
 
@@ -32,7 +33,7 @@ describe("LibraryScriptNode", () => {
       makeFakeLogger(),
       ["parent-script"],
     );
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(LibraryScriptNode);
     expect((kids[0] as LibraryScriptNode).name).toBe("inner");
@@ -52,7 +53,7 @@ describe("LibraryScriptNode", () => {
       makeFakeLogger(),
       ["parent-script", "selfish"],
     );
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(MessageNode);
     expect(kids[0].label).toBe("[cycle: selfish]");
@@ -71,7 +72,7 @@ describe("LibraryScriptNode", () => {
       makeFakeLogger(),
       ["parent-script"],
     );
-    const kids = await node.getChildren();
+    const kids = (await node.getChildren()).filter((k) => !(k instanceof CategoryHeaderNode));
     expect(kids).toHaveLength(1);
     expect(kids[0]).toBeInstanceOf(MessageNode);
     expect(kids[0].label).toBe("[missing library: does-not-exist]");
