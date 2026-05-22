@@ -435,42 +435,107 @@ Implementation worked technically (297/297 tests passing, lint clean, build clea
 
 **M4 complete.** After Slice 5, every root-capable card (Journey / InnerJourney / Script / LibraryScript) supports Direct / Full tree / Flat toggling + per-card refresh end-to-end. Next milestone: **M5 — Search page (reverse-dep + name + orphans)** per D36.
 
-## M5 — Search page (reverse-dep + name + orphans) ⏳
+## M5 — Search page (reverse-dep + name + orphans) ✅
 
 > Per D36 + D21. Standalone Search webview backed by a per-`{host, realm}` realm index. Lazy, user-explicit, isolated.
 
-### Data layer (`src/realm-index/`)
+### Slice 1 — Realm-index data layer ✅
 
-- [ ] `src/realm-index/types.ts` — `RealmIndexEntry`, `ReverseRef`, `EntityKey`, per-kind summary types.
-- [ ] `src/realm-index/build.ts` — `buildRealmIndex(client, realm)` pure scanner. Walks every journey + script + ESV + theme + library script in the realm; builds inbound-ref maps + the lowercased name index. Concurrency-bounded (uses `src/paic/concurrency.ts`).
-- [ ] `src/realm-index/cache.ts` — `{host, realm}` → entry map. `get(host, realm)`, `dropOne(host, realm)`, `dropAllForHost(host)`. Subscribes to `registry.onDidChange`. **Does NOT** subscribe to sidebar-refresh events (deliberate per D36).
-- [ ] `src/realm-index/queries.ts` — pure: `findUsages(entry, target)`, `searchByName(entry, pattern, kinds)`, `findUnused(entry, kinds)`.
+- [x] `src/domain/realm-index.ts` — wire-shape types (`EntityKind`, `RealmIndexEntity`, `ReverseRef`, `RealmIndexEntry`, `entityKeyOf`). Lives in `domain/` so Slice 2's webview message protocol can import them without violating the D21 webview→realm-index boundary (same pattern as `src/domain/resolved-graph.ts`).
+- [x] `src/realm-index/build.ts` — `buildRealmIndex(deps, host, realm)`. Per-realm scanner: lists journeys, fetches every node payload (single-level PageNode container walk), BFS over `require()` chains to discover library scripts + ESVs, fetches `listThemes` + `listSocialIdps`, merges `Theme.linkedTrees` reverse-refs. Concurrency-bounded via `mapConcurrent` (cap=10). Per-step errors logged + skipped — partial data survives. Reuses `getScriptIdIfRef` (D19) + `extractScriptBodyRefs` (D20).
+- [x] `src/realm-index/cache.ts` — `makeRealmIndexCache({log, build?})`. `peek(host, realm)` synchronous lookup, `build(host, realm, deps)` single-flight, `dropOne(host, realm)`, `dropAllForHost(host)`, `dispose()`. Per D21, this file does NOT import `TenantsRegistry`; per-host invalidation will be wired from `extension.ts` in Slice 2. Per D36, deliberately does NOT subscribe to sidebar-refresh events. Builder errors clear the in-flight entry but don't cache.
+- [x] `src/realm-index/queries.ts` — pure functions over `RealmIndexEntry`. `findUsages(entry, targetKey)` reads `inboundRefs`. `searchByName(entry, pattern, kinds?)` case-insensitive locale-aware substring match, sorted by displayName; empty pattern returns `[]`. `findUnused(entry, kinds?)` returns entities with zero inbound refs; excludes `journey` from the default kind set (journeys are entry points by definition).
+- [x] **Email-template enumeration gap** — `PaicClient.listEmailTemplates()` doesn't exist. Slice 1 materializes email templates only when a journey references one; `findUnused` for `emailTemplate` returns `[]`. Documented as a Risks item in the slice plan; Slice 2 will either add the list endpoint or surface the gap in the Search UI.
+- [x] **Tests** — total 366 → **424** (+58 outcomes):
+  - `tests/realm-index/queries.test.ts` — 16 cases covering all three queries (happy paths, empty/missing targets, kind filtering, journey-exception rule, sort stability).
+  - `tests/realm-index/build.test.ts` — 15 cases against `makeFakePaicClient`: empty realm, journey/script collection + dedup, library-script chains via `require()`, ESV classification (variable/secret), unknown-ESV omission, theme `linkedTrees` merge, social-IdP orphan-but-listed, inner-journey edges, email-template materialization, per-kind counts, per-step error resilience (node fetch failure + script fetch failure).
+  - `tests/realm-index/cache.test.ts` — 11 cases mirroring `tests/resolver/cache.test.ts`: `peek` returns null on miss, `build` invokes + stores, post-build peek, single-flight dedup, `dropOne`/`dropAllForHost` scoped invalidation, error-not-cached, `dispose` clears, per-realm isolation, Disposable shape.
+- [x] **D21 boundary test passes.** The pre-existing `src/realm-index` rule now scans real files — confirms no imports from `views/`, `resolver/`, `webview/`, `tenants/`.
+- [x] **Verification:** `npm run lint` 0 errors / 157 warnings (+1 baseline-style cognitive-complexity on `buildRealmIndex` matching `walkRoot` / `journey-expand`); typecheck clean across both tsconfigs; `npm run build` emits all four bundles; live-tenant smoke deferred until Slice 2 wires the Search webview.
 
-### Webview (`src/webview/search/`)
+### Slice 2 — Search webview surface ✅
 
-- [ ] `src/webview/search/messages.ts` — typed W2E/E2W protocol.
-- [ ] `src/webview/search/panel.ts` — extension-side `openSearchPage(context, opts)`. Single instance per `(host, realm)` — repeat opens focus the existing tab. Wires index cache lookups + query dispatch.
-- [ ] `src/webview/search/ui/{main, App}.tsx` — three query modes (Find usages / By name / Unused), header cache-status panel with `Build index` / `Rescan` controls, results list with `kind · name → via` rows.
-- [ ] New esbuild target `build:search` → `out/search.js`; parent `build` chains all four bundles.
+- [x] `src/webview/search/messages.ts` — typed W2E/E2W discriminated unions + `isW2E` / `isE2W` guards. Eight W2E variants (`ready`/`peek`/`build`/`rescan`/`listEntities`/`query` × 3 modes/`previewByKey`) + nine E2W variants. `SearchPayload` carries `host`, `realm`, optional `prefill` for Slice 3 entry points, `availableRealms`. Lazy `listEntities` round-trip avoids shipping the full entry map across postMessage on every peek.
+- [x] `src/webview/search/panel.ts` — `SearchFactory` (single-instance-per-`(host, realm)` map, mirrors D36) + `SearchTab` (one webview panel per key). Message handlers: `peek` (synchronous cache status), `build` (calls `realmIndexCache.build` with single-flight; posts `buildStart` then `buildDone` or `buildError`), `rescan` (`dropOne` then `build`), `query` (dispatches to `findUsages` / `searchByName` / `findUnused` and hydrates result entities for findUsages), `listEntities` (returns grouped entity map for the dropdown), `previewByKey` (delegates to `inspectorFactory.spawnByDescriptor`). Inline `SEARCH_CSS` reuses VS Code semantic vars per D27.
+- [x] `src/webview/inspector/panel.ts` — extracted descriptor → PaicNode logic into module-level `buildPaicNodeFromDescriptor` + exported `InspectorFactory.spawnByDescriptor(host, realm, descriptor)` as a public method. Existing `InspectorTab.handlePreviewResolved` rewritten to delegate. Single source of truth per the 2026-05-19 lesson — both Full/Flat resolved-graph clicks (M4) and Search-page result-row clicks (Slice 2) use the same code path.
+- [x] `src/webview/search/ui/{main,App}.tsx` — React entry + top-level component (single file holds Header / ModeSwitcher / QueryControls × 3 modes / Results). State shape: `BuildState` (idle/building/err), `QueryState` (idle/running/err/okFindUsages/okByName/okUnused). `useEffect`-registered window message listener routes E2W messages by type. Find-usages mode lazily fires `listEntities` when entered and the cache is built. By-name + Unused use kind-filter chips (multi-select). Result-row click → `previewByKey` → new inspector tab via factory.
+- [x] **Build pipeline** — `build:search` + `watch:search` scripts in `package.json`; parent `build` chains five bundles (extension, webview, connection-form, **search**, codicons). `out/search.js` is ~272 KB.
+- [x] **Extension wiring** in `src/extension.ts` — constructs `realmIndexCache = makeRealmIndexCache({ log })` + `searchFactory = new SearchFactory({ context, cache, realmIndexCache, inspectorFactory, log })`. `registry.onDidChange` drops realm-index entries for prior hosts + clears searchFactory registry. `paicJourneys.refresh` deliberately does NOT clear realmIndexCache (per D36 — rebuilding is a 10-second-class operation, must be user-explicit via `Rescan`). New `paicJourneys.openSearch` command QuickPicks connection + realm (skipping root realm via D25 filter), then spawns the Search webview.
+- [x] **tsconfig updates** — both `tsconfig.json` (extension) and `tsconfig.webview.json` (UI) extended to include / exclude the new `src/webview/search/ui/**` paths.
+- [x] **`paicJourneys.openSearch` command** registered in `package.json` `contributes.commands` (title "PAIC: Search…", icon `$(search)`). Command palette accessible (no `commandPalette` `when: false` entry) — no sidebar icon / context menu yet (Slice 3).
+- [x] **Tests** — total 424 → **456** (+32 outcomes):
+  - `tests/webview/search/messages.test.ts` — 6 cases (every W2E + E2W discriminant + malformed/cross-bundle false-positive rejection).
+  - `tests/webview/search/panel.test.ts` — 15 cases (single-instance behavior; peek/build/rescan/query × 3 modes/listEntities/previewByKey roundtrips; queryError when no entry).
+  - `tests/webview/search/ui/app.test.tsx` — 9 cases (ready+peek on mount; Header empty/populated states; Build button posts `build`; buildDone refreshes counts; mode switch + query roundtrip; result-row click posts previewByKey; auto-fires listEntities when switching to Find usages with built index; disabled Search button without a selected target).
+  - `tests/webview/inspector/panel.test.ts` — 2 new cases for `spawnByDescriptor` (script descriptor opens new tab with select payload; cross-kind coverage via Promise.all on 5 kinds).
+- [x] **Verification:** lint 0 errors / 163 warnings (+6 from Slice 1's 157, all baseline-style cognitive complexity on the new scanner / build / queries); typecheck clean across both tsconfigs; `npm run build` emits all five bundles cleanly; D21 boundary test still green.
 
-### Wiring
+**Smoke (EDH) deferred** — the data + UI work fully; live-tenant smoke runs when the user manually opens the command palette → "PAIC: Search…" against a real connection.
 
-- [ ] `package.json` — `view/title` icon entry (`$(search)`, command `paicJourneys.openSearch`).
-- [ ] Right-click context menus — connection + realm tree items get "Search…" entries.
-- [ ] Card portal — Inspector cards for script, library script, ESV, theme, inner journey gain a `[🔍 find usages]` button that opens / focuses the Search page with the query pre-filled.
-- [ ] `extension.ts` — register `paicJourneys.openSearch` command.
+### Slice 3 — Entry-point integrations ✅
 
-### Enforcement (per D21)
+- [x] **Sidebar title-bar `$(search)` icon** — `package.json` `view/title` entry for `paicJourneys.openSearch` lands in `navigation@2` (between Add Connection and Refresh). One-click opens the QuickPick flow.
+- [x] **Right-click "Search…" context menus** — `view/item/context` entries on both `viewItem == connection` (group `1@2`) and `viewItem == realm` (group `1@1`) bind `paicJourneys.openSearch`. The command handler now accepts the tree node as its first argument and branches accordingly: `RealmNode` skips both QuickPicks; `ConnectionNode` skips the host picker; no arg (palette / sidebar icon) shows the full flow.
+- [x] **Card portal `[🔍 Find usages]` button** on five inspector cards: `ScriptCard`, `LibraryScriptCard`, `EsvCard`, `ThemeCard`, `InnerJourneyCard`. Per D36, `JourneyCard` is intentionally excluded — root journeys are entry points, "find usages" of one is a degenerate query.
+- [x] **Inspector W2E protocol** extended with a `findUsages` variant carrying `{host, realm, kind, id, displayName, isLibrary?, esvKind?}`. `isW2E` guard updated. Routed via `vscode.commands.executeCommand("paicJourneys.findUsages", ...)` in `panel.ts` `onMessage` — mirrors the existing `openScriptBody` / `openEmailTemplateBody` pattern, so the inspector tab never imports `SearchFactory` directly.
+- [x] **New `paicJourneys.findUsages` command** registered in `extension.ts` (palette-hidden via `commandPalette.when = false`). Translates the descriptor to a `SearchPrefill` and calls `searchFactory.spawn(host, realm, { mode: "findUsages", targetKind, targetKey: entityKeyOf(kind, id) })`. Defensive arg parser (`parseFindUsagesArg`) duck-types the payload + rejects unknown kinds.
+- [x] **Search-page prefill auto-run** — `src/webview/search/ui/App.tsx` gains a `useRef`-guarded `useEffect` that fires `onSearch()` once when the embedded prefill carries `mode: "findUsages"` + `targetKey` AND the realm index is built AND the dropdown selection matches. If the index isn't built when the page opens, the prefill seeds the dropdown; the user clicks Build, listEntities re-fetches, and the auto-run effect fires.
+- [x] **Tests** — total 456 → **463** (+7 outcomes):
+  - `tests/webview/messages.test.ts` — +1 case (W2E guard accepts `findUsages`).
+  - `tests/webview/inspector/panel.test.ts` — +1 case (`findUsages` W2E dispatches `paicJourneys.findUsages` via `executeCommand` with the right descriptor).
+  - `tests/webview/inspector/ui/cards/{script,library-script,esv,theme,inner-journey}-card.test.tsx` — +1 case each (button click fires `onFindUsages` with the right descriptor).
+  - `tests/webview/search/ui/app.test.tsx` — +1 case (auto-run fires once when prefill + built cache align; repeated peekResult does NOT re-trigger thanks to the one-shot ref).
+- [x] **Verification:** lint 0 errors / 163 warnings (no new); typecheck clean across both tsconfigs; `npm run build` emits all five bundles; D21 boundary test still green.
 
-- [ ] `tests/architecture/layer-boundaries.test.ts` — boundary test scanning `src/realm-index/*`, `src/resolver/*`, `src/views/*`, `src/webview/*` for forbidden cross-layer imports.
-- [ ] `.claude/rules/conventions.md` — Import conventions section updated with the D21 rules covering `src/realm-index/*` and the symmetric `src/resolver/*` rule.
+### Slice 4 — Search page UX redesign: singleton page + in-page dropdowns ✅
 
-### Tests
+User feedback after Slices 2+3 reshaped the entry-point UX: instead of QuickPick prompts gating the page open, the Search page now **opens immediately** with two in-page dropdowns (Connection + Realm). This **amends D36** — see the "Singleton Search page (AMENDED 2026-05-19)" note in `docs/design-plan.md`.
 
-- [ ] `src/realm-index/build.test.ts` — synthetic small-realm fixture; verifies entity collection + inboundRefs population + nameIndex.
-- [ ] `src/realm-index/cache.test.ts` — `dropOne`, `dropAllForHost`, registry-change subscription, sidebar-refresh-does-NOT-invalidate.
-- [ ] `src/realm-index/queries.test.ts` — `findUsages` / `searchByName` / `findUnused` happy paths + edge cases (empty index, missing target, kind filter).
-- [ ] Search-page UI tests — three modes, empty state, queued-query-after-build flow, single-instance behavior (re-opening for same realm focuses existing tab).
+- [x] **D36 amended** — the original "single instance per `(host, realm)`" rule is superseded. With realm as an in-page dropdown, per-realm tabs are incoherent → the Search page is now a **singleton**. Re-invoking any entry point focuses the one tab and re-seeds its dropdowns.
+- [x] `src/webview/search/messages.ts` reworked — `SearchPayload` now carries `connections` (the dropdown list, shipped in the embedded payload) + `selectedHost` / `selectedRealm` (pre-selection) instead of fixed `host`/`realm`. New `listRealms` W2E + `realmsResult` / `realmsError` E2W (realm lists need a `client.listRealms()` call per connection, fetched on demand). Every host/realm-scoped W2E now carries `host` + `realm` explicitly; every result E2W echoes them so the React app drops stale replies after a mid-flight dropdown change.
+- [x] `src/webview/search/panel.ts` — `SearchFactory` is now a singleton manager (`spawn(opts)` focuses-or-creates one tab; takes a `listConnections` dep read fresh per spawn). `SearchTab` is stateless w.r.t. selection — every handler reads `host` / `realm` from the message. New `listRealms` handler filters the root realm (D25). `clearRegistry()` re-renders the open tab with the fresh connection list.
+- [x] `src/webview/search/ui/App.tsx` — new `ScopeSelector` (two `<select>` dropdowns). Connection-change → fetch realms (cached per host in `realmsByHost`). The cache-status header / query controls / results render **only once both dropdowns are set**, gated on `scopeReady`. All W2E posts thread the current `(host, realm)`; the message listener drops results whose `(host, realm)` ≠ current selection.
+- [x] `src/extension.ts` — `paicJourneys.openSearch` drops its QuickPick flow entirely: it just `searchFactory.spawn(opts)` with `selectedHost` / `selectedRealm` pre-filled from a `RealmNode` / `ConnectionNode` arg (or nothing from the palette / sidebar icon). `paicJourneys.findUsages` spawns with `{ selectedHost, selectedRealm, prefill }`. The old `pickRealmForSearch` QuickPick helper is deleted. `SearchFactory` gains a `listConnections` dep.
+- [x] **Tests reworked** — `tests/webview/search/{messages,panel}.test.ts` + `ui/app.test.tsx` rewritten for the new protocol, singleton factory, and dropdown-driven scope. 30 search-test outcomes (5 messages + 15 panel + 10 App). Total **462 passing**.
+- [x] **Verification:** lint 0 errors / 163 warnings; typecheck clean; `npm run build` emits all five bundles; D21 boundary test green.
+
+### Slice 5 — Realm-index build performance ✅
+
+Live sb3 smoke surfaced a slow build: `alpha` took **108 s** (~2,300 HTTP calls). Log analysis found two issues — see the `docs/lessons.md` 2026-05-19 "Nested `mapConcurrent`" entry + the "Build concurrency" note in `design-plan.md` D36.
+
+- [x] **One shared per-build limiter.** Nested `mapConcurrent(…, 10)` calls multiplied to ~80 concurrent in-flight (getNode avg latency ballooned to 2,485 ms from tenant-side queuing). Replaced with a single `makeLimiter(10)` instance created per `buildRealmIndex` call, stored on `BuildState`, threaded through every `PaicClient` call across every phase. True cap-10, matches the tree + resolver, far gentler on the tenant (D16). Per-build instance — never shared with the tree-lazy or resolver caches (D21 intact).
+- [x] `src/paic/concurrency.ts` — added `makeLimiter(n)` returning `{ run<T>(task) }`. Pure concurrency primitive alongside `mapConcurrent`; caps total in-flight across all `run()` calls on the instance (vs `mapConcurrent` which caps its own per-call pool).
+- [x] **Batched script-phase library lookups.** The `require()`-chain BFS `await`ed `getScriptByName` per-script inside a `for` loop → effective concurrency ~4. `scanScripts` now does a first pass (enrich entities + collect the layer-wide union of library names) → one batched `getScriptByName` lookup → second pass emitting edges from the resolved map. Extracted `fetchScript` + `enrichScriptEntity` helpers.
+- [x] `tests/paic/concurrency.test.ts` — +4 `makeLimiter` cases (caps in-flight across independent `run()` calls; resolves with task result; a rejected task frees its slot + propagates; throws on `n < 1`). `build.test.ts` stays green — all 15 cases pass unchanged (behavior identical; only call scheduling differs).
+- [x] **Verification:** lint 0 errors / 163 warnings; typecheck clean; 462 → **466 tests**; build emits all 5 bundles.
+- [x] **Re-smoke confirmed (sb3 `alpha`)** — build time **108.5 s → 67.8 s** (−37%). Identical output (778 entities / 1,864 refs). Total HTTP calls 2,259 → 1,863 (layer-wide dedup of `require()` lookups). getNode per-call latency **2,485 ms → 334 ms** (no longer bursting ~80-wide and overwhelming the tenant — true cap-10). Scripts phase ~58 s → ~17 s (serialization removed; true cap-10). getNode phase stayed ~flat at ~42 s — the predicted trade: same speed, far gentler per call.
+
+### Slice 6 — Build progress indicator ✅
+
+A realm-index build is a ~68 s foreground operation; the Search page previously showed a static "Building realm index…" string for the whole wait. Slice 6 replaces it with a live progress bar.
+
+- [x] `src/realm-index/build.ts` — `RealmIndexBuildDeps` gains an optional `onProgress(p: BuildProgress)` callback. `BuildProgress = { phase: "preparing" | "journeys" | "scripts" | "finishing"; done?: number; total?: number }`. **Both** long phases report a unified `done` / `total`: the journey scan per completed journey (`total` = journey count); the script-BFS per fetched script, where `total` is the BFS's `enqueued`-set size — it seeds with the journey-referenced frontier and grows as library scripts surface, so `done` chases it and the phase ends at `N / N` (same `X / Y` label shape as journeys).
+- [x] **Overlap optimization** (folded in) — the tenant ESV-index fetch now runs concurrently with `listJourneys` (one `Promise.all`); `listThemes` + `listSocialIdps` run concurrently with the script-body BFS. The phases touch disjoint `BuildState` slices; the synchronous `materializeEntity` / `addEdge` writes never tear (JS single-threaded).
+- [x] `src/realm-index/cache.ts` — no change needed; `onProgress` rides through transparently inside `RealmIndexBuildDeps`, which `cache.build()` already forwards to `buildRealmIndex`.
+- [x] `src/webview/search/messages.ts` — new `buildProgress` E2W message `{ host, realm, phase, done?, total? }`; `isE2W` updated.
+- [x] `src/webview/search/panel.ts` — `handleBuild` passes an `onProgress` that **coalesces** updates: an immediate post on every phase change, otherwise throttled to ~5 Hz (`PROGRESS_THROTTLE_MS = 200`) — never one message per journey.
+- [x] `src/webview/search/ui/App.tsx` — `BuildState.building` carries `progress` + a `pct`; the Header renders a **progress bar + phase label + percentage** (full header width) while building — e.g. `Scanning journeys — 87 / 142` or `Resolving scripts — 300 / 540` over a filled bar. Bar fill uses `--vscode-progressBar-background` (D27). Percentage spans four contiguous monotonic bands (preparing 0–5 %, journeys 5–78 %, scripts 78–98 %, finishing 98–100 %); both determinate phases interpolate within their band by `done`/`total`. Because the script `total` grows, the displayed `pct` is **clamped monotonically** in the message handler (`Math.max(raw, prevPct)`) — a progress bar never retreats.
+- [x] Tests — total 466 → **471**: `build.test.ts` +1 (`onProgress` fires across phases with determinate journey `done`/`total`); `panel.test.ts` +1 (`buildProgress` relayed from the builder's `onProgress`); `app.test.tsx` +3 (journey-phase bar; scripts-phase bar with unified `X / Y` label; monotonic clamp holds the bar when the script total grows).
+- [x] **Verification:** lint 0 errors / 163 warnings; typecheck clean; build emits all 5 bundles.
+
+### Slice 7 — Find-usages results: grouped list + path tree ✅
+
+Find-usages previously rendered a flat one-hop `kind · name → via` list. Two improvements (user-reviewed mockups, approved) — both derived purely from the in-memory `RealmIndexEntry.inboundRefs`, no new fetches or cache changes:
+
+- [x] **Kind-grouped result list** — all three query modes render results under `── <Kind> (N) ──` divider headers with codicons, alphabetical within kind (the inspector-card / sidebar vocabulary). New pure helper `src/webview/search/ui/grouping.ts` — `displayKindOf` (splits `script` by `isLibrary`), `DISPLAY_KIND_LABEL` / `DISPLAY_KIND_ICON`, generic `groupByKind<{entity}>`.
+- [x] **Path-tree view** — a `List | Tree` segmented toggle on Find-usages results (resets to List on each new query). Tree shows every path from a journey root down to the searched entity (the searched thing is the leaf). New pure query `findUsagePaths(entry, targetKey): UsagePaths` in `src/realm-index/queries.ts`: reverse-reachability BFS over `inboundRefs` to collect ancestors → relevant-restricted forward adjacency → roots (journeys; non-journey roots flagged `orphanRoot` = dead-code path) → forward DFS render in display order with a shared `rendered` set (first displayed occurrence wins; repeats / cycles collapse to `(dup)`).
+- [x] `src/domain/realm-index.ts` — `UsagePathNode` + `UsagePaths` types (in `domain/` so producer + webview both import, per the `ResolvedGraph` precedent).
+- [x] `src/webview/search/messages.ts` — `queryResult` findUsages variant gains `paths: UsagePaths` (computed alongside `refs` — same `entry`, cheap, no extra round-trip; the `List|Tree` toggle is client-side).
+- [x] `src/webview/search/panel.ts` — `handleQuery` findUsages computes + posts `paths`; `SEARCH_CSS` gains `.search-divider` + `.search-tree*`.
+- [x] `src/webview/search/ui/{grouping.ts, UsagePathTree.tsx, App.tsx}` — recursive tree renderer (codicon + `via` + `(dup)` + `⚠ no journey reaches this` for orphan roots); App threads grouped lists for all modes (new `GroupedList` / `EntityRow` / `ResultDivider`), the `List|Tree` `UsagesViewToggle`, and `usagesView` state; tree nodes click → `previewByKey`.
+- [x] Tests — total 471 → **481**: `queries.test.ts` +7 `findUsagePaths` (linear chain, via labels, multi-root, dup, cycle, orphan root, unknown target); `messages` / `panel` extended for the `paths` field; `app.test.tsx` +3 (kind-grouped dividers, `List|Tree` toggle defaulting to List, switching to Tree renders the path tree).
+- [x] `docs/design-plan.md` D36 — "Result rows" note amended for the grouped list + path-tree view.
+- [x] **Verification:** lint 0 errors / 164 warnings (+1 baseline-style cognitive-complexity on `findUsagePaths`); typecheck clean across both tsconfigs; `npm run build` emits all 5 bundles.
 
 ## M6 — Realm-wide graph webview ⏳
 
@@ -513,9 +578,9 @@ Implementation worked technically (297/297 tests passing, lint clean, build clea
 - `./dev-tail.sh` follows the latest disk log file across EDH reloads.
 
 **Build + test**
-- `npm run build` → `out/extension.js` (~703 KB) + `out/webview.js` (~267 KB).
+- `npm run build` → `out/extension.js` + `out/webview.js` + `out/connection-form.js` + codicons assets.
 - `npm run typecheck` covers both `tsconfig.json` and `tsconfig.webview.json`.
-- 107 unit tests across PAIC transport, tenant registry + client cache, tree nodes, inspector panel + protocol, and React card components.
+- 481 unit tests across PAIC transport (incl. `makeLimiter`), tenant registry + client cache, tree nodes, inspector panel + protocol (incl. `findUsages` dispatch), React card + diagram components (incl. 5 card `[🔍 Find usages]` button cases), resolver walk + cache (M4), realm-index build + cache + queries with progress reporting (M5 Slices 1, 5, 6), the Search webview's messages + panel + App with singleton-page + connection/realm dropdowns + build progress bar (M5 Slices 2–4, 6), and the `InspectorFactory.spawnByDescriptor` refactor.
 
 ## What's broken today
 

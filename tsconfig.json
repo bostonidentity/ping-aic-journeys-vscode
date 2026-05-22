@@ -18,6 +18,8 @@
     "src/webview/inspector/ui/**",
     "tests/webview/inspector/ui/**",
     "src/webview/connection-form/ui/**",
-    "tests/webview/connection-form/ui/**"
+    "tests/webview/connection-form/ui/**",
+    "src/webview/search/ui/**",
+    "tests/webview/search/ui/**"
   ]
 }

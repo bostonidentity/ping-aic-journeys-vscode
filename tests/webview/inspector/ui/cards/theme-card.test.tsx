@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { ThemeCard } from "@/webview/inspector/ui/cards/ThemeCard";
 import type { SelectPayload } from "@/webview/messages";
 
@@ -81,5 +81,27 @@ describe("ThemeCard", () => {
     expect(screen.getByText("JourneyA")).toBeTruthy();
     expect(screen.getByText("JourneyB")).toBeTruthy();
     expect(screen.getByText("JourneyC")).toBeTruthy();
+  });
+
+  it("Find usages button fires onFindUsages with theme.name as displayName (M5 Slice 3)", () => {
+    const onFindUsages = vi.fn();
+    render(
+      <ThemeCard
+        payload={{
+          ...baseline,
+          theme: { id: "theme-1", name: "Corporate", realm: "alpha" },
+        }}
+        onFindUsages={onFindUsages}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Find usages/i }));
+    expect(onFindUsages).toHaveBeenCalledWith({
+      type: "findUsages",
+      host: baseline.host,
+      realm: "alpha",
+      kind: "theme",
+      id: "theme-1",
+      displayName: "Corporate",
+    });
   });
 });

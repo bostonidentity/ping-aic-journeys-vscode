@@ -16,6 +16,13 @@ Corrections and patterns to avoid repeating. Append entries here whenever a user
 
 <!-- Entries below, newest first. -->
 
+## 2026-05-19 — Nested `mapConcurrent` multiplies concurrency; multi-phase walks need ONE shared limiter
+
+**Context:** The M5 realm-index build (`src/realm-index/build.ts`) used `mapConcurrent(…, 10)` at each fan-out point — `scanJourney` 10-wide, and each `scanJourney` fanning out `getNode` 10-wide. A live sb3 `alpha` build was measured at 108 s for ~2,300 HTTP calls.
+**Mistake:** `mapConcurrent` caps *its own* pool, not global in-flight. Nested calls multiply: 10 journeys × 10 nodes = up to ~100 concurrent requests hitting the tenant. Log analysis showed per-`getNode` latency at **2,485 ms avg** — the burst was overwhelming the tenant and responses queued server-side, *inflating* the latency it was trying to beat. This is exactly what D16 warned against ("cap at ~10 … on 1,000-call scans"). Separately, the script-body phase `await`ed its per-script `getScriptByName` lookups *inside a `for` loop over the layer*, collapsing effective concurrency to ~4 (58 s for 950 fast calls).
+**Correction:** For a multi-phase walk, create **one shared limiter** (`makeLimiter(n)` in `src/paic/concurrency.ts`) per walk invocation and route every HTTP call through it — total in-flight is then a true `n`. Replace nested `mapConcurrent` with `Promise.all(items.map(i => limit.run(() => fn(i))))`. And never `await` a fan-out inside a `for` loop over a sibling collection — collect the work across the whole layer, dedupe, then one batched `Promise.all`.
+**How to avoid next time:** When you see `mapConcurrent` (or `Promise.all` over a bounded pool) called *inside* a function that is itself run through `mapConcurrent`, the concurrency caps multiply — that's a global-limiter smell. One limiter instance per logical operation, threaded through. Check effective concurrency from logs: `total_calls × avg_latency / wall_time` should be ≈ your intended cap, not far above (burst) or far below (accidental serialization).
+
 ## 2026-05-19 — Card data preparation needs ONE source of truth (`buildSelectPayload`), not pre-population from each producer
 
 **Context:** During M4 Slice 6 the user reported that a script clicked from the Full / Flat resolved view rendered an "id-only" card (just Script ID + UUID title), while the SAME script clicked from the sidebar or Direct deps list rendered the full D23 metadata (name / language / context / lastModified / etc.).

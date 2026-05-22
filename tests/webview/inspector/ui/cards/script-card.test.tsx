@@ -213,4 +213,30 @@ describe("ScriptCard", () => {
     expect(screen.getByText("helpers")).toBeTruthy();
     expect(screen.getByText(/Resolved in 9 ms/)).toBeTruthy();
   });
+
+  it("Find usages button fires onFindUsages with the script descriptor (M5 Slice 3)", () => {
+    const onFindUsages = vi.fn();
+    render(
+      <ScriptCard
+        payload={{
+          ...baseline,
+          script: { id: "s-1", name: "validator", language: "JAVASCRIPT", body: "" },
+        }}
+        resolved={idle}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+        onFindUsages={onFindUsages}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Find usages/i }));
+    expect(onFindUsages).toHaveBeenCalledWith({
+      type: "findUsages",
+      host: baseline.host,
+      realm: "alpha",
+      kind: "script",
+      id: "s-1",
+      displayName: "validator",
+    });
+  });
 });

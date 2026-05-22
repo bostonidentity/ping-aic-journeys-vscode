@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapConcurrent } from "@/paic/concurrency";
+import { makeLimiter, mapConcurrent } from "@/paic/concurrency";
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -64,5 +64,51 @@ describe("mapConcurrent", () => {
 
   it("rejects when concurrency is < 1", async () => {
     await expect(mapConcurrent([1], 0, async (x) => x)).rejects.toThrow(/concurrency must be >= 1/);
+  });
+});
+
+describe("makeLimiter", () => {
+  it("caps total in-flight tasks across independent run() calls", async () => {
+    const limit = makeLimiter(3);
+    let running = 0;
+    let maxObserved = 0;
+    const gates = Array.from({ length: 10 }, () => deferred<void>());
+
+    // Fire 10 independent run() calls — they are NOT a single mapConcurrent
+    // pool, but the shared limiter must still cap them at 3.
+    const all = gates.map((g) =>
+      limit.run(async () => {
+        running++;
+        maxObserved = Math.max(maxObserved, running);
+        await g.promise;
+        running--;
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(maxObserved).toBe(3);
+    expect(running).toBe(3);
+
+    for (const g of gates) g.resolve();
+    await Promise.all(all);
+    expect(maxObserved).toBe(3);
+  });
+
+  it("resolves with the task result", async () => {
+    const limit = makeLimiter(2);
+    const out = await Promise.all([1, 2, 3].map((x) => limit.run(async () => x * 10)));
+    expect(out).toEqual([10, 20, 30]);
+  });
+
+  it("a rejected task frees its slot and propagates the rejection", async () => {
+    const limit = makeLimiter(1);
+    const boom = new Error("task failed");
+    await expect(limit.run(async () => Promise.reject(boom))).rejects.toBe(boom);
+    // The slot must be free again — a follow-up task still runs.
+    await expect(limit.run(async () => "ok")).resolves.toBe("ok");
+  });
+
+  it("throws when concurrency is < 1", () => {
+    expect(() => makeLimiter(0)).toThrow(/concurrency must be >= 1/);
   });
 });

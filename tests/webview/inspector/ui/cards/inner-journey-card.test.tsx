@@ -183,4 +183,29 @@ describe("InnerJourneyCard", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Full tree" }));
     expect(onResolve).toHaveBeenCalledTimes(1);
   });
+
+  it("Find usages button fires onFindUsages with journey kind + id (M5 Slice 3)", () => {
+    const onFindUsages = vi.fn();
+    render(
+      <InnerJourneyCard
+        payload={placeholderPayload}
+        deps={null}
+        resolved={idle}
+        onPreview={noop}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+        onFindUsages={onFindUsages}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Find usages/i }));
+    expect(onFindUsages).toHaveBeenCalledWith({
+      type: "findUsages",
+      host: placeholderPayload.host,
+      realm: "alpha",
+      kind: "journey",
+      id: "PasswordReset",
+      displayName: "PasswordReset",
+    });
+  });
 });

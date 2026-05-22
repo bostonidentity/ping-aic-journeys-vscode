@@ -1,5 +1,7 @@
 import type { Level } from "pino";
 import * as vscode from "vscode";
+import { type EntityKind, entityKeyOf } from "./domain/realm-index";
+
 import type { Connection } from "./domain/types";
 import {
   EMAIL_TEMPLATE_URI_SCHEME,
@@ -11,6 +13,7 @@ import {
   PaicScriptFileSystemProvider,
   SCRIPT_URI_SCHEME,
 } from "./providers/script-fs-provider";
+import { makeRealmIndexCache, type RealmIndexCache } from "./realm-index/cache";
 import { makeResolverCache, type ResolverCache } from "./resolver/cache";
 import { type ClientCache, makeClientCache } from "./tenants/client-cache";
 import { makeProductionDeps, makeTenantsRegistry, type TenantsRegistry } from "./tenants/registry";
@@ -19,10 +22,12 @@ import { MessageNode, type PaicNode } from "./views/nodes/base";
 import { CategoryHeaderNode } from "./views/nodes/category-header";
 import { ConnectionNode } from "./views/nodes/connection";
 import { LibraryScriptNode } from "./views/nodes/library-script";
+import { RealmNode } from "./views/nodes/realm";
 import { ScriptNode } from "./views/nodes/script";
 import { PaicTreeProvider } from "./views/paic-tree-provider";
 import { openConnectionForm } from "./webview/connection-form/panel";
 import { InspectorFactory } from "./webview/inspector/panel";
+import { SearchFactory } from "./webview/search/panel";
 
 const LOG_LEVEL_SETTING = "paicJourneys.logging.level";
 const LOG_FILE_ENABLED_SETTING = "paicJourneys.logging.fileEnabled";
@@ -31,6 +36,7 @@ let log: Logger;
 let registry: TenantsRegistry;
 let clientCache: ClientCache;
 let resolverCache: ResolverCache;
+let realmIndexCache: RealmIndexCache;
 
 export function activate(context: vscode.ExtensionContext): void {
   const channel = vscode.window.createOutputChannel("PAIC Journeys", { log: true });
@@ -58,6 +64,12 @@ export function activate(context: vscode.ExtensionContext): void {
   resolverCache = makeResolverCache({ log });
   context.subscriptions.push({ dispose: () => resolverCache.dispose() });
 
+  // D36 — per-realm reverse-dep index cache. Same D21 isolation pattern —
+  // does not subscribe to sidebar refresh (rebuilding the index is a
+  // 10-second-class operation and should be user-explicit).
+  realmIndexCache = makeRealmIndexCache({ log });
+  context.subscriptions.push({ dispose: () => realmIndexCache.dispose() });
+
   const provider = new PaicTreeProvider(() =>
     registry.list().map((c) => new ConnectionNode(c, clientCache, log)),
   );
@@ -77,6 +89,20 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
   });
   context.subscriptions.push(inspectorFactory);
+
+  // D36 — singleton Search webview. The page picks its (host, realm) via
+  // in-page dropdowns; result-row clicks delegate to
+  // `inspectorFactory.spawnByDescriptor` so the descriptor → PaicNode
+  // mapping stays a single source of truth (per the 2026-05-19 lesson).
+  const searchFactory = new SearchFactory({
+    context,
+    cache: clientCache,
+    realmIndexCache,
+    inspectorFactory,
+    listConnections: () => registry.list().map((c) => ({ host: c.host, name: c.name })),
+    log,
+  });
+  context.subscriptions.push(searchFactory);
 
   // Register the FileSystemProvider that surfaces script bodies as
   // `paic-script://<host>/<realm>/<scriptId>.<ext>` editor tabs (D17).
@@ -118,9 +144,11 @@ export function activate(context: vscode.ExtensionContext): void {
       for (const h of priorHosts) {
         clientCache.drop(h);
         resolverCache.dropAllForHost(h);
+        realmIndexCache.dropAllForHost(h);
       }
       priorHosts = registry.list().map((c) => c.host);
       inspectorFactory.clearRegistry();
+      searchFactory.clearRegistry();
       provider.reload();
     }),
   );
@@ -131,6 +159,9 @@ export function activate(context: vscode.ExtensionContext): void {
       for (const h of priorHosts) {
         clientCache.drop(h);
         resolverCache.dropAllForHost(h);
+        // Sidebar refresh deliberately does NOT clear realmIndexCache
+        // (per D36). The realm index is invalidated only by `Rescan`
+        // inside the Search page or registry mutations.
       }
       inspectorFactory.clearRegistry();
       provider.reload();
@@ -242,6 +273,56 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       node.refresh();
       provider.reload(node);
+    }),
+
+    vscode.commands.registerCommand("paicJourneys.openSearch", (arg?: unknown) => {
+      // The Search page opens immediately — connection + realm are picked
+      // via in-page dropdowns. Tree-context invocations pre-select what
+      // they know: a RealmNode fills both dropdowns, a ConnectionNode
+      // fills only the connection dropdown.
+      let source = "command";
+      const opts: { selectedHost?: string; selectedRealm?: string } = {};
+      if (arg instanceof RealmNode) {
+        opts.selectedHost = arg.host;
+        opts.selectedRealm = arg.realm.name;
+        source = "realm-context";
+      } else if (arg instanceof ConnectionNode) {
+        opts.selectedHost = arg.connection.host;
+        source = "connection-context";
+      }
+      log.info({ event: "search.openSearch", source }, "Opening Search panel");
+      searchFactory.spawn(opts);
+    }),
+
+    vscode.commands.registerCommand("paicJourneys.findUsages", (arg: unknown) => {
+      const parsed = parseFindUsagesArg(arg);
+      if (!parsed) {
+        log.warn(
+          { event: "search.findUsages.badArg" },
+          "findUsages invoked without a valid descriptor",
+        );
+        return;
+      }
+      const targetKey = entityKeyOf(parsed.kind, parsed.id);
+      log.info(
+        {
+          event: "search.findUsages",
+          host: parsed.host,
+          realm: parsed.realm,
+          kind: parsed.kind,
+          id: parsed.id,
+        },
+        "Opening Search panel for findUsages prefill",
+      );
+      searchFactory.spawn({
+        selectedHost: parsed.host,
+        selectedRealm: parsed.realm,
+        prefill: {
+          mode: "findUsages",
+          targetKind: parsed.kind,
+          targetKey,
+        },
+      });
     }),
 
     vscode.commands.registerCommand("paicJourneys.addConnection", async () => {
@@ -367,4 +448,53 @@ function parseOpenEmailTemplateArg(arg: unknown): OpenEmailTemplateArgs | null {
     }
   }
   return null;
+}
+
+interface FindUsagesArgs {
+  host: string;
+  realm: string;
+  kind: EntityKind;
+  id: string;
+  displayName: string;
+  isLibrary?: boolean;
+  esvKind?: "variable" | "secret" | "missing";
+}
+
+const FIND_USAGES_KINDS: ReadonlySet<EntityKind> = new Set<EntityKind>([
+  "journey",
+  "script",
+  "esv",
+  "theme",
+  "emailTemplate",
+  "socialIdp",
+]);
+
+/** Accepts a `{host, realm, kind, id, displayName, isLibrary?, esvKind?}`
+ * descriptor (posted by the inspector's `[🔍 Find usages]` button → the
+ * `paicJourneys.findUsages` command). */
+function parseFindUsagesArg(arg: unknown): FindUsagesArgs | null {
+  if (!arg || typeof arg !== "object") return null;
+  const a = arg as Record<string, unknown>;
+  if (
+    typeof a.host !== "string" ||
+    typeof a.realm !== "string" ||
+    typeof a.kind !== "string" ||
+    typeof a.id !== "string" ||
+    typeof a.displayName !== "string"
+  ) {
+    return null;
+  }
+  if (!FIND_USAGES_KINDS.has(a.kind as EntityKind)) return null;
+  const out: FindUsagesArgs = {
+    host: a.host,
+    realm: a.realm,
+    kind: a.kind as EntityKind,
+    id: a.id,
+    displayName: a.displayName,
+  };
+  if (typeof a.isLibrary === "boolean") out.isLibrary = a.isLibrary;
+  if (a.esvKind === "variable" || a.esvKind === "secret" || a.esvKind === "missing") {
+    out.esvKind = a.esvKind;
+  }
+  return out;
 }

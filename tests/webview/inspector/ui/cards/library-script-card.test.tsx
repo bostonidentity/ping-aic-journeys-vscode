@@ -111,4 +111,28 @@ describe("LibraryScriptCard", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Full tree" }));
     expect(onResolve).toHaveBeenCalledTimes(1);
   });
+
+  it("Find usages button fires onFindUsages with isLibrary: true (M5 Slice 3)", () => {
+    const onFindUsages = vi.fn();
+    render(
+      <LibraryScriptCard
+        payload={payload}
+        resolved={idle}
+        onResolve={noop}
+        onRefresh={noop}
+        onPreviewResolved={noop}
+        onFindUsages={onFindUsages}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Find usages/i }));
+    expect(onFindUsages).toHaveBeenCalledWith({
+      type: "findUsages",
+      host: payload.host,
+      realm: "alpha",
+      kind: "script",
+      id: "s-lib-helpers",
+      displayName: "helpers",
+      isLibrary: true,
+    });
+  });
 });

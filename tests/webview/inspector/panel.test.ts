@@ -694,3 +694,114 @@ describe("InspectorTab.onMessage — resolveFull (D35)", () => {
     expect(result?.ok).toBe(true);
   });
 });
+
+describe("InspectorFactory.spawnByDescriptor — M5 Slice 2 refactor", () => {
+  it("spawnByDescriptor(script descriptor) opens a new tab and posts a select payload", async () => {
+    const state = await getVscodeMockState();
+    const client = makeFakePaicClient({
+      scriptsByKey: {
+        "alpha:s-1": { id: "s-1", name: "validator", language: "JAVASCRIPT", body: "" },
+      },
+    });
+    const cache = makeFakeCache(client);
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log: makeFakeLogger(),
+    });
+
+    const tab = await factory.spawnByDescriptor("h.example.com", "alpha", {
+      kind: "script",
+      id: "s-1",
+      displayName: "validator",
+    });
+    await tab?.ready;
+    expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
+
+    const calls = state.createdPanels[0].webview.postMessage.mock.calls.map((c: unknown[]) => c[0]);
+    const select = calls.find(
+      (m: unknown) => Boolean(m) && (m as { type?: unknown }).type === "select",
+    ) as { payload?: { kind?: string; scriptId?: string } } | undefined;
+    expect(select?.payload?.kind).toBe("script");
+    expect(select?.payload?.scriptId).toBe("s-1");
+  });
+
+  it("spawnByDescriptor opens a new tab for every supported entity kind", async () => {
+    const state = await getVscodeMockState();
+    const client = makeFakePaicClient({});
+    const cache = makeFakeCache(client);
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log: makeFakeLogger(),
+    });
+
+    const kinds: Array<"esv" | "theme" | "emailTemplate" | "socialIdp" | "journey"> = [
+      "esv",
+      "theme",
+      "emailTemplate",
+      "socialIdp",
+      "journey",
+    ];
+    await Promise.all(
+      kinds.map((kind) =>
+        factory.spawnByDescriptor("h.example.com", "alpha", {
+          kind,
+          id: `${kind}-x`,
+          displayName: `${kind}-x`,
+        }),
+      ),
+    );
+    expect(state.createWebviewPanel).toHaveBeenCalledTimes(kinds.length);
+  });
+});
+
+describe("InspectorTab.onMessage — findUsages (M5 Slice 3)", () => {
+  it("dispatches paicJourneys.findUsages via executeCommand with the descriptor", async () => {
+    const state = await getVscodeMockState();
+    const vscodeMod = (await import("vscode")) as unknown as {
+      commands: { executeCommand: ReturnType<typeof vi.fn> };
+    };
+    const executeCommand = vscodeMod.commands.executeCommand;
+    executeCommand.mockClear();
+
+    const client = makeFakePaicClient({});
+    const cache = makeFakeCache(client);
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log: makeFakeLogger(),
+    });
+
+    const node = new ConnectionNode(CONN, cache, makeFakeLogger());
+    const tab = factory.spawn(node);
+    await tab.ready;
+
+    const panel = state.createdPanels[0];
+    panel.webview.__fireReceive({
+      type: "findUsages",
+      host: "h.example.com",
+      realm: "alpha",
+      kind: "script",
+      id: "s-1",
+      displayName: "validator",
+      isLibrary: true,
+    });
+    await flush();
+
+    expect(executeCommand).toHaveBeenCalledWith(
+      "paicJourneys.findUsages",
+      expect.objectContaining({
+        host: "h.example.com",
+        realm: "alpha",
+        kind: "script",
+        id: "s-1",
+        displayName: "validator",
+        isLibrary: true,
+      }),
+    );
+  });
+});

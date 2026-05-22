@@ -221,6 +221,21 @@ export type W2E =
       /** When `kind === "script"`, distinguishes regular scripts from
        * library scripts (`context === "LIBRARY"`). */
       isLibrary?: boolean;
+    }
+  /** D36 — open the Search webview with a findUsages prefill for the
+   * entity described by this message. Posted by the `[🔍 Find usages]`
+   * button on inspector cards (Script / LibraryScript / ESV / Theme /
+   * InnerJourney). The panel routes this to the `paicJourneys.findUsages`
+   * command which spawns the Search webview via SearchFactory. */
+  | {
+      type: "findUsages";
+      host: string;
+      realm: string;
+      kind: "journey" | "script" | "esv" | "theme" | "emailTemplate" | "socialIdp";
+      id: string;
+      displayName: string;
+      isLibrary?: boolean;
+      esvKind?: "variable" | "secret" | "missing";
     };
 
 // ─── Type-guard helpers ───────────────────────────────────────────────────
@@ -248,6 +263,7 @@ export function isW2E(msg: unknown): msg is W2E {
     t === "previewNode" ||
     t === "resolveFull" ||
     t === "refreshResolved" ||
-    t === "previewResolved"
+    t === "previewResolved" ||
+    t === "findUsages"
   );
 }

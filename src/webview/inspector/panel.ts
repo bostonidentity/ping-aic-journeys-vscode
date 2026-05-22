@@ -67,6 +67,44 @@ export class InspectorFactory implements vscode.Disposable {
     return tab;
   }
 
+  /** Open a fresh inspector tab for an entity identified by descriptor
+   * (kind + id + displayName, optionally isLibrary / esvKind). Used by
+   * the Search-page panel (Slice 2) and the resolved-graph preview path
+   * (M4). Spawns a new tab per D24. Logs + returns null on construction
+   * failure (e.g. tenant 404 on a library-script body fetch). */
+  async spawnByDescriptor(
+    host: string,
+    realm: string,
+    descriptor: InspectorPreviewDescriptor,
+  ): Promise<InspectorTab | null> {
+    try {
+      const node = await buildPaicNodeFromDescriptor(
+        host,
+        realm,
+        descriptor,
+        this.deps.cache,
+        this.deps.log,
+      );
+      if (!node) return null;
+      this.uidIndex.set(node.uid, node);
+      return this.spawn(node);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.childLog.warn(
+        {
+          event: "factory.spawnByDescriptor.failed",
+          host,
+          realm,
+          kind: descriptor.kind,
+          id: descriptor.id,
+          message,
+        },
+        "Failed to construct PaicNode from descriptor — ignoring spawn",
+      );
+      return null;
+    }
+  }
+
   /** Forget all known uids — called when the connection registry mutates so
    * stale `previewNode` clicks against now-evicted nodes can't resurrect them. */
   clearRegistry(): void {
@@ -349,6 +387,18 @@ export class InspectorTab implements vscode.Disposable {
     }
     if (m.type === "previewResolved") {
       await this.handlePreviewResolved(m);
+      return;
+    }
+    if (m.type === "findUsages") {
+      await vscode.commands.executeCommand("paicJourneys.findUsages", {
+        host: m.host,
+        realm: m.realm,
+        kind: m.kind,
+        id: m.id,
+        displayName: m.displayName,
+        ...(m.isLibrary === undefined ? {} : { isLibrary: m.isLibrary }),
+        ...(m.esvKind === undefined ? {} : { esvKind: m.esvKind }),
+      });
     }
   }
 
@@ -377,50 +427,12 @@ export class InspectorTab implements vscode.Disposable {
     }
   }
 
-  private async buildResolvedPreviewNode(
+  private buildResolvedPreviewNode(
     host: string,
     realm: string,
     m: Extract<W2E, { type: "previewResolved" }>,
   ): Promise<PaicNode | null> {
-    const { cache, log } = this.deps;
-    switch (m.kind) {
-      case "journey":
-        // Every journey-kind row in the Full/Flat tree is reached
-        // transitively → open as an inner-journey card.
-        return new InnerJourneyNode(host, realm, m.id, cache, log, []);
-      case "script": {
-        // Regular scripts: `buildSelectPayload` now defensively fetches when
-        // `node.resolved` is absent, so we can construct bare and skip a
-        // duplicate HTTP call. Library scripts still need an up-front fetch
-        // because the LibraryScriptNode constructor REQUIRES name + body
-        // (they are not optional like `resolved`).
-        if (!m.isLibrary) {
-          return new ScriptNode(host, realm, m.id, cache, log);
-        }
-        const client = await cache.get(host);
-        const resolved = await client.getScript(realm, m.id);
-        return new LibraryScriptNode(
-          host,
-          realm,
-          m.id,
-          resolved.name,
-          resolved.body,
-          cache,
-          log,
-          [],
-          undefined,
-          resolved,
-        );
-      }
-      case "esv":
-        return new EsvNode(host, realm, m.id);
-      case "theme":
-        return new ThemeNode(host, realm, m.id, cache, log);
-      case "emailTemplate":
-        return new EmailTemplateNode(host, realm, m.id, cache, log);
-      case "socialIdp":
-        return new SocialIdpNode(host, realm, m.id, cache, log);
-    }
+    return buildPaicNodeFromDescriptor(host, realm, m, this.deps.cache, this.deps.log);
   }
 
   private async handleResolveFull(forceRefresh: boolean): Promise<void> {
@@ -484,6 +496,72 @@ function tabTitle(node: PaicNode): string {
   // Truncate to keep the editor tab strip readable.
   const trimmed = label.length > 40 ? `${label.slice(0, 37)}…` : label;
   return `PAIC: ${trimmed}`;
+}
+
+/** Descriptor shape used by `spawnByDescriptor`. Mirrors the
+ * `previewResolved` W2E payload — both call sites build a `PaicNode` for
+ * an entity identified by `{kind, id, displayName}` from a non-tree
+ * source (Full/Flat resolved-graph clicks in M4; Search-page result-row
+ * clicks in M5 Slice 2). Per the 2026-05-19 lesson, this is the single
+ * source of truth for descriptor→PaicNode translation. */
+export interface InspectorPreviewDescriptor {
+  kind: "journey" | "script" | "esv" | "theme" | "emailTemplate" | "socialIdp";
+  id: string;
+  displayName: string;
+  /** Script-only — when true, materialize as `LibraryScriptNode`. */
+  isLibrary?: boolean;
+  /** ESV-only — pre-classified kind so the resulting card / icon picks
+   * the right variant immediately. Unset when the caller doesn't know
+   * (e.g. Slice 2's Search page populates the realm-index where ESVs
+   * are already typed). */
+  esvKind?: "variable" | "secret" | "missing";
+}
+
+/** Build a `PaicNode` for an entity descriptor without going through the
+ * sidebar tree. Library scripts require a one-call body fetch (the
+ * constructor requires `name` + `body`); every other kind can be
+ * constructed bare and lets `buildSelectPayload` defensively fetch
+ * metadata when the card renders (see the 2026-05-19 lesson). */
+export async function buildPaicNodeFromDescriptor(
+  host: string,
+  realm: string,
+  descriptor: InspectorPreviewDescriptor,
+  cache: ClientCache,
+  log: Logger,
+): Promise<PaicNode | null> {
+  switch (descriptor.kind) {
+    case "journey":
+      // Every journey-kind descriptor reached from outside the sidebar is
+      // transitively reached → open as an inner-journey card.
+      return new InnerJourneyNode(host, realm, descriptor.id, cache, log, []);
+    case "script": {
+      if (!descriptor.isLibrary) {
+        return new ScriptNode(host, realm, descriptor.id, cache, log);
+      }
+      const client = await cache.get(host);
+      const resolved = await client.getScript(realm, descriptor.id);
+      return new LibraryScriptNode(
+        host,
+        realm,
+        descriptor.id,
+        resolved.name,
+        resolved.body,
+        cache,
+        log,
+        [],
+        undefined,
+        resolved,
+      );
+    }
+    case "esv":
+      return new EsvNode(host, realm, descriptor.id, undefined, descriptor.esvKind);
+    case "theme":
+      return new ThemeNode(host, realm, descriptor.id, cache, log);
+    case "emailTemplate":
+      return new EmailTemplateNode(host, realm, descriptor.id, cache, log);
+    case "socialIdp":
+      return new SocialIdpNode(host, realm, descriptor.id, cache, log);
+  }
 }
 
 /** Build the `select` payload for any `PaicNode`. Shared by `InspectorTab`'s

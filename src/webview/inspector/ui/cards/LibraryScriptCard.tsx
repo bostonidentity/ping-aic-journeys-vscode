@@ -1,5 +1,5 @@
 import type { ResolvedNode } from "../../../../domain/resolved-graph";
-import type { SelectPayload } from "../../../messages";
+import type { SelectPayload, W2E } from "../../../messages";
 import { ResolvedView, type ResolveState } from "./ResolvedView";
 import { type ScriptCardDeps, ScriptDepsBlock } from "./ScriptCard";
 
@@ -12,6 +12,7 @@ interface Props {
   onRefresh: () => void;
   onPreviewResolved: (node: ResolvedNode) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
+  onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
 export function LibraryScriptCard({
@@ -23,6 +24,7 @@ export function LibraryScriptCard({
   onRefresh,
   onPreviewResolved,
   onOpenBody,
+  onFindUsages,
 }: Props) {
   const { name, scriptId, host, realmName, script } = payload;
   return (
@@ -49,15 +51,36 @@ export function LibraryScriptCard({
           </>
         ) : null}
       </dl>
-      {onOpenBody ? (
+      {onOpenBody || onFindUsages ? (
         <div className="card-actions">
-          <button
-            type="button"
-            className="primary"
-            onClick={() => onOpenBody(host, realmName, scriptId, script?.language)}
-          >
-            Open body in editor
-          </button>
+          {onOpenBody ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => onOpenBody(host, realmName, scriptId, script?.language)}
+            >
+              Open body in editor
+            </button>
+          ) : null}
+          {onFindUsages ? (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                onFindUsages({
+                  type: "findUsages",
+                  host,
+                  realm: realmName,
+                  kind: "script",
+                  id: scriptId,
+                  displayName: name,
+                  isLibrary: true,
+                })
+              }
+            >
+              🔍 Find usages
+            </button>
+          ) : null}
         </div>
       ) : null}
       <ResolvedView

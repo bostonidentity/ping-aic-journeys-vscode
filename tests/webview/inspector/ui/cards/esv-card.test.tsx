@@ -124,4 +124,27 @@ describe("EsvCard", () => {
     );
     expect(screen.getByText(value)).toBeTruthy();
   });
+
+  it("Find usages button fires onFindUsages carrying esvKind when known (M5 Slice 3)", () => {
+    const onFindUsages = vi.fn();
+    render(
+      <EsvCard
+        payload={{
+          ...baseline,
+          esv: { kind: "variable", name: "esv.kyid.portal.name" },
+        }}
+        onFindUsages={onFindUsages}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Find usages/i }));
+    expect(onFindUsages).toHaveBeenCalledWith({
+      type: "findUsages",
+      host: baseline.host,
+      realm: "alpha",
+      kind: "esv",
+      id: "esv.kyid.portal.name",
+      displayName: "esv.kyid.portal.name",
+      esvKind: "variable",
+    });
+  });
 });

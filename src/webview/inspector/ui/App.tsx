@@ -101,6 +101,10 @@ export function App({ vscode }: Props) {
     },
     [vscode],
   );
+  const onFindUsages = useCallback(
+    (descriptor: Extract<W2E, { type: "findUsages" }>) => vscode.postMessage(descriptor),
+    [vscode],
+  );
 
   if (!selection) {
     return <div className="empty">Select a tree node to inspect.</div>;
@@ -141,6 +145,7 @@ export function App({ vscode }: Props) {
           onResolve={onResolve}
           onRefresh={onRefresh}
           onPreviewResolved={onPreviewResolved}
+          onFindUsages={onFindUsages}
         />
       );
     case "script":
@@ -154,6 +159,7 @@ export function App({ vscode }: Props) {
           onRefresh={onRefresh}
           onPreviewResolved={onPreviewResolved}
           onOpenBody={openBody}
+          onFindUsages={onFindUsages}
         />
       );
     case "libraryScript":
@@ -167,12 +173,13 @@ export function App({ vscode }: Props) {
           onRefresh={onRefresh}
           onPreviewResolved={onPreviewResolved}
           onOpenBody={openBody}
+          onFindUsages={onFindUsages}
         />
       );
     case "esv":
-      return <EsvCard payload={selection} />;
+      return <EsvCard payload={selection} onFindUsages={onFindUsages} />;
     case "theme":
-      return <ThemeCard payload={selection} />;
+      return <ThemeCard payload={selection} onFindUsages={onFindUsages} />;
     case "emailTemplate":
       return <EmailTemplateCard payload={selection} onOpenBody={openEmailBody} />;
     case "socialIdp":

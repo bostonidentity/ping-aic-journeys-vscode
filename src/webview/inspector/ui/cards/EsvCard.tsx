@@ -1,13 +1,16 @@
 import { useState } from "react";
 import type { Esv, EsvSecret, EsvVariable } from "../../../../domain/types";
-import type { SelectPayload } from "../../../messages";
+import type { SelectPayload, W2E } from "../../../messages";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "esv" }>;
+  onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
-export function EsvCard({ payload }: Props) {
+export function EsvCard({ payload, onFindUsages }: Props) {
   const { name, host, realmName, esv } = payload;
+  const esvKind: "variable" | "secret" | undefined =
+    esv?.kind === "variable" || esv?.kind === "secret" ? esv.kind : undefined;
   return (
     <article className="card">
       <header>
@@ -30,6 +33,27 @@ export function EsvCard({ payload }: Props) {
         {esv ? <SharedAuditFields esv={esv} /> : null}
       </dl>
       {esv ? null : <p className="hint">ESV not found in this tenant.</p>}
+      {onFindUsages ? (
+        <div className="card-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() =>
+              onFindUsages({
+                type: "findUsages",
+                host,
+                realm: realmName,
+                kind: "esv",
+                id: name,
+                displayName: name,
+                ...(esvKind === undefined ? {} : { esvKind }),
+              })
+            }
+          >
+            🔍 Find usages
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }

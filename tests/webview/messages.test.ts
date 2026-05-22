@@ -108,10 +108,19 @@ describe("messages protocol", () => {
     const preview: W2E = { type: "previewNode", uid: "u1" };
     const resolveFull: W2E = { type: "resolveFull" };
     const refreshResolved: W2E = { type: "refreshResolved" };
+    const findUsages: W2E = {
+      type: "findUsages",
+      host: "h.example.com",
+      realm: "alpha",
+      kind: "script",
+      id: "s-1",
+      displayName: "validator",
+    };
     expect(isW2E(ready)).toBe(true);
     expect(isW2E(preview)).toBe(true);
     expect(isW2E(resolveFull)).toBe(true);
     expect(isW2E(refreshResolved)).toBe(true);
+    expect(isW2E(findUsages)).toBe(true);
 
     expect(isW2E({ type: "select", payload: {} })).toBe(false); // E2W shape
     expect(isW2E(undefined)).toBe(false);

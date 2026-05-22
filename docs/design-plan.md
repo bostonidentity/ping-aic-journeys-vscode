@@ -633,7 +633,18 @@ This decision **supersedes D13** (RealmIndex background scan on realm-expand) an
 | Right-click realm → "Search…" | connection + realm |
 | Card portal `[🔍 find usages]` button | connection + realm + query |
 
-**Single instance per `(host, realm)`** — multiple entry points opening "search for alpha" land on the same tab and share the same index. Different realm = different tab.
+**Singleton Search page (AMENDED 2026-05-19).** The original spec said "single instance per `(host, realm)`" — one tab per realm. That was reversed during M5 implementation: the Search page now picks its `(host, realm)` via **two in-page dropdowns** (Connection + Realm) rather than a pre-open QuickPick. Once the realm is a dropdown *inside* the page, per-realm tabs are incoherent (two tabs could both show `alpha`). So there is exactly **one Search tab, period** — re-invoking any entry point focuses the existing tab and re-seeds its dropdowns.
+
+The entry points become pre-selection of those dropdowns rather than pre-keyed tabs:
+
+| Trigger | Pre-fills |
+|---|---|
+| Sidebar title-bar 🔍 icon | nothing — both dropdowns empty |
+| Right-click connection → "Search…" | connection dropdown auto-selected |
+| Right-click realm → "Search…" | both dropdowns auto-selected |
+| Card portal `[🔍 Find usages]` button | both dropdowns + query prefill (auto-runs) |
+
+The page's cache-status header, query controls, and results render only **after both dropdowns are set**, driven by `realmIndexCache.peek(host, realm)`. Realm lists are fetched on demand per connection (a `listRealms` round-trip) when the connection dropdown changes; the connection list ships in the embedded payload. Because the selection lives in the webview, every host/realm-scoped `W2E` message carries `host` + `realm` explicitly and the extension-side panel is stateless w.r.t. the current selection; result `E2W` messages echo `host` + `realm` so the React app can drop stale replies after a mid-flight dropdown change.
 
 **Lazy execution contract — no background work ever:**
 
@@ -680,7 +691,19 @@ Invalidation:
 | Session end | Everything |
 | **Sidebar tree refresh** | **NOT cleared** — rebuilding a realm index is a 10-second-class operation and shouldn't be silently triggered. Users opt in via `Rescan` |
 
-**Result rows** mirror inspector-card row format (`kind · name → via`); click opens the target's card via the same selection plumbing the sidebar uses.
+**Build concurrency (AMENDED 2026-05-19).** A realm-index build is the project's heaviest call pattern (sb3 `alpha`: ~2,300 HTTP calls). The original `buildRealmIndex` used a per-phase `mapConcurrent(…, 10)` at each fan-out point — but those fan-outs *nest* (`scanJourney` runs 10-wide, and each `scanJourney` fans out `getNode` 10-wide), so total in-flight burst to ~80 concurrent. That both stressed the tenant (against D16's "cap at ~10 … on 1,000-call scans") and inflated per-call latency via server-side queuing.
+
+The build now uses **one shared concurrency limiter per build invocation** — `makeLimiter(10)` (`src/paic/concurrency.ts`), created fresh inside each `buildRealmIndex` call and threaded through every `PaicClient` call in every phase. Total in-flight is a true 10, matching the tree and resolver. The limiter is a **per-build instance** — it is never shared with the tree-lazy cache or the resolver cache, so D21's three-independent-subsystems rule is preserved (a build's concurrency budget does not interact with concurrent tree expansions).
+
+The script-body phase additionally batches its `require()` library-name lookups **layer-wide** (collect every name across a BFS layer → dedupe → one parallel batch) rather than the original per-script serial loop, which had collapsed effective concurrency to ~4. See the `docs/lessons.md` 2026-05-19 entry.
+
+Measured on sb3 `alpha`: **108.5 s → 67.8 s**, getNode per-call latency 2,485 ms → 334 ms (true cap-10, no longer overwhelming the tenant). Two adjacent phases also overlap: the tenant ESV-index fetch runs alongside `listJourneys`, and `listThemes` + `listSocialIdps` run alongside the script-body BFS (the phases touch disjoint slices of the shared `BuildState` maps, and JS's single-threaded model means the synchronous `materializeEntity` / `addEdge` writes never tear).
+
+**Build progress reporting.** A realm-index build is a ~70 s foreground operation, so the Search page shows live progress rather than a static "Building…" string. `buildRealmIndex` takes an optional `onProgress(p: BuildProgress)` callback; `BuildProgress` is `{ phase: "preparing" | "journeys" | "scripts" | "finishing"; done?: number; total?: number }`. **Both long phases are determinate and report a unified `done` / `total`**: the journey scan's `total` is the (fixed, known) journey count; the script-BFS scan's `total` is the count of distinct scripts the BFS has *enqueued so far* — it seeds with the journey-referenced frontier and grows as deeper layers surface library scripts, so `done` always chases `total` and the phase ends cleanly at `N / N` (same `X / Y` label shape as journeys). The extension-side panel **coalesces** these (an immediate post on every phase change, otherwise throttled to ~5 Hz — not one message per journey/script) into a `buildProgress` E2W message. The Search webview renders a **progress bar + phase label + percentage** — e.g. `Scanning journeys — 87 / 142` / `Resolving scripts — 300 / 540`, with a filled bar. The percentage spans four contiguous, monotonically-increasing bands (preparing 0–5 %, journeys 5–78 %, scripts 78–98 %, finishing 98–100 %); each determinate phase interpolates within its band. Because the script `total` grows, the raw ratio can dip a hair at a BFS-layer boundary — so the webview also **clamps the displayed percentage monotonically** (a progress bar never retreats). The result advances smoothly start to finish.
+
+**Result rows** are **kind-grouped** under `── <Kind> (N) ──` divider headers with codicons, alphabetical within kind — the same vocabulary as the inspector cards + sidebar tree. Clicking a row opens the target's card via the same selection plumbing the sidebar uses.
+
+**Find-usages results have two views (a `List | Tree` toggle).** *List* is the kind-grouped one-hop view above — the entities that directly reference the target. *Tree* renders `findUsagePaths` — the slice of the realm's forward dependency graph from every journey (or orphan) root down to the searched target, which is the leaf of every branch. It answers the project's actual question ("which journey, through what chain, reaches this entity?") rather than just "who references it." The tree is a pure derivation of `RealmIndexEntry.inboundRefs`: reverse-reachability BFS from the target → relevant ancestor set → relevant-restricted forward adjacency → roots (non-journey roots flagged `orphanRoot` — the target is kept alive only by dead code) → forward DFS render with M4-style `(dup)` collapsing on repeated subtrees. `UsagePathNode` / `UsagePaths` live in `src/domain/realm-index.ts`; the tree ships in the `queryResult` message alongside the flat `refs` (cheap to compute, so the toggle needs no extra round-trip).
 
 **VS Code surface constraints:**
 - Title-bar icon is `$(search)` against the view's `view/title` menu, command `paicJourneys.openSearch`.
@@ -689,7 +712,7 @@ Invalidation:
 
 **Implementation order:**
 1. `src/realm-index/types.ts` — `RealmIndexEntry`, `ReverseRef`, `EntityKey`, per-kind summary types.
-2. `src/realm-index/build.ts` — pure realm scanner taking a `PaicClient`. Concurrency-bounded (matches `src/paic/concurrency.ts`).
+2. `src/realm-index/build.ts` — pure realm scanner taking a `PaicClient`. Concurrency-bounded via one per-build `makeLimiter(10)` shared across all phases (see "Build concurrency" above).
 3. `src/realm-index/cache.ts` — `{host, realm}` → entry map; `dropOne(host, realm)`, `dropAllForHost(host)`, `registry.onDidChange` subscription.
 4. `src/realm-index/queries.ts` — pure functions over a `RealmIndexEntry`: `findUsages`, `searchByName`, `findUnused`.
 5. New webview surface under `src/webview/search/` — its own bundle (mirrors D34's connection-form structure).

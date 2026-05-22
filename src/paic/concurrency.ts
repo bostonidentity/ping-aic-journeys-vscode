@@ -29,3 +29,53 @@ export async function mapConcurrent<T, R>(
   await Promise.all(workers);
   return results;
 }
+
+/**
+ * A shared concurrency limiter. Unlike `mapConcurrent` — which caps its
+ * OWN pool per call — a `Limiter` caps total in-flight across every
+ * `run()` call made against the same instance. Use it for multi-phase
+ * walks where fan-out points nest: a single limiter threaded through all
+ * phases keeps total concurrency at exactly `n` instead of letting nested
+ * `mapConcurrent` calls multiply (see `docs/lessons.md` 2026-05-19).
+ *
+ * Each limiter is an independent instance — callers create their own per
+ * logical operation; instances never share state (preserves D21's
+ * three-independent-subsystems isolation).
+ */
+export interface Limiter {
+  /** Run `task` once a concurrency slot is free. Resolves / rejects with
+   * the task's result; a rejection frees the slot just like a success. */
+  run<T>(task: () => Promise<T>): Promise<T>;
+}
+
+export function makeLimiter(n: number): Limiter {
+  if (n < 1) throw new Error(`makeLimiter: concurrency must be >= 1, got ${n}`);
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  function pump(): void {
+    while (active < n && queue.length > 0) {
+      const start = queue.shift();
+      if (start) {
+        active++;
+        start();
+      }
+    }
+  }
+
+  return {
+    run<T>(task: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        queue.push(() => {
+          task()
+            .then(resolve, reject)
+            .finally(() => {
+              active--;
+              pump();
+            });
+        });
+        pump();
+      });
+    },
+  };
+}

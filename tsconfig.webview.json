@@ -17,6 +17,7 @@
   "include": [
     "src/webview/**/*",
     "tests/webview/inspector/ui/**/*",
-    "tests/webview/connection-form/ui/**/*"
+    "tests/webview/connection-form/ui/**/*",
+    "tests/webview/search/ui/**/*"
   ]
 }

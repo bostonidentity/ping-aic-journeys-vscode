@@ -1,5 +1,5 @@
 import type { ResolvedNode } from "../../../../domain/resolved-graph";
-import type { NodeRef, SelectPayload } from "../../../messages";
+import type { NodeRef, SelectPayload, W2E } from "../../../messages";
 import { ResolvedView, type ResolveState } from "./ResolvedView";
 
 export interface ScriptCardDeps {
@@ -19,6 +19,7 @@ interface Props {
   onRefresh: () => void;
   onPreviewResolved: (node: ResolvedNode) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
+  onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
 export function ScriptCard({
@@ -30,6 +31,7 @@ export function ScriptCard({
   onRefresh,
   onPreviewResolved,
   onOpenBody,
+  onFindUsages,
 }: Props) {
   const { scriptId, host, realmName, script } = payload;
   return (
@@ -100,15 +102,35 @@ export function ScriptCard({
           </>
         )}
       </dl>
-      {onOpenBody ? (
+      {onOpenBody || onFindUsages ? (
         <div className="card-actions">
-          <button
-            type="button"
-            className="primary"
-            onClick={() => onOpenBody(host, realmName, scriptId, script?.language)}
-          >
-            Open body in editor
-          </button>
+          {onOpenBody ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => onOpenBody(host, realmName, scriptId, script?.language)}
+            >
+              Open body in editor
+            </button>
+          ) : null}
+          {onFindUsages ? (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                onFindUsages({
+                  type: "findUsages",
+                  host,
+                  realm: realmName,
+                  kind: "script",
+                  id: scriptId,
+                  displayName: script?.name ?? scriptId,
+                })
+              }
+            >
+              🔍 Find usages
+            </button>
+          ) : null}
         </div>
       ) : null}
       <ResolvedView

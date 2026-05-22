@@ -1,11 +1,12 @@
 import type { Theme } from "../../../../domain/types";
-import type { SelectPayload } from "../../../messages";
+import type { SelectPayload, W2E } from "../../../messages";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "theme" }>;
+  onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
-export function ThemeCard({ payload }: Props) {
+export function ThemeCard({ payload, onFindUsages }: Props) {
   const { themeId, host, realmName, theme } = payload;
   const heading = theme?.name || themeId;
   return (
@@ -32,6 +33,26 @@ export function ThemeCard({ payload }: Props) {
         <LinkedTrees ids={theme.linkedTrees} />
       ) : null}
       {theme ? null : <p className="hint">Theme resolution failed; showing id only.</p>}
+      {onFindUsages ? (
+        <div className="card-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() =>
+              onFindUsages({
+                type: "findUsages",
+                host,
+                realm: realmName,
+                kind: "theme",
+                id: themeId,
+                displayName: theme?.name ?? themeId,
+              })
+            }
+          >
+            🔍 Find usages
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }

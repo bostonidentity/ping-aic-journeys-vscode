@@ -63,6 +63,16 @@
         "command": "paicJourneys.diffScriptAcrossConnections",
         "title": "Diff with Another Connection…",
         "icon": "$(diff)"
+      },
+      {
+        "command": "paicJourneys.openSearch",
+        "title": "PAIC: Search…",
+        "icon": "$(search)"
+      },
+      {
+        "command": "paicJourneys.findUsages",
+        "title": "PAIC: Find Usages…",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -78,6 +88,10 @@
         {
           "command": "paicJourneys.diffScriptAcrossConnections",
           "when": "false"
+        },
+        {
+          "command": "paicJourneys.findUsages",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -87,9 +101,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "paicJourneys.refresh",
+          "command": "paicJourneys.openSearch",
           "when": "view == paicJourneys.connections",
           "group": "navigation@2"
+        },
+        {
+          "command": "paicJourneys.refresh",
+          "when": "view == paicJourneys.connections",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -132,6 +151,16 @@
           "command": "paicJourneys.removeConnection",
           "when": "view == paicJourneys.connections && viewItem == connection",
           "group": "9@1"
+        },
+        {
+          "command": "paicJourneys.openSearch",
+          "when": "view == paicJourneys.connections && viewItem == connection",
+          "group": "1@2"
+        },
+        {
+          "command": "paicJourneys.openSearch",
+          "when": "view == paicJourneys.connections && viewItem == realm",
+          "group": "1@1"
         }
       ]
     },
@@ -182,11 +211,13 @@
     "build:ext": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs",
     "build:webview": "esbuild src/webview/inspector/ui/main.tsx --bundle --outfile=out/webview.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
     "build:connection-form": "esbuild src/webview/connection-form/ui/main.tsx --bundle --outfile=out/connection-form.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
+    "build:search": "esbuild src/webview/search/ui/main.tsx --bundle --outfile=out/search.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
     "build:codicons": "mkdir -p out && cp node_modules/@vscode/codicons/dist/codicon.css out/codicon.css && cp node_modules/@vscode/codicons/dist/codicon.ttf out/codicon.ttf",
-    "build": "npm run build:ext && npm run build:webview && npm run build:connection-form && npm run build:codicons",
+    "build": "npm run build:ext && npm run build:webview && npm run build:connection-form && npm run build:search && npm run build:codicons",
     "watch": "npm run build:ext -- --watch",
     "watch:webview": "npm run build:webview -- --watch",
     "watch:connection-form": "npm run build:connection-form -- --watch",
+    "watch:search": "npm run build:search -- --watch",
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.webview.json --noEmit",

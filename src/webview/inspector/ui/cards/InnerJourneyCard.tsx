@@ -1,5 +1,5 @@
 import type { ResolvedNode } from "../../../../domain/resolved-graph";
-import type { SelectPayload } from "../../../messages";
+import type { SelectPayload, W2E } from "../../../messages";
 import { JourneyDiagram } from "../diagram/JourneyDiagram";
 import { DepsBlock, type JourneyCardDeps, JourneyFlags } from "./JourneyCard";
 import { ResolvedView, type ResolveState } from "./ResolvedView";
@@ -12,6 +12,7 @@ interface Props {
   onResolve: () => void;
   onRefresh: () => void;
   onPreviewResolved: (node: ResolvedNode) => void;
+  onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
 export function InnerJourneyCard({
@@ -22,6 +23,7 @@ export function InnerJourneyCard({
   onResolve,
   onRefresh,
   onPreviewResolved,
+  onFindUsages,
 }: Props) {
   const { journey, realmName, host, visited } = payload;
   const nodeCount = Object.keys(journey.nodes).length;
@@ -68,6 +70,26 @@ export function InnerJourneyCard({
           </>
         ) : null}
       </dl>
+      {onFindUsages ? (
+        <div className="card-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() =>
+              onFindUsages({
+                type: "findUsages",
+                host,
+                realm: realmName,
+                kind: "journey",
+                id: journey.id,
+                displayName: journey.id,
+              })
+            }
+          >
+            🔍 Find usages
+          </button>
+        </div>
+      ) : null}
       {deps?.nodeIndex && nodeCount > 0 ? (
         <JourneyDiagram journey={journey} nodeIndex={deps.nodeIndex} onPreview={onPreview} />
       ) : null}
