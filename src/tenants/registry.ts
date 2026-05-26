@@ -105,13 +105,17 @@ export function makeTenantsRegistry(deps: TenantsRegistryDeps, log: Logger): Ten
 export function makeProductionDeps(context: vscode.ExtensionContext): TenantsRegistryDeps {
   return {
     config: {
-      get: () => vscode.workspace.getConfiguration().get<Connection[]>(SETTINGS_KEY, []),
-      set: (value) => {
-        const target = vscode.workspace.workspaceFolders
-          ? vscode.ConfigurationTarget.Workspace
-          : vscode.ConfigurationTarget.Global;
-        return vscode.workspace.getConfiguration().update(SETTINGS_KEY, value, target);
-      },
+      // Connections are per-user credentials, never per-project. Read and write
+      // Global only — workspace-level entries (whether from an old version of
+      // this extension or a hand-edit) are deliberately ignored. The setting
+      // is also declared with `"scope": "application"` in package.json so VS
+      // Code itself refuses workspace overrides.
+      get: () =>
+        vscode.workspace.getConfiguration().inspect<Connection[]>(SETTINGS_KEY)?.globalValue ?? [],
+      set: (value) =>
+        vscode.workspace
+          .getConfiguration()
+          .update(SETTINGS_KEY, value, vscode.ConfigurationTarget.Global),
     },
     secrets: context.secrets,
   };

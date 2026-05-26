@@ -196,8 +196,9 @@
       "properties": {
         "paicJourneys.connections": {
           "type": "array",
+          "scope": "application",
           "default": [],
-          "description": "PAIC connections. Secret (saJwk) is stored in SecretStorage, not here.",
+          "description": "PAIC connections (per-user). Secret (saJwk) is stored in SecretStorage, not here. Application-scoped: workspace-level overrides are ignored by VS Code.",
           "items": {
             "type": "object",
             "properties": {
