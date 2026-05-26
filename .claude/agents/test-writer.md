@@ -17,7 +17,7 @@ Generate tests for code that lacks coverage. Match existing test patterns in the
 
 ## Do not
 
-- Add tests that hit a live PAIC tenant in the default test run. Live tests are gated behind `PINGPAIC_LIVE=1`.
+- Add tests that hit a live PAIC tenant in the default test run. Live tests are gated behind `PAIC_LIVE=1`.
 - Mock so aggressively that you're testing the mocks. Mock `axios` at the boundary; let the rest of the PAIC client run normally.
 - Write tests that depend on wall-clock time, real network, or a specific OS. Use `vi.useFakeTimers()` for retry/backoff tests.
 - Test private implementation details that will churn (e.g. exact log message text).

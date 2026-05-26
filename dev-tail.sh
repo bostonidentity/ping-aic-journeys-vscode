@@ -23,8 +23,8 @@ esac
 # Linux:  ~/.config/Code/User/globalStorage/<publisher>.<ext>/logs/...
 # macOS:  ~/Library/Application Support/Code/User/globalStorage/<publisher>.<ext>/logs/...
 NDJSON_PATHS=(
-  "$HOME/.config/Code/User/globalStorage/boston-identity.ping-paic-journeys/logs/paic-journeys.ndjson"
-  "$HOME/Library/Application Support/Code/User/globalStorage/boston-identity.ping-paic-journeys/logs/paic-journeys.ndjson"
+  "$HOME/.config/Code/User/globalStorage/bostonidentity.ping-aic-journeys/logs/paic-journeys.ndjson"
+  "$HOME/Library/Application Support/Code/User/globalStorage/bostonidentity.ping-aic-journeys/logs/paic-journeys.ndjson"
 )
 
 if [ "$MODE" = "ndjson" ] || [ "$MODE" = "pretty" ]; then

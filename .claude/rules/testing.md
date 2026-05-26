@@ -18,9 +18,9 @@
 
 ## Live-tenant tests
 
-- Live PAIC calls gated behind `PINGPAIC_LIVE=1` env var. Default `npm test` and `npm run test:fast` never hit a live tenant.
+- Live PAIC calls gated behind `PAIC_LIVE=1` env var. Default `npm test` and `npm run test:fast` never hit a live tenant.
 - Credentials for live tests come from `~/.pctl/connections.json` (a sibling CLI's profile store) or from the user's VS Code-stored connection. Never check credential files into this repo.
-- Live tests live in `tests/integration/live.integration.test.ts` and skip themselves with `describe.skipIf(!process.env.PINGPAIC_LIVE)`.
+- Live tests live in `tests/integration/live.integration.test.ts` and skip themselves with `describe.skipIf(!process.env.PAIC_LIVE)`.
 
 ## Practices
 

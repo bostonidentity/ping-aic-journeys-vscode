@@ -45,8 +45,8 @@ VS Code Extension API (Node.js extension host) | TypeScript | `esbuild` bundling
 3. In the EDH window, click the PAIC Journeys icon (a `type-hierarchy` tree glyph) in the activity bar → PAIC Journeys sidebar.
 4. After code changes: `npm run build` (or keep `npm run watch` running), then `Cmd+R` in the EDH window to reload.
 5. Logs land in (platform-specific):
-   - Linux: `~/.config/Code/logs/<session>/window<N>/exthost/boston-identity.ping-paic-journeys/PAIC Journeys.log`
-   - macOS: `~/Library/Application Support/Code/logs/<session>/window<N>/exthost/boston-identity.ping-paic-journeys/PAIC Journeys.log`
+   - Linux: `~/.config/Code/logs/<session>/window<N>/exthost/bostonidentity.ping-aic-journeys/PAIC Journeys.log`
+   - macOS: `~/Library/Application Support/Code/logs/<session>/window<N>/exthost/bostonidentity.ping-aic-journeys/PAIC Journeys.log`
 
    Use `./dev-tail.sh` to follow the latest one in a terminal (auto-detects platform).
 
@@ -83,6 +83,6 @@ All detailed rules live in `.claude/rules/` (auto-loaded each session):
 
 ## Sibling extensions (for cross-reference)
 
-- `~/BostonIdentity/ping-paic-logs-vscode/` — log search/tail; same `settings.json + SecretStorage` pattern, different domain. Good reference for `TreeDataProvider`, env editor wizard, panel webview lifecycle.
+- `~/BostonIdentity/ping-aic-logs-vscode/` — log search/tail; same `settings.json + SecretStorage` pattern, different domain. Good reference for `TreeDataProvider`, env editor wizard, panel webview lifecycle.
 - `~/BostonIdentity/ssh-fleet-vscode/` — multi-server SSH. Reference for hierarchical tree provider + YAML config + state management.
 - `~/BostonIdentity/PingHub/paic-pipeline/` — the Next.js full-stack tool with the most mature journey viewer/diff today. Read-write peer to our read-only extension; we don't share code, but we hit the same PAIC REST endpoints.

@@ -7,7 +7,16 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!node_modules", "!out", "!coverage", "!tests/fixtures", "!poc", "!ref"]
+    "includes": [
+      "**",
+      "!node_modules",
+      "!out",
+      "!coverage",
+      "!tests/fixtures",
+      "!poc",
+      "!ref",
+      "!.claude"
+    ]
   },
   "formatter": {
     "enabled": true,

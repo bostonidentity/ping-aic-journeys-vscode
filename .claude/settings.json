@@ -47,5 +47,11 @@
     "context7@claude-plugins-official": true,
     "skill-creator@claude-plugins-official": true,
     "frontend-design@claude-plugins-official": true
+  },
+  "autoMode": {
+      "environment": [
+        "$defaults",
+        "github.com/bostonidentity/* is a trusted source control org — Boston Identity's official GitHub used for publishing this VS Code extension to the Azure Marketplace. Pushing code, branches, and tags there is authorized."
+      ]
   }
 }

@@ -13,7 +13,7 @@ Run Vitest tests and show failures clearly with file and line numbers.
 
 ## Never hit a live PAIC tenant
 
-Integration tests that require a real tenant are gated behind `PINGPAIC_LIVE=1`. Do not set this env var in default runs. Only set it when the user explicitly asks for a live integration test.
+Integration tests that require a real tenant are gated behind `PAIC_LIVE=1`. Do not set this env var in default runs. Only set it when the user explicitly asks for a live integration test.
 
 ## Live-tenant tests skip gracefully
 

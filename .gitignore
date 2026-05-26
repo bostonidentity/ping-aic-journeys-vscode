@@ -147,3 +147,6 @@ ref/
 
 # POC scratch space — live-tenant captures, exploratory scripts, never committed
 poc/
+
+# vsce-built extension packages — produced locally, uploaded to marketplace, not committed
+*.vsix

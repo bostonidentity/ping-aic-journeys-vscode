@@ -1,0 +1,49 @@
+# vsce package bundles everything in the working tree EXCEPT what's listed here.
+# Goal: ship out/ + media/ + package.json + README + CHANGELOG + LICENSE. Nothing else.
+
+# --- Source (we ship the bundled out/ artifacts, not the TS) ---
+src/**
+tsconfig.json
+tsconfig.webview.json
+
+# --- Tests and dev tooling ---
+tests/**
+**/*.test.ts
+**/*.test.tsx
+vitest.config.ts
+biome.json
+.biomeignore
+
+# --- Project docs, agent files, scratch dirs ---
+.claude/**
+docs/**
+poc/**
+ref/**
+CLAUDE.md
+dev-tail.sh
+
+# --- VCS and editor metadata ---
+.git/**
+.gitignore
+.gitattributes
+.vscode/**
+.vscode-test/**
+
+# --- Build / dependency caches (npm pack would skip most of these anyway, but be explicit) ---
+node_modules/**
+package-lock.json
+*.tsbuildinfo
+.npm/
+
+# --- Logs, env, OS junk ---
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# --- The icon source (only the PNG ships) ---
+media/icon.svg
+
+# --- Don't recursively bundle the .vsix we just built ---
+*.vsix
