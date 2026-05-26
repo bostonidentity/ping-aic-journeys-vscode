@@ -191,7 +191,7 @@ export class InspectorTab implements vscode.Disposable {
       );
       this.resolveReady();
     }, READY_TIMEOUT_MS);
-    this.webviewReady.then(() => clearTimeout(readyTimeout));
+    void this.webviewReady.then(() => clearTimeout(readyTimeout));
     const extensionUri = deps.context.extensionUri;
     this.panel = vscode.window.createWebviewPanel(
       "paicJourneys.inspector",
@@ -223,7 +223,7 @@ export class InspectorTab implements vscode.Disposable {
     this.deps.registerNode(node);
     const payload = await buildSelectPayload(node, this.deps.cache, this.childLog);
     if (!payload) return;
-    this.post({ type: "select", payload });
+    await this.post({ type: "select", payload });
 
     if (node instanceof JourneyNode || node instanceof InnerJourneyNode) {
       await this.sendJourneyDeps(node);
@@ -280,7 +280,7 @@ export class InspectorTab implements vscode.Disposable {
           });
         }
       }
-      this.post({
+      await this.post({
         type: "journeyDeps",
         uid: node.uid,
         scripts,
@@ -296,7 +296,7 @@ export class InspectorTab implements vscode.Disposable {
         { event: "tab.depsFailed", uid: node.uid, message },
         "Journey dep fetch failed",
       );
-      this.post({ type: "error", uid: node.uid, message });
+      await this.post({ type: "error", uid: node.uid, message });
     }
   }
 
@@ -320,14 +320,14 @@ export class InspectorTab implements vscode.Disposable {
           });
         }
       }
-      this.post({ type: "scriptDeps", uid: node.uid, libraryScripts, esvs });
+      await this.post({ type: "scriptDeps", uid: node.uid, libraryScripts, esvs });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.childLog.error(
         { event: "tab.scriptDepsFailed", uid: node.uid, message },
         "Script dep fetch failed",
       );
-      this.post({ type: "error", uid: node.uid, message });
+      await this.post({ type: "error", uid: node.uid, message });
     }
   }
 
@@ -481,14 +481,14 @@ export class InspectorTab implements vscode.Disposable {
         client,
         log: this.childLog,
       });
-      this.post({ type: "resolveResult", ok: true, graph });
+      await this.post({ type: "resolveResult", ok: true, graph });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.childLog.warn(
         { event: "tab.resolveFull.failed", uid: this.node.uid, message },
         "Forward-dep resolve failed",
       );
-      this.post({ type: "resolveResult", ok: false, message });
+      await this.post({ type: "resolveResult", ok: false, message });
     }
   }
 }

@@ -150,3 +150,7 @@ poc/
 
 # vsce-built extension packages — produced locally, uploaded to marketplace, not committed
 *.vsix
+
+# Per-user VS Code settings — may contain real tenant hosts / saIds for local dev.
+# launch.json and tasks.json are still tracked (shared dev config).
+.vscode/settings.json
