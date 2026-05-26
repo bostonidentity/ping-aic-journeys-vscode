@@ -17,6 +17,12 @@ import { SocialIdpNode } from "../../views/nodes/social-idp";
 import { ThemeNode } from "../../views/nodes/theme";
 import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../messages";
 
+/** How long to wait for the webview's `ready` handshake before flushing any
+ * queued `post()` calls anyway. Long enough to survive RDP-class IPC stalls;
+ * short enough that a genuinely broken webview doesn't leave the inspector
+ * silently stuck. */
+const READY_TIMEOUT_MS = 5000;
+
 export interface InspectorFactoryDeps {
   context: vscode.ExtensionContext;
   cache: ClientCache;
@@ -161,6 +167,11 @@ interface InspectorTabDeps {
 export class InspectorTab implements vscode.Disposable {
   private readonly panel: vscode.WebviewPanel;
   private readonly childLog: Logger;
+  /** Resolves once the webview posts `{ type: "ready" }` (or 5s elapses).
+   * Every `post()` awaits this gate so the first `select` can't race the
+   * React mount on slow IPC (RDP). See lesson 2026-05-26. */
+  private readonly webviewReady: Promise<void>;
+  private resolveReady!: () => void;
   /** Resolves once the initial render + deps fetch complete. Useful for
    * tests; in production code nothing needs to await it. */
   readonly ready: Promise<void>;
@@ -170,6 +181,17 @@ export class InspectorTab implements vscode.Disposable {
     private readonly node: PaicNode,
   ) {
     this.childLog = deps.log.child({ component: "webview.inspector.tab" });
+    this.webviewReady = new Promise<void>((resolve) => {
+      this.resolveReady = resolve;
+    });
+    const readyTimeout = setTimeout(() => {
+      this.childLog.warn(
+        { event: "tab.readyTimeout", uid: node.uid },
+        "Webview did not signal ready within 5s — flushing pending messages anyway",
+      );
+      this.resolveReady();
+    }, READY_TIMEOUT_MS);
+    this.webviewReady.then(() => clearTimeout(readyTimeout));
     const extensionUri = deps.context.extensionUri;
     this.panel = vscode.window.createWebviewPanel(
       "paicJourneys.inspector",
@@ -344,7 +366,8 @@ export class InspectorTab implements vscode.Disposable {
 </html>`;
   }
 
-  private post(msg: E2W): void {
+  private async post(msg: E2W): Promise<void> {
+    await this.webviewReady;
     this.panel.webview.postMessage(msg);
   }
 
@@ -353,6 +376,7 @@ export class InspectorTab implements vscode.Disposable {
     const m = msg as W2E;
     if (m.type === "ready") {
       this.childLog.debug({ event: "tab.ready" }, "Inspector tab webview ready");
+      this.resolveReady();
       return;
     }
     if (m.type === "previewNode") {

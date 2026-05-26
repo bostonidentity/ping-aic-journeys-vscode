@@ -53,6 +53,18 @@ const flush = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 };
 
+/** Simulate the webview signaling React-mounted by firing `{ type: "ready" }`
+ * on every panel created so far. Production webviews fire this from
+ * `webview/inspector/ui/main.tsx`; tests have to do it manually because the
+ * mock webview never runs the React bundle. The extension gates outbound
+ * `post()` calls on this handshake (see lesson 2026-05-26), so without it
+ * `await tab.ready` would hang for `READY_TIMEOUT_MS`. */
+function fireReadyOnAll(state: VscodeMockState): void {
+  for (const p of state.createdPanels) {
+    p.webview.__fireReceive({ type: "ready" });
+  }
+}
+
 describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
   it("spawn() creates a fresh WebviewPanel on each call — no reuse", async () => {
     const state = await getVscodeMockState();
@@ -85,6 +97,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new ConnectionNode(CONN, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
@@ -127,6 +140,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
@@ -181,6 +195,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
@@ -230,6 +245,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
     // After the journey tab renders, its ScriptNode child is registered.
     expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
@@ -239,6 +255,10 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
       type: "previewNode",
       uid: "script:h.example.com:alpha:s-1",
     });
+    await flush();
+    // The script preview tab is a fresh panel — fire its ready handshake
+    // so its initial `select` post can drain.
+    fireReadyOnAll(state);
     await flush();
 
     // A second panel was created for the script preview.
@@ -267,6 +287,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new ConnectionNode(CONN, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
     expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
 
@@ -309,6 +330,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new ScriptNode("h.example.com", "alpha", "s-1", cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
@@ -370,6 +392,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
@@ -445,6 +468,7 @@ describe("InspectorFactory.spawn — per-click new tab (D24)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
 
     const post = state.createdPanels[0].webview.postMessage;
@@ -543,6 +567,7 @@ describe("InspectorTab.onMessage — resolveFull (D35)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
     state.createdPanels[0].webview.__fireReceive({ type: "resolveFull" });
     await flush();
@@ -587,6 +612,7 @@ describe("InspectorTab.onMessage — resolveFull (D35)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
     state.createdPanels[0].webview.__fireReceive({ type: "resolveFull" });
     await flush();
@@ -613,6 +639,7 @@ describe("InspectorTab.onMessage — resolveFull (D35)", () => {
     const node = new ConnectionNode(CONN, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
     state.createdPanels[0].webview.__fireReceive({ type: "resolveFull" });
     await flush();
@@ -674,6 +701,7 @@ describe("InspectorTab.onMessage — resolveFull (D35)", () => {
     const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
 
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
     state.createdPanels[0].webview.__fireReceive({ type: "refreshResolved" });
     await flush();
@@ -716,6 +744,7 @@ describe("InspectorFactory.spawnByDescriptor — M5 Slice 2 refactor", () => {
       id: "s-1",
       displayName: "validator",
     });
+    fireReadyOnAll(state);
     await tab?.ready;
     expect(state.createWebviewPanel).toHaveBeenCalledTimes(1);
 
@@ -745,7 +774,7 @@ describe("InspectorFactory.spawnByDescriptor — M5 Slice 2 refactor", () => {
       "socialIdp",
       "journey",
     ];
-    await Promise.all(
+    const tabs = await Promise.all(
       kinds.map((kind) =>
         factory.spawnByDescriptor("h.example.com", "alpha", {
           kind,
@@ -754,6 +783,8 @@ describe("InspectorFactory.spawnByDescriptor — M5 Slice 2 refactor", () => {
         }),
       ),
     );
+    fireReadyOnAll(state);
+    await Promise.all(tabs.map((t) => t?.ready));
     expect(state.createWebviewPanel).toHaveBeenCalledTimes(kinds.length);
   });
 });
@@ -778,6 +809,7 @@ describe("InspectorTab.onMessage — findUsages (M5 Slice 3)", () => {
 
     const node = new ConnectionNode(CONN, cache, makeFakeLogger());
     const tab = factory.spawn(node);
+    fireReadyOnAll(state);
     await tab.ready;
 
     const panel = state.createdPanels[0];
@@ -803,5 +835,140 @@ describe("InspectorTab.onMessage — findUsages (M5 Slice 3)", () => {
         isLibrary: true,
       }),
     );
+  });
+});
+
+/**
+ * Handshake gate (lesson 2026-05-26). The webview signals `{ type: "ready" }`
+ * once React has mounted and attached its `message` listener; the extension
+ * gates every outbound `post()` on that signal so the first `select` cannot
+ * race the React mount on slow IPC (RDP). The tests below pin the gate's
+ * three contracts: messages buffer before ready, drain in order on ready,
+ * and a hung webview eventually drains via the 5s timeout fallback.
+ */
+describe("InspectorTab — ready-handshake gate", () => {
+  it("buffers post() until the webview signals ready (no postMessage before the handshake)", async () => {
+    const state = await getVscodeMockState();
+    const cache = makeFakeCache(makeFakePaicClient({}));
+    const log = makeFakeLogger();
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
+    const node = new ConnectionNode(CONN, cache, log);
+
+    factory.spawn(node);
+    // Drain microtasks — render()'s `buildSelectPayload` resolves
+    // synchronously for a ConnectionNode, so without the gate, postMessage
+    // would have been called by now. With the gate, it must NOT have been.
+    await flush();
+    const post = state.createdPanels[0].webview.postMessage;
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("flushes the buffered select message once the webview signals ready", async () => {
+    const state = await getVscodeMockState();
+    const cache = makeFakeCache(makeFakePaicClient({}));
+    const log = makeFakeLogger();
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
+    const node = new ConnectionNode(CONN, cache, log);
+
+    const tab = factory.spawn(node);
+    await flush();
+    const post = state.createdPanels[0].webview.postMessage;
+    expect(post).not.toHaveBeenCalled();
+
+    fireReadyOnAll(state);
+    await tab.ready;
+
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "select",
+        payload: expect.objectContaining({ kind: "connection" }),
+      }),
+    );
+  });
+
+  it("preserves message order across the gate (select before journeyDeps)", async () => {
+    const state = await getVscodeMockState();
+    const journey: Journey = {
+      id: "Login",
+      enabled: true,
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "ScriptedDecisionNode", connections: {} } },
+    };
+    const client = makeFakePaicClient({
+      nodesByKey: {
+        "alpha:ScriptedDecisionNode:n1": {
+          id: "n1",
+          nodeType: "ScriptedDecisionNode",
+          scriptId: "s-1",
+          outcomes: [],
+          inputs: [],
+          outputs: [],
+        },
+      },
+    });
+    const cache = makeFakeCache(client);
+    const log = makeFakeLogger();
+    const factory = new InspectorFactory({
+      context: makeMockContext(),
+      cache,
+      resolverCache: makeFakeResolverCache(),
+      log,
+    });
+    const node = new JourneyNode("h.example.com", "alpha", journey, cache, log);
+
+    const tab = factory.spawn(node);
+    // Give render() time to enqueue both select and journeyDeps behind the gate.
+    await flush();
+    fireReadyOnAll(state);
+    await tab.ready;
+
+    const post = state.createdPanels[0].webview.postMessage;
+    const types = post.mock.calls.map((c: unknown[]) => (c[0] as { type: string }).type);
+    expect(types).toEqual(["select", "journeyDeps"]);
+  });
+
+  it("falls back to flushing after READY_TIMEOUT_MS when the webview never signals ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = await getVscodeMockState();
+      const cache = makeFakeCache(makeFakePaicClient({}));
+      const log = makeFakeLogger();
+      const factory = new InspectorFactory({
+        context: makeMockContext(),
+        cache,
+        resolverCache: makeFakeResolverCache(),
+        log,
+      });
+      const node = new ConnectionNode(CONN, cache, log);
+
+      const tab = factory.spawn(node);
+      // Drain any synchronous render setup BEFORE we advance the timer.
+      await vi.advanceTimersByTimeAsync(0);
+      const post = state.createdPanels[0].webview.postMessage;
+      expect(post).not.toHaveBeenCalled();
+
+      // Trip the 5s safety net — every queued post() should now resolve.
+      await vi.advanceTimersByTimeAsync(5000);
+      await tab.ready;
+
+      expect(post).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "select",
+          payload: expect.objectContaining({ kind: "connection" }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
