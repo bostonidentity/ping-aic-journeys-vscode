@@ -43,12 +43,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const channel = vscode.window.createOutputChannel("PAIC Journeys", { log: true });
   context.subscriptions.push(channel);
 
+  // All paicJourneys.* settings are user-only (declared "scope": "application"
+  // in package.json). Read globalValue explicitly so that any stale or
+  // hand-edited workspace entry is deliberately ignored, matching the
+  // behavior VS Code itself enforces for application-scoped settings.
   const cfg = vscode.workspace.getConfiguration();
+  const level = cfg.inspect<Level>(LOG_LEVEL_SETTING)?.globalValue ?? "info";
+  const fileEnabled = cfg.inspect<boolean>(LOG_FILE_ENABLED_SETTING)?.globalValue ?? true;
   log = makeLogger({
     storageUri: context.globalStorageUri,
     version: (context.extension.packageJSON as { version: string }).version,
-    level: cfg.get<Level>(LOG_LEVEL_SETTING, "info"),
-    fileEnabled: cfg.get<boolean>(LOG_FILE_ENABLED_SETTING, true),
+    level,
+    fileEnabled,
     channel,
   });
   log.info({ event: "extension.activated" }, "Extension activated");

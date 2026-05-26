@@ -216,6 +216,7 @@
         },
         "paicJourneys.logging.level": {
           "type": "string",
+          "scope": "application",
           "enum": [
             "fatal",
             "error",
@@ -225,12 +226,13 @@
             "trace"
           ],
           "default": "info",
-          "description": "Minimum log level emitted by the extension."
+          "description": "Minimum log level emitted by the extension. Per-user (application-scoped): workspace-level overrides are ignored."
         },
         "paicJourneys.logging.fileEnabled": {
           "type": "boolean",
+          "scope": "application",
           "default": true,
-          "description": "Write structured NDJSON logs to globalStorageUri/logs/paic-journeys.ndjson for log shippers (Vector, Filebeat, Promtail, etc.). The VS Code Output panel always reflects logs regardless of this setting."
+          "description": "Write structured NDJSON logs to globalStorageUri/logs/paic-journeys.ndjson for log shippers (Vector, Filebeat, Promtail, etc.). The VS Code Output panel always reflects logs regardless of this setting. Per-user (application-scoped): workspace-level overrides are ignored."
         }
       }
     }
