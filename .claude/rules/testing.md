@@ -21,6 +21,7 @@
 - Live PAIC calls gated behind `PAIC_LIVE=1` env var. Default `npm test` and `npm run test:fast` never hit a live tenant.
 - Credentials for live tests come from `~/.pctl/connections.json` (a sibling CLI's profile store) or from the user's VS Code-stored connection. Never check credential files into this repo.
 - Live tests live in `tests/integration/live.integration.test.ts` and skip themselves with `describe.skipIf(!process.env.PAIC_LIVE)`.
+- **On-prem AM live suite** (M8): `tests/integration/onprem-live.integration.test.ts`, also gated by `PAIC_LIVE=1`. Requires the `poc/onprem-am/` bed up **and seeded** (`vagrant up` → `configure-am.sh` → `seed-sample-journeys.sh`). Coordinates default to the throwaway VM's synthetic values (`openam.bipoc.net`, `amadmin`/`password`) and are overridable via `ONPREM_AM_HOST` / `ONPREM_AM_USER` / `ONPREM_AM_PASSWORD`. Run with `PAIC_LIVE=1 npm test`.
 
 ## Practices
 

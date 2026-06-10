@@ -3,7 +3,7 @@ import type { Connection, Journey, Realm } from "@/domain/types";
 import { type E2W, isE2W, isW2E, type SelectPayload, type W2E } from "@/webview/messages";
 
 const REALM: Realm = { name: "alpha", active: true, parentPath: "/", isRoot: false };
-const CONN: Connection = { host: "h.example.com", saId: "sa-1" };
+const CONN: Connection = { kind: "paic", host: "h.example.com", saId: "sa-1" };
 const JOURNEY: Journey = { id: "Login", enabled: true, entryNodeId: "e", nodes: {} };
 
 describe("messages protocol", () => {

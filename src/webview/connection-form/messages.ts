@@ -8,18 +8,16 @@
  * page via `data-paic-payload` on the mount div — no init message needed.
  */
 
-export interface ConnectionFormData {
-  host: string;
-  saId: string;
-  name?: string;
-  jwk?: string;
-}
+/** Form payload, `kind`-discriminated (D41 Slice 4). PAIC carries the
+ * service-account id + JWK; on-prem carries the admin username + password. The
+ * secret (jwk/password) is optional in edit mode (blank keeps the existing). */
+export type ConnectionFormData =
+  | { kind: "paic"; host: string; saId: string; name?: string; jwk?: string }
+  | { kind: "onprem"; host: string; username: string; name?: string; password?: string };
 
-export interface ConnectionFormInitial {
-  host: string;
-  saId: string;
-  name?: string;
-}
+export type ConnectionFormInitial =
+  | { kind: "paic"; host: string; saId: string; name?: string }
+  | { kind: "onprem"; host: string; username: string; name?: string };
 
 export interface ConnectionFormPayload {
   mode: "add" | "edit";
@@ -37,8 +35,9 @@ export type E2W =
       type: "validateResult";
       requestId: number;
       ok: true;
-      expiresIn: number;
-      droppedScopes: string[];
+      // PAIC only — on-prem sessions carry no OAuth token TTL / scopes.
+      expiresIn?: number;
+      droppedScopes?: string[];
     }
   | { type: "validateResult"; requestId: number; ok: false; message: string };
 

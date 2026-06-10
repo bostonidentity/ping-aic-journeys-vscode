@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { Connection } from "../domain/types";
+import { type Connection, normalizeConnection } from "../domain/types";
 import type { Logger } from "../util/logger";
 
 const SETTINGS_KEY = "paicJourneys.connections";
@@ -49,7 +49,9 @@ export function makeTenantsRegistry(deps: TenantsRegistryDeps, log: Logger): Ten
   const secretKey = (host: string) => SECRET_PREFIX + host;
 
   const registry: TenantsRegistry = {
-    list: () => deps.config.get(),
+    // Normalize legacy configs (no `kind`) → paic at the read boundary so the
+    // rest of the code always sees a proper discriminated union (D41).
+    list: () => deps.config.get().map(normalizeConnection),
 
     async add(conn, jwk) {
       const current = deps.config.get();

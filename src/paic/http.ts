@@ -7,6 +7,7 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from "axios";
 import axiosRetry from "axios-retry";
+import type { AuthStrategy } from "../auth/strategy";
 import type { Logger } from "../util/logger";
 import { PaicError } from "./errors";
 
@@ -29,8 +30,10 @@ export interface HttpClient {
 export interface HttpClientOptions {
   host: string;
   log: Logger;
-  /** Returns a fresh Bearer token. `forceRefresh: true` means caller MUST re-mint. */
-  getToken: (opts?: { forceRefresh?: boolean }) => Promise<string>;
+  /** Produces the auth header(s) for each request (Bearer for PAIC, Cookie for
+   * on-prem AM). The transport merges them verbatim and never interprets the
+   * scheme. `forceRefresh` is the 401 self-heal signal. */
+  authStrategy: AuthStrategy;
   /** Per-request timeout (ms). Default 30_000. */
   timeoutMs?: number;
   /** Retry count for network errors / 5xx / 429. Default 3. */
@@ -45,9 +48,9 @@ interface RequestState {
   paicReqId?: string;
   paicStart?: number;
   paicRetried401?: boolean;
-  /** Set by the 401 handler so the next pass of the request interceptor
-   * skips its own getToken() call and uses this forced-refresh token. */
-  paicFreshToken?: string;
+  /** Set by the 401 handler so the retried pass calls the auth strategy with
+   * `forceRefresh`. The transport never holds the credential itself. */
+  paicForceAuthRefresh?: boolean;
 }
 
 type AnnotatedConfig = InternalAxiosRequestConfig & RequestState;
@@ -102,16 +105,16 @@ export function makeHttpClient(opts: HttpClientOptions): HttpClient {
 
   instance.interceptors.request.use(async (cfg: InternalAxiosRequestConfig) => {
     const config = cfg as AnnotatedConfig;
-    // On a 401-retry pass, the response interceptor has already minted a fresh
-    // token via getToken({forceRefresh}) and stashed it on the config. Use it
-    // verbatim — re-calling getToken() would be redundant and could mask the
-    // forced-refresh by returning the still-cached stale token.
-    const token = config.paicFreshToken ?? (await opts.getToken());
+    // On the 401-retry pass the response interceptor set paicForceAuthRefresh so
+    // the strategy discards its cached credential and produces a fresh one.
+    const authHeaders = await opts.authStrategy.getAuthHeaders(
+      config.paicForceAuthRefresh ? { forceRefresh: true } : undefined,
+    );
     const reqId = randomUUID();
 
     const headers =
       config.headers instanceof AxiosHeaders ? config.headers : new AxiosHeaders(config.headers);
-    headers.set("Authorization", `Bearer ${token}`);
+    for (const [name, value] of Object.entries(authHeaders)) headers.set(name, value);
     headers.set("X-ForgeRock-TransactionId", reqId);
     headers.set("Accept", "application/json");
 
@@ -145,15 +148,19 @@ export function makeHttpClient(opts: HttpClientOptions): HttpClient {
       const errCfg = (error as { config?: AnnotatedConfig })?.config;
       const status = (error as { response?: { status?: number } })?.response?.status;
 
-      // 401 → re-mint token once and retry the same request.
+      // 401 → refresh the credential once and retry the same request. Flag the
+      // config and re-dispatch; the request interceptor performs the forced
+      // refresh, keeping a single "produce auth headers" code path.
       if (status === 401 && errCfg && !errCfg.paicRetried401) {
         errCfg.paicRetried401 = true;
+        errCfg.paicForceAuthRefresh = true;
         log.warn(
           { event: "http.unauthorized", url: errCfg.url, req_id: errCfg.paicReqId },
-          "Token rejected — re-minting and retrying once",
+          "Auth rejected — refreshing credential and retrying once",
         );
-        errCfg.paicFreshToken = await opts.getToken({ forceRefresh: true });
-        return instance.request(errCfg);
+        // Await here (not bare return) so a failure on the retried request flows
+        // back through this handler's error path rather than escaping unwrapped.
+        return await instance.request(errCfg);
       }
 
       log.error(

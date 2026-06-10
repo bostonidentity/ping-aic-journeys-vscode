@@ -861,6 +861,43 @@ Also (UI parity, D39 family): the **Test Connection** button in the connection f
 4. `connection-form/ui/App.tsx` — Test Connection button `secondary` → `primary`.
 5. Tests — `ConnectionNode` icon reflects each status; store round-trip.
 
+### D41 — On-prem PingAM / ForgeRock AM support: extend in place behind an auth-strategy seam
+
+**Goal.** Point the same tool at a self-managed **on-prem PingAM / ForgeRock AM** host, not just PAIC cloud, and get the same journey dependency-graph functionality — browse realms, open journeys, resolve their transitive script / inner-journey / social-IdP tree.
+
+**Audit (2026-06-10, validated against a live AM 7.5.2 bed — `poc/onprem-am/`).** Probed every endpoint the journey code calls. They split three ways on-prem:
+- **Tier A — AM-native, byte-identical to PAIC:** realms (`global-config/realms`), journeys (`…/authenticationtrees/trees`), node payloads (`…/nodes/{type}/{id}`), scripts (by id + `_queryFilter=name eq`), social IdPs (`SocialIdentityProviders` `_action=nextdescendents`). Same URLs, same `Accept-API-Version`, same response shapes, same mappers. **Works on-prem unchanged.**
+- **Tier B — IDM (themes `/openidm/.../themerealm`, email templates `/openidm/.../emailTemplate`):** 404 — a standalone AM has no IDM webapp. PAIC bundles IDM; we don't.
+- **Tier C — IDC platform (ESVs `/environment/variables|secrets`):** 404 — a PAIC-cloud management API, no on-prem equivalent.
+- **Auth:** PAIC's `/am/oauth2/access_token` JWT-bearer flow 404s on-prem ("No OAuth2 provider"). On-prem auth is a **session token**: `POST /am/json/realms/root/authenticate` with `X-OpenAM-Username/Password` → `tokenId`, sent as a cookie (name discovered via `/am/json/serverinfo/*`).
+
+The resolver already treats Tier-B/C lookups as best-effort (miss → `null`, logged), so the core journey graph fully resolves on-prem — it just omits theme / email / ESV children. Full inventory + reproducible probe in `poc/onprem-am/ENDPOINT-AUDIT.md` + `audit-endpoints.sh`.
+
+**Rejected — a standalone `src/onprem/` module tree.** The audit shows the only real difference is **auth**; the entire data layer (client, mappers, realm-path, pagination, resolver walk) and every consumer (tree, inspector, search) are shared, identical code. A parallel tree would duplicate ~90% of the codebase to vary one seam — guaranteeing divergence and double-maintenance. Rejected.
+
+**Decision.** **Extend in place behind a single auth-strategy seam.** One shared client / resolver / UI, parameterized by `(authStrategy, basePath, capabilityFlags)`.
+
+- `Connection` becomes a **`kind`-discriminated union** (`paic` | `onprem`). A stored connection with no `kind` normalizes to `paic` — existing users' configs keep working untouched.
+  - `paic`: `{ host, saId, name? }` (unchanged) — secret = JWK.
+  - `onprem`: `{ baseUrl, username, name? }` — secret = password.
+- New `src/auth/` — the only new sub-area, a plug-in not a fork:
+  - `strategy.ts` — `interface AuthStrategy { applyAuthHeaders(headers, { forceRefresh? }): Promise<void> }`.
+  - `paic-strategy.ts` — wraps existing `mintToken` + token cache (lifted from `client-cache.ts`) → `Authorization: Bearer`.
+  - `onprem-strategy.ts` — `authenticate` + cookie-name discovery + session cache → `Cookie: <name>=<token>`.
+- `paic/http.ts` takes an `AuthStrategy` instead of `getToken: () => string`; its 401 self-heal calls with `forceRefresh`. The only behavioral change to the shared transport.
+- `paic/client.ts` parameterized (config, not branches): the `/am` context path is derived from the connection (on-prem WARs can deploy under any path); on-prem capability flags short-circuit the Tier-B/C methods to `null`/`[]` so we don't pay 404 round-trips. On-prem realm default = root (no forced `alpha`/`bravo`).
+- Connection form splits by kind (toggle → two field groups, per-kind Test Connection); `tenants/registry.ts` generalizes the secret key `saJwk.<host>` → `secret.<id>` (reads the old key for existing PAIC connections).
+- `src/paic/` is now really "the AM REST client" — an optional later rename to `src/am/` reads truer but is cosmetic churn; defer.
+
+**Supersedes the prior non-goals** "no non-PAIC ForgeRock deployments" and "service-account JWT-bearer only" (those were v1 scoping; self-managed on-prem AM with session auth is now in scope). Still out: PingOne, PingFederate, and 2FA/SSO/basic-auth login flows.
+
+**Implementation order (= M8 slices):**
+1. Connection model — `kind` union + normalize helper (back-compat default `paic`).
+2. Auth-strategy seam — `src/auth/` + `http.ts` takes a strategy + `client-cache.ts` picks by kind.
+3. Shared-client parameterization — injected base path + Tier-B/C capability short-circuit + on-prem root-realm default.
+4. Connection form + registry — kind toggle, two field groups, per-kind Test Connection, generalized secret storage + `package.json` schema.
+5. Tests — `onprem-strategy`, `client-cache` kind-branch, form payload, registry round-trip; live test behind `PAIC_LIVE=1` against the `poc/onprem-am/` bed.
+
 ### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
 
 Today the sidebar tree builds a journey's (or script's) children in **discovery order** — whatever order the dependency walker emits as it crawls a journey's nodes. A real journey can mix Inner Journeys, Scripts, Themes, Email Templates, and Social IdPs in any sequence, and the result is hard to scan.
@@ -1339,6 +1376,18 @@ Implements D36; lives under `src/realm-index/` (data layer) + `src/webview/searc
 - Saved graphs: explicit user action writes to `globalStorageUri/cache/<host>/graphs/<timestamp>.json` (the only place we ever write derived data — and only by explicit user choice).
 - Diff: side-by-side comparison of two saved graphs.
 
+### M8 — On-prem PingAM / ForgeRock AM support
+
+**User-facing outcome:** *"I can add an **On-prem AM** connection (base URL + admin username/password, instead of a service account + JWK) and browse / resolve its journeys exactly like a PAIC tenant — realms, journeys, scripts, inner journeys, social IdPs. Themes / email templates / ESVs simply don't appear (they're PAIC-platform-only)."*
+
+Implements D41; reuses the entire data layer and every consumer unchanged — the only new code is the auth strategy + the form variant. Validated against the `poc/onprem-am/` bed (AM 7.5.2 + a seeded journey graph exercising every on-prem-available edge).
+
+- **Slice 1 — connection model:** `kind`-discriminated union; normalize legacy configs → `paic`.
+- **Slice 2 — auth seam:** `src/auth/{strategy,paic-strategy,onprem-strategy}.ts`; `http.ts` consumes an `AuthStrategy`; `client-cache.ts` selects by kind.
+- **Slice 3 — shared-client parameterization:** injected AM context path; on-prem short-circuits Tier-B/C resource methods; root-realm default.
+- **Slice 4 — form + storage:** connection form split by kind; `registry.ts` generalized secret storage; `package.json` settings schema for the union.
+- **Slice 5 — tests:** `onprem-strategy`, `client-cache` kind-branch, form payload, registry round-trip; live tests behind `PAIC_LIVE=1` against the bed.
+
 ## Open questions
 
 **Foundation**
@@ -1368,8 +1417,8 @@ Implements D36; lives under `src/realm-index/` (data layer) + `src/webview/searc
 ## Non-goals
 
 - No write operations to PAIC.
-- No alternative auth flows (admin user + 2FA, SSO, basic auth). Service-account JWT-bearer only.
-- No support for PingOne, PingFederate, or non-PAIC ForgeRock deployments in v1.
+- No alternative auth flows (2FA, SSO, basic auth). PAIC = service-account JWT-bearer; on-prem AM = admin username/password → session token (D41). Nothing else.
+- No support for PingOne or PingFederate. (Self-managed on-prem PingAM / ForgeRock AM **is** now in scope — see D41 / M8.)
 - No telemetry, no analytics, no remote sync.
 - No "live diff" between editor changes and tenant state.
 - No on-disk cache of derived data (per D8). The lone exception is the *explicit user action* "save graph" in M7.

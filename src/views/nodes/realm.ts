@@ -15,7 +15,10 @@ export class RealmNode extends PaicNode {
     private readonly log: Logger,
     parent?: PaicNode,
   ) {
-    super(realm.name, vscode.TreeItemCollapsibleState.Collapsed);
+    // On-prem journeys live in the root realm; label it "root" instead of its
+    // wire name ("/") (D41 Slice 3). PAIC never reaches here with a root realm —
+    // it's filtered upstream in ConnectionNode.
+    super(realm.isRoot ? "root" : realm.name, vscode.TreeItemCollapsibleState.Collapsed);
     this.parent = parent;
     this.uid = `realm:${host}:${realm.name}`;
     this.id = this.uid;
@@ -27,7 +30,10 @@ export class RealmNode extends PaicNode {
 
   protected async loadChildren(): Promise<PaicNode[]> {
     const client = await this.cache.get(this.host);
-    const journeys = await client.listJourneys(this.realm.name);
+    // For the root realm pass "" so `getRealmPath` resolves to `/realms/root`
+    // regardless of the wire name ("/" / "root" / "Top Level Realm").
+    const realmArg = this.realm.isRoot ? "" : this.realm.name;
+    const journeys = await client.listJourneys(realmArg);
     if (journeys.length === 0) {
       return [new MessageNode("No journeys in this realm", "info")];
     }
@@ -37,7 +43,7 @@ export class RealmNode extends PaicNode {
       a.id.localeCompare(b.id, undefined, { sensitivity: "base" }),
     );
     return sorted.map(
-      (j) => new JourneyNode(this.host, this.realm.name, j, this.cache, this.log, [], this),
+      (j) => new JourneyNode(this.host, realmArg, j, this.cache, this.log, [], this),
     );
   }
 }

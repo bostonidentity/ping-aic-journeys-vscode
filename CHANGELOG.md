@@ -5,6 +5,11 @@ All notable changes to the **PAIC Journeys** extension are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **On-prem PingAM / ForgeRock AM support.** Add an "On-prem AM" connection (base URL + admin username/password) alongside PAIC cloud connections, and browse + resolve its journeys, scripts, library scripts, inner journeys, and social IdPs the same way. On-prem connections authenticate with a session token (vs PAIC's service-account JWT-bearer), surface the platform **root** realm in the tree, and derive the AM context path from the base URL (supports WARs deployed under a custom path). Themes, email templates, and ESVs don't appear for on-prem connections — they're PAIC-platform resources a standalone AM doesn't have.
+
 ## [0.0.2] — 2026-05-26
 
 ### Fixed

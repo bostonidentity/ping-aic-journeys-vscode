@@ -2,18 +2,14 @@ import { vi } from "vitest";
 
 vi.mock("vscode", async () => (await import("../util/vscode-mock")).makeVscodeMock());
 
-// Mock the modules client-cache pulls in so we don't actually mint tokens or
-// open axios instances. The cache itself is what we're testing.
-vi.mock("@/paic/auth", () => ({
-  mintToken: vi.fn(async () => ({
-    ok: true,
-    accessToken: "fake-token",
-    expiresIn: 3600,
-    scope: "fr:am:*",
-    tokenType: "Bearer",
-    grantedScopes: ["fr:am:*"],
-    droppedScopes: [],
-  })),
+// Mock the auth-strategy factories so client-cache's job — selecting the right
+// strategy by connection kind and wiring the HTTP client — is what's tested,
+// without minting tokens or authenticating.
+vi.mock("@/auth/paic-strategy", () => ({
+  makePaicAuthStrategy: vi.fn(() => ({ getAuthHeaders: vi.fn() })),
+}));
+vi.mock("@/auth/onprem-strategy", () => ({
+  makeOnpremAuthStrategy: vi.fn(() => ({ getAuthHeaders: vi.fn() })),
 }));
 
 vi.mock("@/paic/http", () => ({
@@ -33,7 +29,11 @@ vi.mock("@/paic/client", () => ({
 }));
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { makeOnpremAuthStrategy } from "@/auth/onprem-strategy";
+import { makePaicAuthStrategy } from "@/auth/paic-strategy";
 import type { Connection } from "@/domain/types";
+import { makePaicClient } from "@/paic/client";
+import { makeHttpClient } from "@/paic/http";
 import { makeClientCache } from "@/tenants/client-cache";
 import type { TenantsRegistry } from "@/tenants/registry";
 
@@ -69,6 +69,7 @@ function makeFakeLogger() {
 }
 
 const HOST = "h.example.com";
+const ONPREM_HOST = "http://openam.example.com:8080";
 
 describe("ClientCache", () => {
   beforeEach(() => {
@@ -78,7 +79,7 @@ describe("ClientCache", () => {
   it("get(host) returns the same instance on repeat calls (cache hit)", async () => {
     const cache = makeClientCache({
       registry: makeFakeRegistry({
-        conns: [{ host: HOST, saId: "sa-1" }],
+        conns: [{ kind: "paic", host: HOST, saId: "sa-1" }],
         jwks: { [HOST]: '{"kty":"RSA"}' },
       }),
       log: makeFakeLogger(),
@@ -91,7 +92,7 @@ describe("ClientCache", () => {
   it("drop(host) evicts — next get(host) mints a new client", async () => {
     const cache = makeClientCache({
       registry: makeFakeRegistry({
-        conns: [{ host: HOST, saId: "sa-1" }],
+        conns: [{ kind: "paic", host: HOST, saId: "sa-1" }],
         jwks: { [HOST]: '{"kty":"RSA"}' },
       }),
       log: makeFakeLogger(),
@@ -102,14 +103,87 @@ describe("ClientCache", () => {
     expect(a).not.toBe(b);
   });
 
-  it("throws a descriptive error when no JWK is in SecretStorage", async () => {
+  it("throws a descriptive error when no credentials are in SecretStorage", async () => {
     const cache = makeClientCache({
       registry: makeFakeRegistry({
-        conns: [{ host: HOST, saId: "sa-1" }],
+        conns: [{ kind: "paic", host: HOST, saId: "sa-1" }],
         jwks: {},
       }),
       log: makeFakeLogger(),
     });
     await expect(cache.get(HOST)).rejects.toThrow(/No credentials stored/);
+  });
+
+  it("builds a paic auth strategy for kind=paic connections", async () => {
+    const cache = makeClientCache({
+      registry: makeFakeRegistry({
+        conns: [{ kind: "paic", host: HOST, saId: "sa-1" }],
+        jwks: { [HOST]: "jwk-string" },
+      }),
+      log: makeFakeLogger(),
+    });
+    await cache.get(HOST);
+    expect(makePaicAuthStrategy).toHaveBeenCalledWith(
+      expect.objectContaining({ host: HOST, saId: "sa-1", jwk: "jwk-string" }),
+    );
+    expect(makeOnpremAuthStrategy).not.toHaveBeenCalled();
+    // paic → /am context path, all platform capabilities, https origin baseURL.
+    expect(makePaicClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amPath: "/am",
+        capabilities: { themes: true, emailTemplates: true, esvs: true },
+      }),
+    );
+    expect(makeHttpClient).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "https://h.example.com" }),
+    );
+  });
+
+  it("builds an onprem auth strategy for kind=onprem connections", async () => {
+    const cache = makeClientCache({
+      registry: makeFakeRegistry({
+        conns: [{ kind: "onprem", host: ONPREM_HOST, username: "amadmin" }],
+        jwks: { [ONPREM_HOST]: "admin-pw" },
+      }),
+      log: makeFakeLogger(),
+    });
+    await cache.get(ONPREM_HOST);
+    expect(makeOnpremAuthStrategy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: ONPREM_HOST,
+        username: "amadmin",
+        password: "admin-pw",
+        amPath: "/am",
+      }),
+    );
+    expect(makePaicAuthStrategy).not.toHaveBeenCalled();
+    // onprem → no IDM/IDC, so all platform capabilities disabled; origin baseURL.
+    expect(makePaicClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amPath: "/am",
+        capabilities: { themes: false, emailTemplates: false, esvs: false },
+      }),
+    );
+    expect(makeHttpClient).toHaveBeenCalledWith(expect.objectContaining({ host: ONPREM_HOST }));
+  });
+
+  it("derives a custom AM context path from an onprem base URL with a path", async () => {
+    const HOST_WITH_PATH = "http://onprem.example.com:8080/openam";
+    const cache = makeClientCache({
+      registry: makeFakeRegistry({
+        conns: [{ kind: "onprem", host: HOST_WITH_PATH, username: "amadmin" }],
+        jwks: { [HOST_WITH_PATH]: "pw" },
+      }),
+      log: makeFakeLogger(),
+    });
+    await cache.get(HOST_WITH_PATH);
+    // amPath = the URL path; baseURL = the origin (path stripped, no double).
+    expect(makeOnpremAuthStrategy).toHaveBeenCalledWith(
+      expect.objectContaining({ amPath: "/openam" }),
+    );
+    expect(makePaicClient).toHaveBeenCalledWith(expect.objectContaining({ amPath: "/openam" }));
+    expect(makeHttpClient).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "http://onprem.example.com:8080" }),
+    );
   });
 });

@@ -17,10 +17,21 @@ export function ConnectionCard({ payload }: Props) {
         <dd>
           <code>{connection.host}</code>
         </dd>
-        <dt>Service Account ID</dt>
-        <dd>
-          <code>{connection.saId}</code>
-        </dd>
+        {connection.kind === "onprem" ? (
+          <>
+            <dt>Admin user</dt>
+            <dd>
+              <code>{connection.username}</code>
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>Service Account ID</dt>
+            <dd>
+              <code>{connection.saId}</code>
+            </dd>
+          </>
+        )}
         {connection.name ? (
           <>
             <dt>Display name</dt>

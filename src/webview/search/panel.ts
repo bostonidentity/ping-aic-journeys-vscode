@@ -90,6 +90,7 @@ export class SearchFactory implements vscode.Disposable {
         cache: this.deps.cache,
         realmIndexCache: this.deps.realmIndexCache,
         inspectorFactory: this.deps.inspectorFactory,
+        connectionKindOf: (host) => this.deps.listConnections().find((c) => c.host === host)?.kind,
         log: this.deps.log,
         onClosed: () => {
           this.tab = null;
@@ -124,6 +125,9 @@ interface SearchTabDeps {
   cache: ClientCache;
   realmIndexCache: RealmIndexCache;
   inspectorFactory: InspectorFactory;
+  /** Connection kind for a host — drives whether the root realm is offered
+   * (on-prem journeys live in root; PAIC service accounts 403 on it). */
+  connectionKindOf: (host: string) => "paic" | "onprem" | undefined;
   log: Logger;
   onClosed: (tab: SearchTab) => void;
 }
@@ -217,8 +221,12 @@ export class SearchTab implements vscode.Disposable {
     try {
       const client = await this.deps.cache.get(host);
       const realms = await client.listRealms();
-      // Hide the platform root realm (D25) — service accounts get 403 on it.
-      const usable = realms.filter((r) => !r.isRoot && r.name !== "/").map((r) => r.name);
+      // Hide the platform root realm for PAIC (D25) — service accounts get 403
+      // on it. On-prem journeys live in the root realm, so keep it (D41 Slice 4).
+      const isOnprem = this.deps.connectionKindOf(host) === "onprem";
+      const usable = realms
+        .filter((r) => (isOnprem ? true : !r.isRoot && r.name !== "/"))
+        .map((r) => r.name);
       this.post({ type: "realmsResult", host, realms: usable });
       this.childLog.debug(
         { event: "tab.listRealms", host, realm_count: usable.length },

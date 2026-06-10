@@ -39,13 +39,13 @@ export class ConnectionNode extends PaicNode {
     const client = await this.cache.get(this.connection.host);
     const all = await client.listRealms();
     // PAIC reserves the root realm for the platform; service accounts always
-    // 403 on its journey/script endpoints. Identify it by `isRoot` (wire-level
-    // `parentPath === null`) rather than name, since some deployments report
-    // the root name as "/" and others as something else. Hide it so the tree
-    // stays clean. If on-prem AM support is added later, gate on connection
-    // type instead.
+    // 403 on its journey/script endpoints, so we hide it (D25). On-prem AM is
+    // the opposite — its journeys live in the root realm — so an on-prem
+    // connection surfaces every realm including root (D41 Slice 3). Root is
+    // identified by `isRoot` (wire-level `parentPath === null`) plus the `"/"`
+    // name belt-and-suspenders.
     const realms = all
-      .filter((r) => !r.isRoot && r.name !== "/")
+      .filter((r) => (this.connection.kind === "onprem" ? true : !r.isRoot && r.name !== "/"))
       // Sort alphabetically (D33 — applies even to single-kind levels).
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     if (realms.length === 0) {
@@ -67,6 +67,10 @@ function buildConnectionTooltip(c: Connection): vscode.MarkdownString {
   const md = new vscode.MarkdownString(undefined, true);
   md.appendMarkdown(`### ${c.name ?? c.host}\n\n`);
   md.appendMarkdown(`**Host:** \`${c.host}\`\n\n`);
-  md.appendMarkdown(`**Service Account ID:** \`${c.saId}\`\n`);
+  if (c.kind === "onprem") {
+    md.appendMarkdown(`**Admin user:** \`${c.username}\`\n`);
+  } else {
+    md.appendMarkdown(`**Service Account ID:** \`${c.saId}\`\n`);
+  }
   return md;
 }

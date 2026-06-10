@@ -42,6 +42,22 @@ const REALM_API_VERSION = "protocol=2.0,resource=1.0";
 const SOCIAL_IDP_API_VERSION = "protocol=2.1,resource=1.0";
 const ESV_API_VERSION = "protocol=1.0,resource=1.0";
 
+const DEFAULT_AM_PATH = "/am";
+
+/** Which platform-resource families this connection's backend exposes. PAIC
+ * cloud has all three; a standalone on-prem AM has none (no IDM, no IDC ESV
+ * API), so those methods short-circuit instead of paying a 404 (D41 Slice 3). */
+export interface ClientCapabilities {
+  /** IDM themes (`/openidm/config/ui/themerealm`). */
+  themes: boolean;
+  /** IDM email templates (`/openidm/config/emailTemplate`). */
+  emailTemplates: boolean;
+  /** IDC ESVs (`/environment/variables|secrets`). */
+  esvs: boolean;
+}
+
+const ALL_CAPABILITIES: ClientCapabilities = { themes: true, emailTemplates: true, esvs: true };
+
 export interface PaicClient {
   listRealms(): Promise<Realm[]>;
   listJourneys(realm: string): Promise<Journey[]>;
@@ -86,6 +102,13 @@ export interface PaicClient {
 export interface PaicClientOptions {
   http: HttpClient;
   log: Logger;
+  /** AM context-path prefix for `/am`-family URLs. Default `/am`; on-prem WARs
+   * may deploy under a custom path (e.g. `/openam`). Derived from the
+   * connection's base URL by `client-cache` (D41 Slice 3). */
+  amPath?: string;
+  /** Platform-resource families this backend exposes. Default: all enabled
+   * (PAIC). On-prem passes all-disabled so Tier-B/C methods short-circuit. */
+  capabilities?: ClientCapabilities;
 }
 
 /**
@@ -97,6 +120,8 @@ export interface PaicClientOptions {
 export function makePaicClient(opts: PaicClientOptions): PaicClient {
   const log = opts.log.child({ component: "paic.client" });
   const { http } = opts;
+  const amPath = opts.amPath ?? DEFAULT_AM_PATH;
+  const caps = opts.capabilities ?? ALL_CAPABILITIES;
 
   return {
     async listRealms(): Promise<Realm[]> {
@@ -104,7 +129,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
         const params = new URLSearchParams({ _queryFilter: "true" });
         if (cookie) params.set("_pagedResultsCookie", cookie);
         const resp = await http.get<PagedResponse<RawRealm>>(
-          `/am/json/global-config/realms?${params.toString()}`,
+          `${amPath}/json/global-config/realms?${params.toString()}`,
           { apiVersion: REALM_API_VERSION },
         );
         return resp.data;
@@ -119,7 +144,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
         const params = new URLSearchParams({ _queryFilter: "true" });
         if (cookie) params.set("_pagedResultsCookie", cookie);
         const resp = await http.get<PagedResponse<RawJourney>>(
-          `/am/json${realmPath}/realm-config/authentication/authenticationtrees/trees?${params.toString()}`,
+          `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/trees?${params.toString()}`,
           { apiVersion: TREE_API_VERSION },
         );
         return resp.data;
@@ -131,7 +156,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     async getJourney(realm: string, id: string): Promise<Journey> {
       const realmPath = getRealmPath(realm);
       const resp = await http.get<RawJourney>(
-        `/am/json${realmPath}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(id)}`,
+        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(id)}`,
         { apiVersion: TREE_API_VERSION },
       );
       return mapJourney(resp.data);
@@ -140,7 +165,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     async getNode(realm: string, nodeType: string, nodeId: string): Promise<NodePayload> {
       const realmPath = getRealmPath(realm);
       const resp = await http.get<RawNodePayload>(
-        `/am/json${realmPath}/realm-config/authentication/authenticationtrees/nodes/${encodeURIComponent(nodeType)}/${encodeURIComponent(nodeId)}`,
+        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/nodes/${encodeURIComponent(nodeType)}/${encodeURIComponent(nodeId)}`,
         { apiVersion: TREE_API_VERSION },
       );
       return mapNodePayload(resp.data);
@@ -149,7 +174,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     async getScript(realm: string, id: string): Promise<Script> {
       const realmPath = getRealmPath(realm);
       const resp = await http.get<RawScript>(
-        `/am/json${realmPath}/scripts/${encodeURIComponent(id)}`,
+        `${amPath}/json${realmPath}/scripts/${encodeURIComponent(id)}`,
         { apiVersion: SCRIPT_API_VERSION },
       );
       return mapScript(resp.data);
@@ -159,7 +184,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
       const realmPath = getRealmPath(realm);
       const params = new URLSearchParams({ _queryFilter: `name eq "${name}"` });
       const resp = await http.get<PagedResponse<RawScript>>(
-        `/am/json${realmPath}/scripts?${params.toString()}`,
+        `${amPath}/json${realmPath}/scripts?${params.toString()}`,
         { apiVersion: SCRIPT_API_VERSION },
       );
       const first = resp.data.result[0];
@@ -174,6 +199,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async getTheme(realm: string, themeId: string): Promise<Theme | null> {
+      if (!caps.themes) return null; // no IDM on this backend (e.g. on-prem AM)
       // AIC stores all themes for all realms in one IDM config doc. The
       // top-level key is `realm` (singular) and the per-realm value is the
       // theme array directly — no `.themes` wrapper. Verified against sb3.
@@ -188,6 +214,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async listThemes(realm: string): Promise<Theme[]> {
+      if (!caps.themes) return []; // no IDM on this backend (e.g. on-prem AM)
       // One fetch of the whole themerealm doc; the tree uses this to
       // pre-resolve multiple PageNode.themeIds in one round-trip during a
       // journey expansion.
@@ -197,6 +224,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async getEmailTemplate(name: string): Promise<EmailTemplate | null> {
+      if (!caps.emailTemplates) return null; // no IDM on this backend (e.g. on-prem AM)
       try {
         const resp = await http.get<RawEmailTemplate>(
           `/openidm/config/emailTemplate/${encodeURIComponent(name)}`,
@@ -211,7 +239,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     async listSocialIdps(realm: string): Promise<SocialIdp[]> {
       const realmPath = getRealmPath(realm);
       const resp = await http.post<{ result?: RawSocialIdp[] }>(
-        `/am/json${realmPath}/realm-config/services/SocialIdentityProviders?_action=nextdescendents`,
+        `${amPath}/json${realmPath}/realm-config/services/SocialIdentityProviders?_action=nextdescendents`,
         {},
         { apiVersion: SOCIAL_IDP_API_VERSION },
       );
@@ -232,6 +260,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async listVariables(_realm: string): Promise<EsvVariable[]> {
+      if (!caps.esvs) return []; // no IDC ESV API on this backend (e.g. on-prem AM)
       // ESV endpoints are tenant-scoped, not realm-scoped. _realm accepted for
       // API symmetry. Returned names are dotted (translated from hyphenated _id).
       const all = await listAllPaged<RawEsvVariable>(async (cookie) => {
@@ -247,6 +276,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async listSecrets(_realm: string): Promise<EsvSecret[]> {
+      if (!caps.esvs) return []; // no IDC ESV API on this backend (e.g. on-prem AM)
       const all = await listAllPaged<RawEsvSecret>(async (cookie) => {
         const params = new URLSearchParams({ _queryFilter: "true" });
         if (cookie) params.set("_pagedResultsCookie", cookie);
@@ -260,6 +290,7 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async getEsv(name: string): Promise<Esv | null> {
+      if (!caps.esvs) return null; // no IDC ESV API on this backend (e.g. on-prem AM)
       // PAIC ESV REST ids are hyphenated (`esv-foo-bar`) while scripts
       // reference them in dotted form (`esv.foo.bar`). Translate before the
       // URL; keep `name` (dotted) as the canonical display name.

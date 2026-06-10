@@ -5,11 +5,46 @@
  * `_id`, `_rev`, or `_type`.
  */
 
-/** A user-managed PAIC connection. Persisted in settings.json + SecretStorage. */
-export interface Connection {
+/**
+ * A user-managed connection. Persisted in settings.json + SecretStorage.
+ *
+ * `kind`-discriminated union: `paic` (cloud, service-account JWT-bearer) and
+ * `onprem` (self-managed PingAM, admin username/password → session token). See
+ * D41. `host` is the common stable identity on BOTH variants — it keys the
+ * secret store, the client cache, the session-status store, and tree node uids,
+ * so it must never move inside a variant.
+ */
+export interface PaicConnection {
+  kind: "paic";
   host: string;
+  /** Service-account id (the JWK is the SecretStorage value). */
   saId: string;
   name?: string;
+}
+
+export interface OnpremConnection {
+  kind: "onprem";
+  /** AM base/origin URL, e.g. `http://openam.example.com:8080`. */
+  host: string;
+  /** Admin username (the password is the SecretStorage value). */
+  username: string;
+  name?: string;
+}
+
+export type Connection = PaicConnection | OnpremConnection;
+
+/**
+ * Normalize a stored connection into a proper discriminated union. Configs
+ * written before D41 have no `kind` field — treat them as `paic` (back-compat,
+ * no settings migration). Applied once at the registry read boundary so the
+ * rest of the code always sees a real union.
+ */
+export function normalizeConnection(c: Connection): Connection {
+  if (c.kind === "onprem") return c;
+  // Missing `kind` (legacy) or `kind: "paic"` → canonical paic shape.
+  const paic: PaicConnection = { kind: "paic", host: c.host, saId: c.saId };
+  if (c.name !== undefined) paic.name = c.name;
+  return paic;
 }
 
 /** One realm under a tenant. */

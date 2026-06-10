@@ -8,7 +8,7 @@ import { ConnectionNode } from "@/views/nodes/connection";
 import { RealmNode } from "@/views/nodes/realm";
 import { makeFakeCache, makeFakeLogger, makeFakePaicClient } from "../fakes";
 
-const CONN = { host: "h.example.com", saId: "sa-1", name: "Demo" };
+const CONN = { kind: "paic" as const, host: "h.example.com", saId: "sa-1", name: "Demo" };
 
 let listRealmsCalls: number;
 
@@ -72,6 +72,25 @@ describe("ConnectionNode", () => {
     const kids = await node.getChildren();
     expect(kids).toHaveLength(1);
     expect((kids[0] as RealmNode).realm.name).toBe("alpha");
+  });
+
+  it("on-prem connection surfaces the root realm instead of hiding it (D41 Slice 3)", async () => {
+    const onpremConn = {
+      kind: "onprem" as const,
+      host: "http://openam.example.com:8080",
+      username: "amadmin",
+    };
+    const client = makeFakePaicClient({
+      realms: [
+        { name: "/", active: true, parentPath: "/", isRoot: true },
+        { name: "sub", active: true, parentPath: "/", isRoot: false },
+      ],
+    });
+    const node = new ConnectionNode(onpremConn, makeFakeCache(client), makeFakeLogger());
+    const kids = await node.getChildren();
+    const names = kids.map((k) => (k as RealmNode).realm.name);
+    expect(names).toContain("/"); // root realm is NOT hidden for on-prem
+    expect(names).toContain("sub");
   });
 
   it("sorts realms alphabetically, case-insensitive (D33)", async () => {

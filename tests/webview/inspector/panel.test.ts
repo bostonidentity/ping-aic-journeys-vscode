@@ -16,7 +16,7 @@ import {
   makeFakeResolverCache,
 } from "../../views/fakes";
 
-const CONN: Connection = { host: "h.example.com", saId: "sa-1" };
+const CONN: Connection = { kind: "paic", host: "h.example.com", saId: "sa-1" };
 
 interface VscodeMockState {
   createWebviewPanel: ReturnType<typeof vi.fn>;

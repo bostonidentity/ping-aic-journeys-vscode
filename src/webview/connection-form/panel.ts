@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
+import { makeOnpremAuthStrategy } from "../../auth/onprem-strategy";
+import { amContextPath } from "../../paic/am-url";
 import { mintToken } from "../../paic/auth";
 import type { Logger } from "../../util/logger";
 import {
@@ -16,11 +18,11 @@ export interface ConnectionFormOptions {
   initial?: ConnectionFormInitial;
   existingHosts: string[];
   log: Logger;
-  /** Edit mode: returns the JWK currently stored in SecretStorage for this
-   * host, so the user can validate without re-pasting it. Undefined if not
-   * stored. Webview never sees the JWK — `handleValidate` looks it up
-   * here on the extension side. */
-  getExistingJwk?: (host: string) => Thenable<string | undefined>;
+  /** Edit mode: returns the secret currently stored in SecretStorage for this
+   * host (JWK for PAIC, password for on-prem), so the user can validate without
+   * re-typing it. Undefined if not stored. The webview never sees the secret —
+   * `handleValidate` looks it up here on the extension side. */
+  getExistingSecret?: (host: string) => Thenable<string | undefined>;
   /** Called after every Test Connection with its outcome (D40) — the
    * extension records it in the session connection-status store and
    * refreshes the tree icon. */
@@ -35,7 +37,7 @@ export function openConnectionForm(
   context: vscode.ExtensionContext,
   opts: ConnectionFormOptions,
 ): Promise<ConnectionFormData | undefined> {
-  const { mode, initial, existingHosts, log, getExistingJwk, onTestResult } = opts;
+  const { mode, initial, existingHosts, log, getExistingSecret, onTestResult } = opts;
   const formLog = log.child({ component: "webview.connectionForm" });
   const title = mode === "add" ? "Add Connection" : `Edit Connection — ${initial?.host ?? ""}`;
 
@@ -80,7 +82,7 @@ export function openConnectionForm(
           raw.requestId,
           panel.webview,
           log,
-          getExistingJwk,
+          getExistingSecret,
           onTestResult,
         );
       }
@@ -134,13 +136,23 @@ async function handleValidate(
   requestId: number,
   webview: vscode.Webview,
   log: Logger,
-  getExistingJwk?: (host: string) => Thenable<string | undefined>,
+  getExistingSecret?: (host: string) => Thenable<string | undefined>,
   onTestResult?: (host: string, ok: boolean) => void,
 ): Promise<void> {
-  log.debug({ event: "connection.test.start", host: data.host }, "Validating connection");
+  log.debug(
+    { event: "connection.test.start", host: data.host, kind: data.kind },
+    "Validating connection",
+  );
+
+  if (data.kind === "onprem") {
+    await testOnprem(data, requestId, webview, log, getExistingSecret, onTestResult);
+    return;
+  }
+
+  // PAIC — mint a service-account JWT-bearer token.
   let jwk = data.jwk;
-  if (!jwk && getExistingJwk) {
-    jwk = await getExistingJwk(data.host);
+  if (!jwk && getExistingSecret) {
+    jwk = await getExistingSecret(data.host);
   }
   if (!jwk) {
     webview.postMessage({
@@ -191,6 +203,56 @@ async function handleValidate(
   }
 }
 
+/** On-prem Test Connection: authenticate with admin username/password. Success
+ * is a returned session cookie; there is no token TTL to report. */
+async function testOnprem(
+  data: Extract<ConnectionFormData, { kind: "onprem" }>,
+  requestId: number,
+  webview: vscode.Webview,
+  log: Logger,
+  getExistingSecret?: (host: string) => Thenable<string | undefined>,
+  onTestResult?: (host: string, ok: boolean) => void,
+): Promise<void> {
+  let password = data.password;
+  if (!password && getExistingSecret) {
+    password = await getExistingSecret(data.host);
+  }
+  if (!password) {
+    webview.postMessage({
+      type: "validateResult",
+      requestId,
+      ok: false,
+      message: "Admin password is required to test the connection.",
+    });
+    return;
+  }
+
+  try {
+    const strategy = makeOnpremAuthStrategy({
+      host: data.host,
+      username: data.username,
+      password,
+      amPath: amContextPath(data.host),
+      log,
+    });
+    await strategy.getAuthHeaders();
+    onTestResult?.(data.host, true);
+    log.info(
+      { event: "connection.test.ok", host: data.host, kind: "onprem" },
+      "Test Connection succeeded",
+    );
+    webview.postMessage({ type: "validateResult", requestId, ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    onTestResult?.(data.host, false);
+    log.error(
+      { event: "connection.test.failed", host: data.host, kind: "onprem", message },
+      "Test Connection failed",
+    );
+    webview.postMessage({ type: "validateResult", requestId, ok: false, message });
+  }
+}
+
 function makeNonce(): string {
   return randomBytes(16)
     .toString("base64")
@@ -218,6 +280,10 @@ const CONNECTION_FORM_CSS = `
   .field {
     margin-bottom: 18px;
   }
+  .group-label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.95em; }
+  .kind-toggle { display: flex; gap: 16px; }
+  .kind-toggle label { display: inline-flex; align-items: center; gap: 6px; font-weight: normal; margin-bottom: 0; cursor: pointer; }
+  .kind-toggle input { width: auto; }
   label {
     display: block;
     font-weight: 600;

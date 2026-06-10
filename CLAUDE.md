@@ -45,8 +45,8 @@ VS Code Extension API (Node.js extension host) | TypeScript | `esbuild` bundling
 3. In the EDH window, click the PAIC Journeys icon (a `type-hierarchy` tree glyph) in the activity bar → PAIC Journeys sidebar.
 4. After code changes: `npm run build` (or keep `npm run watch` running), then `Cmd+R` in the EDH window to reload.
 5. Logs land in (platform-specific):
-   - Linux: `~/.config/Code/logs/<session>/window<N>/exthost/bostonidentity.ping-aic-journeys/PAIC Journeys.log`
-   - macOS: `~/Library/Application Support/Code/logs/<session>/window<N>/exthost/bostonidentity.ping-aic-journeys/PAIC Journeys.log`
+   - Linux: `~/.config/Code/logs/<session>/window<N>/exthost/BostonIdentity.ping-aic-journeys/PAIC Journeys.log`
+   - macOS: `~/Library/Application Support/Code/logs/<session>/window<N>/exthost/BostonIdentity.ping-aic-journeys/PAIC Journeys.log`
 
    Use `./dev-tail.sh` to follow the latest one in a terminal (auto-detects platform).
 

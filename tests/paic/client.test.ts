@@ -425,4 +425,33 @@ describe("PaicClient", () => {
     const miss = await client.getScriptByName("alpha", "nope");
     expect(miss).toBeNull();
   });
+
+  it("short-circuits Tier-B/C methods when capabilities are disabled — no HTTP (D41 Slice 3)", async () => {
+    const offline = makePaicClient({
+      http: fake.http,
+      log: makeFakeLogger(),
+      capabilities: { themes: false, emailTemplates: false, esvs: false },
+    });
+
+    expect(await offline.getTheme("alpha", "t-1")).toBeNull();
+    expect(await offline.listThemes("alpha")).toEqual([]);
+    expect(await offline.getEmailTemplate("welcome")).toBeNull();
+    expect(await offline.getEsv("esv.x.y")).toBeNull();
+    expect(await offline.listVariables("alpha")).toEqual([]);
+    expect(await offline.listSecrets("alpha")).toEqual([]);
+
+    // None of the short-circuited methods touched the HTTP layer.
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("prefixes AM URLs with an injected amPath (D41 Slice 3)", async () => {
+    const onprem = makePaicClient({ http: fake.http, log: makeFakeLogger(), amPath: "/openam" });
+    fake.enqueueGet({ result: [], pagedResultsCookie: null });
+
+    await onprem.listJourneys(""); // realm "" → root
+
+    expect(fake.calls[0].url).toBe(
+      "/openam/json/realms/root/realm-config/authentication/authenticationtrees/trees?_queryFilter=true",
+    );
+  });
 });

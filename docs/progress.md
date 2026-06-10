@@ -551,6 +551,50 @@ Find-usages previously rendered a flat one-hop `kind · name → via` list. Two 
 - [ ] "Save Graph" explicit user action → `globalStorageUri/cache/<host>/graphs/<timestamp>.json` (the only on-disk derived data we ever write)
 - [ ] Diff two saved graphs
 
+## M8 — On-prem PingAM / ForgeRock AM support ✅ (Slices 1–5; deferred polish noted) — D41
+
+POC complete: live AM 7.5.2 bed at `poc/onprem-am/` (Vagrant+libvirt), endpoint audit (`ENDPOINT-AUDIT.md`), and a seeded journey graph exercising every on-prem-available edge. Auth + all Tier-A endpoints verified against the bed via `smoke.sh` / `audit-endpoints.sh`.
+
+### Slice 1 — Connection model ✅
+- [x] `domain/types.ts` — `Connection` → `kind`-discriminated union (`PaicConnection` | `OnpremConnection`); `host` common
+- [x] `normalizeConnection` helper: legacy config (no `kind`) → `paic` (back-compat); applied in `registry.list()`
+- [x] Compile sites updated: `extension.ts` add/edit (kind:paic + edit guarded paic-only), `connection.ts` tooltip, `ConnectionCard.tsx` (show username vs saId)
+- [x] `tests/domain/types.test.ts` — `normalizeConnection` (4 cases)
+
+### Slice 2 — Auth-strategy seam ✅
+- [x] `src/auth/strategy.ts` — `AuthStrategy { getAuthHeaders({ forceRefresh? }): Promise<Record<string,string>> }`
+- [x] `src/auth/paic-strategy.ts` — lifts `mintToken` + token cache (30s margin) → `Authorization: Bearer`
+- [x] `src/auth/onprem-strategy.ts` — fetch-based `authenticate` + `serverinfo` cookie-name discovery + session cache → `Cookie: <name>=<token>` (no TTL; relies on 401 self-heal)
+- [x] `paic/http.ts` — consumes an `AuthStrategy` (was `getToken`); 401 flags `paicForceAuthRefresh` → request interceptor re-auths
+- [x] `tenants/client-cache.ts` — selects strategy by `conn.kind`; kind-aware no-credentials message
+- [x] Tests: `tests/auth/{paic,onprem}-strategy.test.ts` (6 each); migrated `http.test.ts` (9) + `client-cache.test.ts` (+2 kind-branch); ConnectionCard onprem render
+- [x] **Verified**: lint 0 errors, typecheck clean, 523 tests green, esbuild build clean, and a throwaway live check authenticated against the bed (`Cookie: iPlanetDirectoryPro=…`)
+
+### Slice 3 — Shared-client parameterization ✅
+- [x] `paic/client.ts` — `amPath` option (default `/am`) prefixes the 7 AM URLs; `onprem-strategy.ts` `amPath` option for serverinfo/authenticate
+- [x] `client.ts` — `ClientCapabilities { themes, emailTemplates, esvs }` short-circuits the 6 IDM/IDC methods to `null`/`[]` (no HTTP) when disabled
+- [x] `client-cache.ts` — derives `{ origin, amPath, capabilities }` from the connection (paic → `/am`+all-true; onprem → path-from-URL + all-false); passes origin as the http baseURL (avoids double `/am`)
+- [x] On-prem root realm: `connection.ts` filter kind-conditional (onprem shows root); `realm.ts` `RealmNode` labels root "Top Level Realm" + passes `""` to `listJourneys` (robust `/realms/root`)
+- [x] Tests: `client.test.ts` (short-circuit + injected amPath), `onprem-strategy.test.ts` (custom amPath), `client-cache.test.ts` (per-kind amPath/capabilities/origin + custom-path derivation), `connection.test.ts` (onprem shows root), `realm.test.ts` (root node)
+- [x] **Verified**: lint 0 errors, typecheck clean, 529 tests green, build clean, and a throwaway live check (onprem client `listJourneys("")` → `OnPremLogin`/`OnPremMfaInner`; `listThemes` short-circuits to `[]` with no `/openidm` 404)
+
+### Slice 4 — Form + creation flow ✅
+- [x] `connection-form/messages.ts` — `ConnectionFormData`/`Initial` → `kind`-discriminated unions; `validateResult` `expiresIn`/`droppedScopes` optional (on-prem has no token TTL)
+- [x] `connection-form/ui/App.tsx` — connection-type radio toggle (locked in edit), two field groups (PAIC: saId+JWK · on-prem: base URL+username+password), per-kind `validate()`, on-prem-aware result banner
+- [x] `connection-form/panel.ts` — `getExistingJwk`→`getExistingSecret`; `handleValidate` branches by kind (on-prem `testOnprem` authenticates via `makeOnpremAuthStrategy`); kind-toggle CSS
+- [x] `src/paic/am-url.ts` (new) — shared `amOrigin`/`amContextPath` (lifted from `client-cache`), reused by the form's on-prem test
+- [x] `extension.ts` — add/edit construct the `Connection` variant via `connectionFromFormData`; generalized missing-secret guard; **un-gated `editConnection`** for on-prem
+- [x] `package.json` — `paicJourneys.connections` schema gains `kind` + `username` + updated description
+- [x] Search root-realm filter for on-prem: `ConnectionInfo`+`kind`, `listConnections`+`kind`, `SearchTabDeps.connectionKindOf`, `handleListRealms` branches (root shown for on-prem)
+- [x] Tests: `tests/paic/am-url.test.ts` (new), `app.test.tsx` (kind toggle + on-prem validation/save + edit lock + pre-fill)
+- [x] **Verified**: lint 0 errors, typecheck clean, 541 tests green, all 4 bundles build, and a throwaway live check (the form's on-prem `testOnprem` path authenticated against the bed → `Cookie: iPlanetDirectoryPro=…`)
+- Deferred: registry secret-API rename (`getJwk`→`getSecret`, `saJwk.`→`secret.`) — cosmetic, generic storage already holds on-prem passwords; friendlier on-prem root-realm label in the Search dropdown (shows "/" for now)
+
+### Slice 5 — Tests ✅
+- [x] Unit (done across Slices 1–4): `onprem-strategy`, `paic-strategy`, `client-cache` kind-branch, `normalizeConnection`, `am-url`, the kind-split form
+- [x] Live: `tests/integration/onprem-live.integration.test.ts` — permanent, gated by `PAIC_LIVE=1` (self-skips otherwise), against the `poc/onprem-am/` bed. 7 tests through the real shipped client code: listRealms (root present), listJourneys, node→script resolve chain, getScriptByName (LIBRARY), listSocialIdps, Tier-B/C short-circuit. `ONPREM_AM_{HOST,USER,PASSWORD}` overridable; documented in `.claude/rules/testing.md`.
+- [x] **Verified**: lint 0 errors, typecheck clean; default `npm test` → suite skips (541 pass + 7 skipped); `test:fast` excludes it; `PAIC_LIVE=1 npm test` → 7 on-prem live tests green against the bed
+
 ---
 
 ## What's working today
@@ -580,7 +624,7 @@ Find-usages previously rendered a flat one-hop `kind · name → via` list. Two 
 **Build + test**
 - `npm run build` → `out/extension.js` + `out/webview.js` + `out/connection-form.js` + codicons assets.
 - `npm run typecheck` covers both `tsconfig.json` and `tsconfig.webview.json`.
-- 481 unit tests across PAIC transport (incl. `makeLimiter`), tenant registry + client cache, tree nodes, inspector panel + protocol (incl. `findUsages` dispatch), React card + diagram components (incl. 5 card `[🔍 Find usages]` button cases), resolver walk + cache (M4), realm-index build + cache + queries with progress reporting (M5 Slices 1, 5, 6), the Search webview's messages + panel + App with singleton-page + connection/realm dropdowns + build progress bar (M5 Slices 2–4, 6), and the `InspectorFactory.spawnByDescriptor` refactor.
+- 541 unit tests + 7 gated on-prem live integration tests (`PAIC_LIVE=1`, M8 Slice 5; skipped by default) across PAIC transport (incl. `makeLimiter` + the injected AM context path / capability short-circuit + `am-url` helpers — M8 Slice 3/4), tenant registry + client cache, the auth-strategy seam (`paic`/`onprem` strategies — M8), the kind-split connection form (M8 Slice 4), tree nodes, inspector panel + protocol (incl. `findUsages` dispatch), React card + diagram components (incl. 5 card `[🔍 Find usages]` button cases), resolver walk + cache (M4), realm-index build + cache + queries with progress reporting (M5 Slices 1, 5, 6), the Search webview's messages + panel + App with singleton-page + connection/realm dropdowns + build progress bar (M5 Slices 2–4, 6), and the `InspectorFactory.spawnByDescriptor` refactor.
 
 ## What's broken today
 

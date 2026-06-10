@@ -1,8 +1,25 @@
-import { mintToken } from "../paic/auth";
-import { makePaicClient, type PaicClient } from "../paic/client";
+import { makeOnpremAuthStrategy } from "../auth/onprem-strategy";
+import { makePaicAuthStrategy } from "../auth/paic-strategy";
+import type { AuthStrategy } from "../auth/strategy";
+import type { Connection } from "../domain/types";
+import { amContextPath, amOrigin } from "../paic/am-url";
+import { type ClientCapabilities, makePaicClient, type PaicClient } from "../paic/client";
 import { makeHttpClient } from "../paic/http";
 import type { Logger } from "../util/logger";
 import type { TenantsRegistry } from "./registry";
+
+/** AM context path for a connection: `/am` for paic; for onprem, derived from
+ * the base URL (so a WAR under `/openam` works). */
+function contextPathFor(conn: Connection): string {
+  return conn.kind === "onprem" ? amContextPath(conn.host) : "/am";
+}
+
+/** Platform-resource families available. PAIC cloud has IDM + IDC; a standalone
+ * on-prem AM has neither (D41 audit), so those client methods short-circuit. */
+function capabilitiesFor(conn: Connection): ClientCapabilities {
+  const available = conn.kind !== "onprem";
+  return { themes: available, emailTemplates: available, esvs: available };
+}
 
 /**
  * One `PaicClient` per connection host, lazily minted on first use. Each
@@ -33,32 +50,34 @@ export function makeClientCache(deps: ClientCacheDeps): ClientCache {
   async function build(host: string): Promise<PaicClient> {
     const conn = deps.registry.list().find((c) => c.host === host);
     if (!conn) throw new Error(`Connection not found: ${host}`);
-    const jwk = await deps.registry.getJwk(host);
-    if (!jwk) {
+
+    // The stored secret is the JWK (paic) or the admin password (onprem). Same
+    // SecretStorage key, same getter — meaning depends on `conn.kind` (D41).
+    const secret = await deps.registry.getJwk(host);
+    if (!secret) {
       throw new Error(
-        `No credentials stored for ${host}. Edit the connection to set the service-account JWK.`,
+        conn.kind === "onprem"
+          ? `No credentials stored for ${host}. Edit the connection to set the admin password.`
+          : `No credentials stored for ${host}. Edit the connection to set the service-account JWK.`,
       );
     }
 
-    let cached: { token: string; expiresAt: number } | null = null;
-    const getToken = async (opts?: { forceRefresh?: boolean }): Promise<string> => {
-      const now = Date.now();
-      // 30 s safety margin matches frodo-lib (`TokenCacheOps.readToken`).
-      // The 401 self-heal in `paic/http.ts` catches anything that slips past.
-      if (!opts?.forceRefresh && cached && cached.expiresAt > now + 30_000) {
-        return cached.token;
-      }
-      const res = await mintToken({ host: conn.host, saId: conn.saId, jwk });
-      if (!res.ok) throw new Error(`Token mint failed: ${res.message}`);
-      cached = {
-        token: res.accessToken,
-        expiresAt: Date.now() + res.expiresIn * 1000,
-      };
-      return cached.token;
-    };
+    const amPath = contextPathFor(conn);
+    const authStrategy: AuthStrategy =
+      conn.kind === "onprem"
+        ? makeOnpremAuthStrategy({
+            host: conn.host,
+            username: conn.username,
+            password: secret,
+            amPath,
+            log: deps.log,
+          })
+        : makePaicAuthStrategy({ host: conn.host, saId: conn.saId, jwk: secret, log: deps.log });
 
-    const http = makeHttpClient({ host: conn.host, log: deps.log, getToken });
-    return makePaicClient({ http, log: deps.log });
+    // baseURL = origin (not the path-bearing base URL) so the client's
+    // `${amPath}/json/...` isn't duplicated; the client + strategy own the path.
+    const http = makeHttpClient({ host: amOrigin(conn.host), log: deps.log, authStrategy });
+    return makePaicClient({ http, log: deps.log, amPath, capabilities: capabilitiesFor(conn) });
   }
 
   return {

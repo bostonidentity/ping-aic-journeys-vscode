@@ -1,6 +1,7 @@
 import axios from "axios";
 import MockAdapter from "axios-mock-adapter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AuthStrategy } from "@/auth/strategy";
 import { PaicError } from "@/paic/errors";
 import { type HttpClientOptions, makeHttpClient } from "@/paic/http";
 
@@ -39,17 +40,24 @@ function makeFakeLogger(): FakeLogger {
   return self;
 }
 
-function makeFakeGetToken(tokens: string[] = ["tok-1", "tok-2"]): {
-  fn: HttpClientOptions["getToken"];
+/** A fake AuthStrategy that yields successive Bearer tokens and records each
+ * call's `forceRefresh` flag — the transport-side analogue of the old
+ * getToken stub. */
+function makeFakeAuthStrategy(tokens: string[] = ["tok-1", "tok-2"]): {
+  strategy: AuthStrategy;
   calls: Array<{ forceRefresh: boolean }>;
 } {
   const calls: Array<{ forceRefresh: boolean }> = [];
   let idx = 0;
-  const fn: HttpClientOptions["getToken"] = (opts) => {
-    calls.push({ forceRefresh: !!opts?.forceRefresh });
-    return Promise.resolve(tokens[Math.min(idx++, tokens.length - 1)]);
+  const strategy: AuthStrategy = {
+    getAuthHeaders: (opts) => {
+      calls.push({ forceRefresh: !!opts?.forceRefresh });
+      return Promise.resolve({
+        Authorization: `Bearer ${tokens[Math.min(idx++, tokens.length - 1)]}`,
+      });
+    },
   };
-  return { fn, calls };
+  return { strategy, calls };
 }
 
 let logger: FakeLogger;
@@ -70,11 +78,11 @@ afterEach(() => {
 describe("makeHttpClient", () => {
   it("injects Authorization, X-ForgeRock-TransactionId, Accept-API-Version on every request", async () => {
     mock.onGet("/x").reply(200, { ok: true });
-    const { fn: getToken } = makeFakeGetToken(["my-token"]);
+    const { strategy: authStrategy } = makeFakeAuthStrategy(["my-token"]);
     const client = makeHttpClient({
       host: "openam.example.com",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
     });
 
@@ -91,11 +99,11 @@ describe("makeHttpClient", () => {
 
   it("generates a fresh transaction ID per request", async () => {
     mock.onGet("/x").reply(200, {});
-    const { fn: getToken } = makeFakeGetToken();
+    const { strategy: authStrategy } = makeFakeAuthStrategy();
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
     });
 
@@ -117,11 +125,11 @@ describe("makeHttpClient", () => {
       .replyOnce(502)
       .onGet("/x")
       .replyOnce(200, { ok: true });
-    const { fn: getToken } = makeFakeGetToken();
+    const { strategy: authStrategy } = makeFakeAuthStrategy();
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
       // Tighten exponential delay for test speed by using retries=3 with default delay
       // (~100ms, 200ms). Tests typically take <500ms total.
@@ -139,11 +147,11 @@ describe("makeHttpClient", () => {
 
   it("retries on 429 honoring Retry-After header", async () => {
     mock.onGet("/x").replyOnce(429, "", { "retry-after": "1" }).onGet("/x").replyOnce(200, {});
-    const { fn: getToken } = makeFakeGetToken();
+    const { strategy: authStrategy } = makeFakeAuthStrategy();
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
     });
 
@@ -156,13 +164,13 @@ describe("makeHttpClient", () => {
     expect(elapsed).toBeGreaterThanOrEqual(1000);
   });
 
-  it("refreshes token and retries once on 401", async () => {
+  it("refreshes the credential and retries once on 401", async () => {
     mock.onGet("/x").replyOnce(401).onGet("/x").replyOnce(200, { ok: true });
-    const { fn: getToken, calls: tokenCalls } = makeFakeGetToken(["stale", "fresh"]);
+    const { strategy: authStrategy, calls: authCalls } = makeFakeAuthStrategy(["stale", "fresh"]);
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
     });
 
@@ -170,7 +178,7 @@ describe("makeHttpClient", () => {
 
     expect(resp.status).toBe(200);
     expect(mock.history.get).toHaveLength(2);
-    expect(tokenCalls).toEqual([{ forceRefresh: false }, { forceRefresh: true }]);
+    expect(authCalls).toEqual([{ forceRefresh: false }, { forceRefresh: true }]);
     // Second request used the refreshed token.
     expect(mock.history.get[1].headers?.Authorization).toBe("Bearer fresh");
     // We logged the unauthorized event.
@@ -181,28 +189,28 @@ describe("makeHttpClient", () => {
 
   it("throws PaicError on second 401 (no infinite loop)", async () => {
     mock.onGet("/x").reply(401);
-    const { fn: getToken, calls: tokenCalls } = makeFakeGetToken();
+    const { strategy: authStrategy, calls: authCalls } = makeFakeAuthStrategy();
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
     });
 
     await expect(client.get("/x")).rejects.toBeInstanceOf(PaicError);
     // First request + one retry after force-refresh = 2 attempts total.
     expect(mock.history.get).toHaveLength(2);
-    expect(tokenCalls).toHaveLength(2);
-    expect(tokenCalls[1].forceRefresh).toBe(true);
+    expect(authCalls).toHaveLength(2);
+    expect(authCalls[1].forceRefresh).toBe(true);
   });
 
   it("wraps non-401 4xx errors in PaicError without retry", async () => {
     mock.onGet("/x").reply(404, { error: "not_found", error_description: "Tree X not found" });
-    const { fn: getToken } = makeFakeGetToken();
+    const { strategy: authStrategy } = makeFakeAuthStrategy();
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
     });
 
@@ -222,11 +230,11 @@ describe("makeHttpClient", () => {
 
   it("logs http.request on success at info level with duration and req_id", async () => {
     mock.onGet("/x").reply(200, {});
-    const { fn: getToken } = makeFakeGetToken();
+    const { strategy: authStrategy } = makeFakeAuthStrategy();
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
     });
 
@@ -244,11 +252,11 @@ describe("makeHttpClient", () => {
   it("logs http.error on terminal failure with status", async () => {
     // Use retries=0 so a single 500 surfaces immediately.
     mock.onGet("/x").reply(500, { boom: true });
-    const { fn: getToken } = makeFakeGetToken();
+    const { strategy: authStrategy } = makeFakeAuthStrategy();
     const client = makeHttpClient({
       host: "h",
       log: logger as unknown as HttpClientOptions["log"],
-      getToken,
+      authStrategy,
       axiosInstance: instance,
       retries: 0,
     });

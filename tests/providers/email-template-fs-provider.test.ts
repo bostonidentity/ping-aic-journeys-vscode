@@ -31,6 +31,12 @@ describe("parseEmailTemplateUri", () => {
     expect(parseEmailTemplateUri(uri)).toEqual({ host: HOST, name: "Welcome", locale: "en" });
   });
 
+  it("round-trips a full-URL (on-prem) host through the authority (B-03)", () => {
+    const ONPREM = "http://openam.example.com:8080/am";
+    const uri = makeEmailTemplateUri(ONPREM, "Welcome", "en");
+    expect(parseEmailTemplateUri(uri)).toEqual({ host: ONPREM, name: "Welcome", locale: "en" });
+  });
+
   it("throws on wrong scheme", () => {
     const uri = vscode.Uri.parse(`paic-script://${HOST}/alpha/s.js`);
     expect(() => parseEmailTemplateUri(uri)).toThrow(/Not a paic-email-template URI/);

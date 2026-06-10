@@ -89,41 +89,41 @@ beforeEach(() => {
 describe("TenantsRegistry", () => {
   it("list returns the current config snapshot", async () => {
     expect(registry.list()).toEqual([]);
-    await registry.add({ host: "h1", saId: "s1" }, "jwk-1");
-    expect(registry.list()).toEqual([{ host: "h1", saId: "s1" }]);
+    await registry.add({ kind: "paic", host: "h1", saId: "s1" }, "jwk-1");
+    expect(registry.list()).toEqual([{ kind: "paic", host: "h1", saId: "s1" }]);
   });
 
   it("add persists the connection list, stores the JWK at the right key, and fires onDidChange", async () => {
-    await registry.add({ host: "h1", saId: "s1", name: "n1" }, "jwk-1");
+    await registry.add({ kind: "paic", host: "h1", saId: "s1", name: "n1" }, "jwk-1");
 
-    expect(fake.config).toEqual([{ host: "h1", saId: "s1", name: "n1" }]);
+    expect(fake.config).toEqual([{ kind: "paic", host: "h1", saId: "s1", name: "n1" }]);
     expect(fake.store.get(KEY("h1"))).toBe("jwk-1");
     expect(fake.storeCalls).toEqual([{ key: KEY("h1"), value: "jwk-1" }]);
     expect(changes).toBe(1);
   });
 
   it("update replaces the connection by host without renaming", async () => {
-    await registry.add({ host: "h1", saId: "s1" }, "jwk-1");
+    await registry.add({ kind: "paic", host: "h1", saId: "s1" }, "jwk-1");
     fake.storeCalls.length = 0;
     fake.deleteCalls.length = 0;
     changes = 0;
 
-    await registry.update("h1", { host: "h1", saId: "s1", name: "renamed" });
+    await registry.update("h1", { kind: "paic", host: "h1", saId: "s1", name: "renamed" });
 
-    expect(fake.config).toEqual([{ host: "h1", saId: "s1", name: "renamed" }]);
+    expect(fake.config).toEqual([{ kind: "paic", host: "h1", saId: "s1", name: "renamed" }]);
     expect(fake.storeCalls).toEqual([]);
     expect(fake.deleteCalls).toEqual([]);
     expect(changes).toBe(1);
   });
 
   it("update with host rename and no newJwk moves the secret to the new key", async () => {
-    await registry.add({ host: "h1", saId: "s1" }, "jwk-1");
+    await registry.add({ kind: "paic", host: "h1", saId: "s1" }, "jwk-1");
     fake.storeCalls.length = 0;
     fake.deleteCalls.length = 0;
 
-    await registry.update("h1", { host: "h2", saId: "s1" });
+    await registry.update("h1", { kind: "paic", host: "h2", saId: "s1" });
 
-    expect(fake.config).toEqual([{ host: "h2", saId: "s1" }]);
+    expect(fake.config).toEqual([{ kind: "paic", host: "h2", saId: "s1" }]);
     expect(fake.store.get(KEY("h2"))).toBe("jwk-1");
     expect(fake.store.has(KEY("h1"))).toBe(false);
     expect(fake.storeCalls).toEqual([{ key: KEY("h2"), value: "jwk-1" }]);
@@ -131,11 +131,11 @@ describe("TenantsRegistry", () => {
   });
 
   it("update with host rename + newJwk stores newJwk at the new key and deletes the old key (old secret not preserved)", async () => {
-    await registry.add({ host: "h1", saId: "s1" }, "jwk-old");
+    await registry.add({ kind: "paic", host: "h1", saId: "s1" }, "jwk-old");
     fake.storeCalls.length = 0;
     fake.deleteCalls.length = 0;
 
-    await registry.update("h1", { host: "h2", saId: "s1" }, "jwk-new");
+    await registry.update("h1", { kind: "paic", host: "h2", saId: "s1" }, "jwk-new");
 
     expect(fake.store.get(KEY("h2"))).toBe("jwk-new");
     expect(fake.store.has(KEY("h1"))).toBe(false);
@@ -144,25 +144,25 @@ describe("TenantsRegistry", () => {
   });
 
   it("update without rename but with newJwk overwrites the stored secret", async () => {
-    await registry.add({ host: "h1", saId: "s1" }, "jwk-old");
+    await registry.add({ kind: "paic", host: "h1", saId: "s1" }, "jwk-old");
     fake.storeCalls.length = 0;
     fake.deleteCalls.length = 0;
 
-    await registry.update("h1", { host: "h1", saId: "s1" }, "jwk-new");
+    await registry.update("h1", { kind: "paic", host: "h1", saId: "s1" }, "jwk-new");
 
     expect(fake.store.get(KEY("h1"))).toBe("jwk-new");
     expect(fake.deleteCalls).toEqual([]);
   });
 
   it("remove deletes from config and clears the secret; fires onDidChange", async () => {
-    await registry.add({ host: "h1", saId: "s1" }, "jwk-1");
-    await registry.add({ host: "h2", saId: "s2" }, "jwk-2");
+    await registry.add({ kind: "paic", host: "h1", saId: "s1" }, "jwk-1");
+    await registry.add({ kind: "paic", host: "h2", saId: "s2" }, "jwk-2");
     changes = 0;
     fake.deleteCalls.length = 0;
 
     await registry.remove("h1");
 
-    expect(fake.config).toEqual([{ host: "h2", saId: "s2" }]);
+    expect(fake.config).toEqual([{ kind: "paic", host: "h2", saId: "s2" }]);
     expect(fake.store.has(KEY("h1"))).toBe(false);
     expect(fake.store.has(KEY("h2"))).toBe(true);
     expect(fake.deleteCalls).toEqual([KEY("h1")]);
@@ -178,7 +178,7 @@ describe("TenantsRegistry", () => {
   it("dispose disposes the event emitter — further fires don't reach listeners", async () => {
     registry.dispose();
     changes = 0;
-    await registry.add({ host: "h1", saId: "s1" }, "jwk-1");
+    await registry.add({ kind: "paic", host: "h1", saId: "s1" }, "jwk-1");
     expect(changes).toBe(0);
   });
 });

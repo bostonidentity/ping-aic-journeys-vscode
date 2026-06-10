@@ -42,6 +42,9 @@ export interface CacheStatus {
 export interface ConnectionInfo {
   host: string;
   name?: string;
+  /** Connection kind (D41) — drives whether the root realm is shown. Optional
+   * for back-compat; absent is treated as "paic". */
+  kind?: "paic" | "onprem";
 }
 
 /** Optional query pre-fill (the card-portal `[🔍 Find usages]` button). */

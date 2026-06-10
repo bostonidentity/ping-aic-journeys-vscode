@@ -26,7 +26,11 @@ import { LibraryScriptNode } from "./views/nodes/library-script";
 import { RealmNode } from "./views/nodes/realm";
 import { ScriptNode } from "./views/nodes/script";
 import { PaicTreeProvider } from "./views/paic-tree-provider";
-import { openConnectionForm } from "./webview/connection-form/panel";
+import {
+  type ConnectionFormData,
+  type ConnectionFormInitial,
+  openConnectionForm,
+} from "./webview/connection-form/panel";
 import { InspectorFactory } from "./webview/inspector/panel";
 import { SearchFactory } from "./webview/search/panel";
 
@@ -120,7 +124,8 @@ export function activate(context: vscode.ExtensionContext): void {
     cache: clientCache,
     realmIndexCache,
     inspectorFactory,
-    listConnections: () => registry.list().map((c) => ({ host: c.host, name: c.name })),
+    listConnections: () =>
+      registry.list().map((c) => ({ host: c.host, name: c.name, kind: c.kind })),
     log,
   });
   context.subscriptions.push(searchFactory);
@@ -355,44 +360,58 @@ export function activate(context: vscode.ExtensionContext): void {
         mode: "add",
         existingHosts: registry.list().map((c) => c.host),
         log,
-        getExistingJwk: (h) => registry.getJwk(h),
+        getExistingSecret: (h: string) => registry.getJwk(h),
         onTestResult,
       });
       if (!r) {
         log.debug({ event: "connection.add.cancelled" }, "Add Connection cancelled");
         return;
       }
-      if (!r.jwk) {
+      const { conn, secret } = connectionFromFormData(r);
+      if (!secret) {
         log.warn(
-          { event: "connection.add.invalid" },
-          "JWK missing on save — form should have blocked",
+          { event: "connection.add.invalid", kind: conn.kind },
+          "Secret missing on save — form should have blocked",
         );
-        vscode.window.showErrorMessage("JWK is required when adding a new connection.");
+        vscode.window.showErrorMessage(
+          conn.kind === "onprem"
+            ? "An admin password is required when adding an on-prem connection."
+            : "A JWK is required when adding a PAIC connection.",
+        );
         return;
       }
-      const conn: Connection = { host: r.host, saId: r.saId, name: r.name };
-      await registry.add(conn, r.jwk);
-      log.info({ event: "connection.add", host: conn.host, sa_id: conn.saId }, "Connection added");
+      await registry.add(conn, secret);
+      log.info({ event: "connection.add", host: conn.host, kind: conn.kind }, "Connection added");
     }),
 
     vscode.commands.registerCommand("paicJourneys.editConnection", async (item: ConnectionNode) => {
       const conn = item.connection;
-      log.info({ event: "connection.edit.start", host: conn.host }, "Opening Edit Connection form");
+      log.info(
+        { event: "connection.edit.start", host: conn.host, kind: conn.kind },
+        "Opening Edit Connection form",
+      );
+      const initial: ConnectionFormInitial =
+        conn.kind === "onprem"
+          ? { kind: "onprem", host: conn.host, username: conn.username, name: conn.name }
+          : { kind: "paic", host: conn.host, saId: conn.saId, name: conn.name };
       const r = await openConnectionForm(context, {
         mode: "edit",
-        initial: { host: conn.host, saId: conn.saId, name: conn.name },
+        initial,
         existingHosts: registry.list().map((c) => c.host),
         log,
-        getExistingJwk: (h) => registry.getJwk(h),
+        getExistingSecret: (h: string) => registry.getJwk(h),
         onTestResult,
       });
       if (!r) {
         log.debug({ event: "connection.edit.cancelled" }, "Edit Connection cancelled");
         return;
       }
-      const updated: Connection = { host: r.host, saId: r.saId, name: r.name };
-      await registry.update(conn.host, updated, r.jwk);
-      log.info({ event: "connection.edit", host: updated.host }, "Connection updated");
+      const { conn: updated, secret } = connectionFromFormData(r);
+      await registry.update(conn.host, updated, secret);
+      log.info(
+        { event: "connection.edit", host: updated.host, kind: updated.kind },
+        "Connection updated",
+      );
     }),
 
     vscode.commands.registerCommand(
@@ -426,6 +445,25 @@ interface OpenScriptArgs {
   realm: string;
   scriptId: string;
   language?: string;
+}
+
+/** Translate kind-tagged form data into a `Connection` + its secret (JWK for
+ * PAIC, password for on-prem). The secret is `undefined` when the user left it
+ * blank (edit mode keeps the existing one; add mode is caught upstream). */
+function connectionFromFormData(r: ConnectionFormData): {
+  conn: Connection;
+  secret: string | undefined;
+} {
+  if (r.kind === "onprem") {
+    return {
+      conn: { kind: "onprem", host: r.host, username: r.username, name: r.name },
+      secret: r.password,
+    };
+  }
+  return {
+    conn: { kind: "paic", host: r.host, saId: r.saId, name: r.name },
+    secret: r.jwk,
+  };
 }
 
 /** Accepts a `ScriptNode` or `LibraryScriptNode` (tree right-click handed

@@ -7,7 +7,12 @@ import type { SelectPayload } from "@/webview/messages";
 const payload: Extract<SelectPayload, { kind: "connection" }> = {
   kind: "connection",
   uid: "connection:h.example.com",
-  connection: { host: "openam-tenant.example.forgeblocks.com", saId: "sa-1", name: "Demo" },
+  connection: {
+    kind: "paic",
+    host: "openam-tenant.example.forgeblocks.com",
+    saId: "sa-1",
+    name: "Demo",
+  },
 };
 
 describe("ConnectionCard", () => {
@@ -25,9 +30,20 @@ describe("ConnectionCard", () => {
   it("falls back to host as heading when no name is set", () => {
     const noName: Extract<SelectPayload, { kind: "connection" }> = {
       ...payload,
-      connection: { host: "alt.example.com", saId: "sa-2" },
+      connection: { kind: "paic", host: "alt.example.com", saId: "sa-2" },
     };
     render(<ConnectionCard payload={noName} />);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alt.example.com");
+  });
+
+  it("shows the admin user instead of saId for an on-prem connection", () => {
+    const onprem: Extract<SelectPayload, { kind: "connection" }> = {
+      ...payload,
+      connection: { kind: "onprem", host: "http://openam.example.com:8080", username: "amadmin" },
+    };
+    render(<ConnectionCard payload={onprem} />);
+    expect(screen.getByText("amadmin")).toBeTruthy();
+    expect(screen.getByText("Admin user")).toBeTruthy();
+    expect(screen.queryByText("Service Account ID")).toBeNull();
   });
 });

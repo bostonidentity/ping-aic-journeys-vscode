@@ -61,10 +61,54 @@ describe("parseScriptUri", () => {
     expect(() => parseScriptUri(vscode.Uri.parse("file:///tmp/x.js"))).toThrow(/Not a paic-script/);
   });
 
-  it("throws on malformed URI (missing realm or filename)", () => {
-    expect(() => parseScriptUri(vscode.Uri.parse(`${SCRIPT_URI_SCHEME}://h/onlyone`))).toThrow(
+  it("throws on malformed URI (no filename at all)", () => {
+    // A single segment is now the root realm (see below), so the malformed case
+    // is a path-less URI.
+    expect(() => parseScriptUri(vscode.Uri.parse(`${SCRIPT_URI_SCHEME}://h/`))).toThrow(
       /Malformed/,
     );
+  });
+
+  it("treats a single path segment as the root realm (on-prem AM, D41)", () => {
+    // makeScriptUri(host, "", id) emits `host//id.js`; the empty realm collapses.
+    expect(parseScriptUri(vscode.Uri.parse(`${SCRIPT_URI_SCHEME}://${HOST}//s-1.js`))).toEqual({
+      host: HOST,
+      realm: "",
+      scriptId: "s-1",
+      ext: "js",
+    });
+    // Same result whether the path arrives with one or two leading slashes.
+    expect(parseScriptUri(vscode.Uri.parse(`${SCRIPT_URI_SCHEME}://${HOST}/s-1.js`))).toEqual({
+      host: HOST,
+      realm: "",
+      scriptId: "s-1",
+      ext: "js",
+    });
+  });
+
+  it("round-trips a root-realm script through makeScriptUri → parseScriptUri", () => {
+    const parsed = parseScriptUri(makeScriptUri(HOST, "", "s-1"));
+    expect(parsed.realm).toBe("");
+    expect(parsed.scriptId).toBe("s-1");
+    expect(parsed.host).toBe(HOST);
+  });
+
+  it("round-trips a full-URL (on-prem) host through the authority (B-02)", () => {
+    const ONPREM = "http://openam.example.com:8080/am";
+    expect(parseScriptUri(makeScriptUri(ONPREM, "alpha", "s-1"))).toEqual({
+      host: ONPREM,
+      realm: "alpha",
+      scriptId: "s-1",
+      ext: "js",
+    });
+  });
+
+  it("round-trips a full-URL on-prem host with the root realm (B-01 + B-02)", () => {
+    const ONPREM = "http://openam.example.com:8080/am";
+    const parsed = parseScriptUri(makeScriptUri(ONPREM, "", "s-1"));
+    expect(parsed.host).toBe(ONPREM);
+    expect(parsed.realm).toBe("");
+    expect(parsed.scriptId).toBe("s-1");
   });
 });
 
@@ -155,5 +199,49 @@ describe("PaicScriptFileSystemProvider", () => {
     const disp = provider.watch();
     expect(typeof disp.dispose).toBe("function");
     expect(() => disp.dispose()).not.toThrow();
+  });
+
+  it("requests the FULL on-prem URL host from the cache, not a truncated 'http:' (B-02)", async () => {
+    const ONPREM = "http://openam.example.com:8080/am";
+    let seenHost = "";
+    const urlHostClient = makeFakePaicClient({
+      scriptsByKey: {
+        "alpha:s-1": { id: "s-1", name: "Auth", language: "JAVASCRIPT", body: "return 7" },
+      },
+    });
+    const recordingCache: ClientCache = {
+      get: vi.fn((h: string) => {
+        seenHost = h;
+        return Promise.resolve(urlHostClient);
+      }),
+      drop: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const p = new PaicScriptFileSystemProvider(recordingCache, makeFakeLogger());
+
+    const bytes = await p.readFile(makeScriptUri(ONPREM, "alpha", "s-1"));
+
+    expect(seenHost).toBe(ONPREM); // was "http:" before B-02
+    expect(new TextDecoder().decode(bytes)).toBe("return 7");
+  });
+
+  it("reads a root-realm script (on-prem AM) — getScript called with realm=''", async () => {
+    const calls: Array<{ realm: string; id: string }> = [];
+    const rootClient = makeFakePaicClient({
+      scriptsByKey: {
+        ":s-1": { id: "s-1", name: "Root", language: "JAVASCRIPT", body: "return 1" },
+      },
+    });
+    const orig = rootClient.getScript;
+    rootClient.getScript = vi.fn((realm: string, id: string) => {
+      calls.push({ realm, id });
+      return orig(realm, id);
+    });
+    const p = new PaicScriptFileSystemProvider(makeFakeCache(rootClient), makeFakeLogger());
+
+    const bytes = await p.readFile(makeScriptUri(HOST, "", "s-1"));
+
+    expect(new TextDecoder().decode(bytes)).toBe("return 1");
+    expect(calls).toEqual([{ realm: "", id: "s-1" }]);
   });
 });

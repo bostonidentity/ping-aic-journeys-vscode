@@ -21,7 +21,9 @@ export function parseEmailTemplateUri(uri: vscode.Uri): ParsedEmailTemplateUri {
   if (uri.scheme !== EMAIL_TEMPLATE_URI_SCHEME) {
     throw new Error(`Not a ${EMAIL_TEMPLATE_URI_SCHEME} URI: ${uri.toString()}`);
   }
-  const host = uri.authority;
+  // Host is percent-encoded into the authority (see `makeEmailTemplateUri`) so a
+  // full on-prem base URL survives; no-op for a PAIC bare hostname (B-03 / B-02).
+  const host = uri.authority ? decodeURIComponent(uri.authority) : "";
   if (!host) {
     throw new Error(`Malformed email-template URI (missing host): ${uri.toString()}`);
   }
@@ -40,8 +42,10 @@ export function parseEmailTemplateUri(uri: vscode.Uri): ParsedEmailTemplateUri {
  * `.html` so VS Code's HTML language mode kicks in for syntax highlight,
  * folding, find/replace. */
 export function makeEmailTemplateUri(host: string, name: string, locale: string): vscode.Uri {
+  // Percent-encode the host: an on-prem host is a full base URL whose `://`
+  // can't live in the URI authority. No-op for a PAIC bare hostname (B-03 / B-02).
   return vscode.Uri.parse(
-    `${EMAIL_TEMPLATE_URI_SCHEME}://${host}/${encodeURIComponent(name)}/${encodeURIComponent(locale)}.html`,
+    `${EMAIL_TEMPLATE_URI_SCHEME}://${encodeURIComponent(host)}/${encodeURIComponent(name)}/${encodeURIComponent(locale)}.html`,
     true,
   );
 }

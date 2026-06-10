@@ -13,22 +13,32 @@ interface Props {
 type ValidateResultState =
   | { state: "idle" }
   | { state: "pending" }
-  | { state: "ok"; expiresIn: number; droppedScopes: string[] }
+  | { state: "ok"; expiresIn?: number; droppedScopes?: string[] }
   | { state: "err"; message: string };
 
 interface FieldErrors {
   host?: string;
   saId?: string;
   jwk?: string;
+  username?: string;
+  password?: string;
 }
+
+type Kind = "paic" | "onprem";
 
 export function App({ vscode, payload }: Props) {
   const isEdit = payload.mode === "edit";
+  const initial = payload.initial;
 
-  const [name, setName] = useState(payload.initial?.name ?? "");
-  const [host, setHost] = useState(payload.initial?.host ?? "");
-  const [saId, setSaId] = useState(payload.initial?.saId ?? "");
+  const [kind, setKind] = useState<Kind>(initial?.kind ?? "paic");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [host, setHost] = useState(initial?.host ?? "");
+  // PAIC credential fields.
+  const [saId, setSaId] = useState(initial?.kind === "paic" ? initial.saId : "");
   const [jwk, setJwk] = useState("");
+  // On-prem credential fields.
+  const [username, setUsername] = useState(initial?.kind === "onprem" ? initial.username : "");
+  const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<FieldErrors>({});
 
   // Mutable ref tracks the most recently issued Test Connection request id.
@@ -56,42 +66,46 @@ export function App({ vscode, payload }: Props) {
   function validate(): ConnectionFormData | null {
     const errs: FieldErrors = {};
     const h = host.trim();
-    const s = saId.trim();
     const n = name.trim();
-    const j = jwk.trim();
 
     if (h) {
       const dup = payload.existingHosts.includes(h) && !(isEdit && payload.initial?.host === h);
       if (dup) errs.host = "A connection with this host already exists.";
     } else {
-      errs.host = "Host is required.";
+      errs.host = kind === "onprem" ? "Base URL is required." : "Host is required.";
     }
 
-    if (!s) errs.saId = "Service Account ID is required.";
-
-    if (isEdit) {
+    if (kind === "paic") {
+      const s = saId.trim();
+      const j = jwk.trim();
+      if (!s) errs.saId = "Service Account ID is required.";
       if (j) {
         try {
           JSON.parse(j);
         } catch {
           errs.jwk = "JWK must be valid JSON.";
         }
-      }
-    } else {
-      if (j) {
-        try {
-          JSON.parse(j);
-        } catch {
-          errs.jwk = "JWK must be valid JSON.";
-        }
-      } else {
+      } else if (!isEdit) {
         errs.jwk = "JWK is required.";
       }
+      setErrors(errs);
+      if (Object.keys(errs).length > 0) return null;
+      return { kind: "paic", host: h, saId: s, name: n || undefined, jwk: j || undefined };
     }
 
+    // on-prem — don't trim the password (whitespace may be significant).
+    const u = username.trim();
+    if (!u) errs.username = "Admin username is required.";
+    if (!password && !isEdit) errs.password = "Admin password is required.";
     setErrors(errs);
     if (Object.keys(errs).length > 0) return null;
-    return { host: h, saId: s, name: n || undefined, jwk: j || undefined };
+    return {
+      kind: "onprem",
+      host: h,
+      username: u,
+      name: n || undefined,
+      password: password || undefined,
+    };
   }
 
   const onSave = () => {
@@ -117,8 +131,35 @@ export function App({ vscode, payload }: Props) {
       <h1>{isEdit ? "Edit Connection" : "Add Connection"}</h1>
       <div className="subtitle">
         {isEdit
-          ? "Update this connection's metadata. Leave the JWK blank to keep the existing secret."
-          : "Add a new PAIC tenant connection. The JWK is stored in VS Code SecretStorage."}
+          ? "Update this connection's metadata. Leave the secret blank to keep the existing one."
+          : "Add a new connection. The secret (JWK or password) is stored in VS Code SecretStorage."}
+      </div>
+
+      <div className="field">
+        <div className="group-label">Connection type</div>
+        <div className="kind-toggle" role="radiogroup" aria-label="Connection type">
+          <label>
+            <input
+              type="radio"
+              name="kind"
+              checked={kind === "paic"}
+              disabled={isEdit}
+              onChange={() => setKind("paic")}
+            />
+            PAIC cloud
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="kind"
+              checked={kind === "onprem"}
+              disabled={isEdit}
+              onChange={() => setKind("onprem")}
+            />
+            On-prem AM
+          </label>
+        </div>
+        {isEdit && <div className="hint">connection type can't be changed when editing</div>}
       </div>
 
       <div className="field">
@@ -136,12 +177,17 @@ export function App({ vscode, payload }: Props) {
 
       <div className="field">
         <label htmlFor="host">
-          Host<span className="required">*</span>
+          {kind === "onprem" ? "Base URL" : "Host"}
+          <span className="required">*</span>
         </label>
         <input
           id="host"
           type="text"
-          placeholder="openam-tenant.example.forgeblocks.com"
+          placeholder={
+            kind === "onprem"
+              ? "http://openam.example.com:8080/am"
+              : "openam-tenant.example.forgeblocks.com"
+          }
           value={host}
           onChange={(e) => setHost(e.target.value)}
         />
@@ -149,36 +195,73 @@ export function App({ vscode, payload }: Props) {
         <div className="error">{errors.host ?? ""}</div>
       </div>
 
-      <div className="field">
-        <label htmlFor="saId">
-          Service Account ID<span className="required">*</span>
-        </label>
-        <input
-          id="saId"
-          type="text"
-          placeholder="00000000-0000-0000-0000-000000000000"
-          value={saId}
-          onChange={(e) => setSaId(e.target.value)}
-        />
-        <div className="error">{errors.saId ?? ""}</div>
-      </div>
+      {kind === "paic" ? (
+        <>
+          <div className="field">
+            <label htmlFor="saId">
+              Service Account ID<span className="required">*</span>
+            </label>
+            <input
+              id="saId"
+              type="text"
+              placeholder="00000000-0000-0000-0000-000000000000"
+              value={saId}
+              onChange={(e) => setSaId(e.target.value)}
+            />
+            <div className="error">{errors.saId ?? ""}</div>
+          </div>
 
-      <div className="field">
-        <label htmlFor="jwk">
-          Service Account JWK (JSON)
-          {!isEdit && <span className="required">*</span>}
-        </label>
-        <textarea
-          id="jwk"
-          spellCheck={false}
-          placeholder="Paste the service-account JWK JSON here"
-          value={jwk}
-          onChange={(e) => setJwk(e.target.value)}
-        />
-        <div className="hint lock">stored in VS Code SecretStorage</div>
-        {isEdit && <div className="hint">leave blank to keep the existing JWK</div>}
-        <div className="error">{errors.jwk ?? ""}</div>
-      </div>
+          <div className="field">
+            <label htmlFor="jwk">
+              Service Account JWK (JSON)
+              {!isEdit && <span className="required">*</span>}
+            </label>
+            <textarea
+              id="jwk"
+              spellCheck={false}
+              placeholder="Paste the service-account JWK JSON here"
+              value={jwk}
+              onChange={(e) => setJwk(e.target.value)}
+            />
+            <div className="hint lock">stored in VS Code SecretStorage</div>
+            {isEdit && <div className="hint">leave blank to keep the existing JWK</div>}
+            <div className="error">{errors.jwk ?? ""}</div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="field">
+            <label htmlFor="username">
+              Admin username<span className="required">*</span>
+            </label>
+            <input
+              id="username"
+              type="text"
+              placeholder="amadmin"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+            <div className="error">{errors.username ?? ""}</div>
+          </div>
+
+          <div className="field">
+            <label htmlFor="password">
+              Admin password
+              {!isEdit && <span className="required">*</span>}
+            </label>
+            <input
+              id="password"
+              type="password"
+              placeholder="Admin password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <div className="hint lock">stored in VS Code SecretStorage</div>
+            {isEdit && <div className="hint">leave blank to keep the existing password</div>}
+            <div className="error">{errors.password ?? ""}</div>
+          </div>
+        </>
+      )}
 
       <div className="actions">
         <button
@@ -209,13 +292,16 @@ function ResultBanner({ result }: { result: ValidateResultState }) {
     return <div className="validate-result pending">Testing connection…</div>;
   }
   if (result.state === "ok") {
+    const tokenInfo =
+      result.expiresIn === undefined ? "" : ` Token valid for ${result.expiresIn}s.`;
     const dropSuffix =
-      result.droppedScopes.length > 0
+      result.droppedScopes && result.droppedScopes.length > 0
         ? ` (some scopes not granted: ${result.droppedScopes.join(", ")})`
         : "";
     return (
       <div className="validate-result ok">
-        ✓ Connected. Token valid for {result.expiresIn}s.{dropSuffix}
+        ✓ Connected.{tokenInfo}
+        {dropSuffix}
       </div>
     );
   }

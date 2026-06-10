@@ -21,21 +21,29 @@ export interface ParsedScriptUri {
 /** Parse a `paic-script://<host>/<realm>/<scriptId>.<ext>` URI.
  *
  * `<realm>` may itself contain slashes for sub-realms
- * (e.g. `paic-script://h/alpha/customers/script.js` → realm = `alpha/customers`). */
+ * (e.g. `paic-script://h/alpha/customers/script.js` → realm = `alpha/customers`).
+ *
+ * A single path segment means the **root realm** (`realm = ""`) — on-prem AM
+ * journeys/scripts live in root (D41), so `makeScriptUri(host, "", id)` emits
+ * `paic-script://host//id.js` whose empty realm segment collapses to one part. */
 export function parseScriptUri(uri: vscode.Uri): ParsedScriptUri {
   if (uri.scheme !== SCRIPT_URI_SCHEME) {
     throw new Error(`Not a ${SCRIPT_URI_SCHEME} URI: ${uri.toString()}`);
   }
-  const host = uri.authority;
+  // The host is percent-encoded into the authority by `makeScriptUri` so a full
+  // on-prem base URL (`http://host:8080/am`) survives — a raw URL in the
+  // authority would be misparsed as `http:`. decodeURIComponent is a no-op for a
+  // PAIC bare hostname and for an authority VS Code has already decoded.
+  const host = uri.authority ? decodeURIComponent(uri.authority) : "";
   if (!host) {
     throw new Error(`Malformed script URI (missing host): ${uri.toString()}`);
   }
   const parts = uri.path.split("/").filter(Boolean);
-  if (parts.length < 2) {
-    throw new Error(`Malformed script URI (need <realm>/<scriptId.ext>): ${uri.toString()}`);
+  if (parts.length < 1) {
+    throw new Error(`Malformed script URI (need <scriptId.ext>): ${uri.toString()}`);
   }
   const filename = parts.pop() as string;
-  const realm = parts.join("/");
+  const realm = parts.join("/"); // "" for the root realm (single-segment path)
   const dot = filename.lastIndexOf(".");
   const ext = dot > 0 ? filename.slice(dot + 1).toLowerCase() : "";
   const scriptId = dot > 0 ? filename.slice(0, dot) : filename;
@@ -51,7 +59,13 @@ export function makeScriptUri(
   language?: string,
 ): vscode.Uri {
   const ext = language?.toUpperCase() === "GROOVY" ? "groovy" : "js";
-  return vscode.Uri.parse(`${SCRIPT_URI_SCHEME}://${host}/${realm}/${scriptId}.${ext}`, true);
+  // Percent-encode the host: an on-prem connection's host is a full base URL
+  // (`http://host:8080/am`) and a raw `://` can't live in the URI authority.
+  // For a PAIC bare hostname this is a no-op.
+  return vscode.Uri.parse(
+    `${SCRIPT_URI_SCHEME}://${encodeURIComponent(host)}/${realm}/${scriptId}.${ext}`,
+    true,
+  );
 }
 
 /** `vscode.FileSystemProvider` that surfaces PAIC script bodies as a real

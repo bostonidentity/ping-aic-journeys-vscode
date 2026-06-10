@@ -198,15 +198,28 @@
           "type": "array",
           "scope": "application",
           "default": [],
-          "description": "PAIC connections (per-user). Secret (saJwk) is stored in SecretStorage, not here. Application-scoped: workspace-level overrides are ignored by VS Code.",
+          "description": "Connections (per-user). PAIC cloud (kind=paic): host + saId, secret is the service-account JWK. On-prem PingAM (kind=onprem): host = base URL, username, secret is the admin password. The secret is stored in SecretStorage, not here. Application-scoped: workspace-level overrides are ignored by VS Code.",
           "items": {
             "type": "object",
             "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "paic",
+                  "onprem"
+                ],
+                "description": "Connection type. Omitted entries are treated as 'paic' (legacy)."
+              },
               "host": {
                 "type": "string"
               },
               "saId": {
-                "type": "string"
+                "type": "string",
+                "description": "PAIC service-account id (kind=paic)."
+              },
+              "username": {
+                "type": "string",
+                "description": "On-prem admin username (kind=onprem)."
               },
               "name": {
                 "type": "string"
