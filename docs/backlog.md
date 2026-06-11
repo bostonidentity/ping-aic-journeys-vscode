@@ -26,6 +26,13 @@ Findings discovered via the walkthrough skill. One row per finding, grouped by t
 **Proposed:** `enabled: raw.enabled ?? true` — AM treats a tree as enabled unless explicitly `enabled: false`. Only an explicit `false` shows Disabled; `true` or absent shows Enabled. Add a mapper regression test.
 **Status:** done — confirmed from the prod trees response (no `enabled` field); shipped in 0.1.1.
 
+## B-05 — Edit form: connection-type radios render as empty boxes (selected type not shown)
+**Where:** `src/webview/connection-form/panel.ts` (inlined form CSS)
+**Observed:** Re-opening a saved connection via Edit shows the "Connection type" toggle as two empty boxes — the saved type isn't visibly selected. Cause: the broad `input, textarea { background; border; padding; border-radius }` rule also applies to the `<input type="radio">` toggles, overriding their native appearance so the checked (and disabled-greyed) dot doesn't show. The `kind` state IS correct; it's purely a styling clobber. (Type stays fixed on edit — user confirmed; we just need the greyed-selected radio to render.)
+**Proposed:** Exclude radios from the text-input styling (`input:not([type="radio"])`) and give `.kind-toggle input` native radio rendering + an accent color. No logic change.
+**Resolution:** native disabled radios were still too faint on dark themes; switched to custom-drawn radios (`appearance: none` + a muted dot for disabled+checked) so the greyed-selected state is clearly visible.
+**Status:** done — confirmed in the EDH; folded into 0.1.1.
+
 ## D-01 — Label the on-prem root realm "root" (not "Top Level Realm")
 **Where:** `src/views/nodes/realm.ts` (`RealmNode` label)
 **Observed:** On-prem connections show the platform root realm as "Top Level Realm". User prefers it shown as "root". (PAIC still hides root; on-prem still shows it — division unchanged.)

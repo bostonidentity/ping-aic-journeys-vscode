@@ -283,7 +283,23 @@ const CONNECTION_FORM_CSS = `
   .group-label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.95em; }
   .kind-toggle { display: flex; gap: 16px; }
   .kind-toggle label { display: inline-flex; align-items: center; gap: 6px; font-weight: normal; margin-bottom: 0; cursor: pointer; }
-  .kind-toggle input { width: auto; }
+  /* Custom-drawn radios so the *disabled* (edit-mode) selected state stays clearly
+     visible — native disabled radios render their dot too faintly on dark themes. */
+  .kind-toggle input[type="radio"] {
+    appearance: none; -webkit-appearance: none;
+    width: 14px; height: 14px; margin: 0; flex: none;
+    border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border, var(--vscode-foreground)));
+    border-radius: 50%;
+    background: var(--vscode-input-background);
+    display: inline-grid; place-content: center;
+  }
+  .kind-toggle input[type="radio"]::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--vscode-focusBorder); transform: scale(0);
+  }
+  .kind-toggle input[type="radio"]:checked::before { transform: scale(1); }
+  .kind-toggle input[type="radio"]:disabled { opacity: 0.85; cursor: default; }
+  .kind-toggle input[type="radio"]:disabled:checked::before { background: var(--vscode-descriptionForeground); }
   label {
     display: block;
     font-weight: 600;
@@ -295,7 +311,7 @@ const CONNECTION_FORM_CSS = `
     margin-left: 2px;
   }
   .hint.optional { font-weight: normal; color: var(--vscode-descriptionForeground); margin-left: 2px; font-size: 0.85em; }
-  input, textarea {
+  input:not([type="radio"]), textarea {
     width: 100%;
     box-sizing: border-box;
     padding: 6px 8px;

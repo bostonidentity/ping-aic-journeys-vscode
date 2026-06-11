@@ -9,6 +9,7 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - On-prem AM journeys all showed as "Disabled" against AM versions that don't return an `enabled` field on authentication trees. A tree is now treated as enabled unless the response explicitly sets `enabled: false` (matching AM's own default — a tree is enabled unless turned off).
+- The connection-type selector in the Edit Connection form rendered as empty boxes instead of showing the saved type. The radios now draw correctly — the saved type appears as a greyed-out selected radio (the type isn't editable once a connection is saved).
 
 ## [0.1.0] — 2026-06-10
 
