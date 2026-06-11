@@ -20,6 +20,12 @@ Findings discovered via the walkthrough skill. One row per finding, grouped by t
 **Proposed:** Mirror B-02 — `encodeURIComponent`/`decodeURIComponent` the host in the authority. Add a URL-host round-trip test.
 **Status:** done — confirmed in the EDH
 
+## B-04 — Journeys show "Disabled" on AM versions that omit the `enabled` field
+**Where:** `src/paic/mappers.ts` (`mapJourney`)
+**Observed:** Against a real prod on-prem AM (older version), the sidebar showed EVERY journey as `(disabled)`. Confirmed from the raw `trees?_queryFilter=true` response: tree objects there are `{_id, _rev, identityResource, nodes, uiConfig, staticNodes, entryNodeId, description}` — **no `enabled` field**. `mapJourney` did `enabled: raw.enabled ?? false`, so an absent field defaulted to `false`. Our AM 7.5.2 bed returns `enabled: true` explicitly, which is why it looked fine in dev.
+**Proposed:** `enabled: raw.enabled ?? true` — AM treats a tree as enabled unless explicitly `enabled: false`. Only an explicit `false` shows Disabled; `true` or absent shows Enabled. Add a mapper regression test.
+**Status:** done — confirmed from the prod trees response (no `enabled` field); shipped in 0.1.1.
+
 ## D-01 — Label the on-prem root realm "root" (not "Top Level Realm")
 **Where:** `src/views/nodes/realm.ts` (`RealmNode` label)
 **Observed:** On-prem connections show the platform root realm as "Top Level Realm". User prefers it shown as "root". (PAIC still hides root; on-prem still shows it — division unchanged.)

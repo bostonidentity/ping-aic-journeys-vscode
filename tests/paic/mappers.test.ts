@@ -89,8 +89,15 @@ describe("mapJourney", () => {
     expect(j.nodes["node-2"].connections).toEqual({});
   });
 
-  it("defaults enabled to false when omitted", () => {
+  it("defaults enabled to true when the field is omitted (B-04: older AM omits it)", () => {
+    // AM treats a tree as enabled unless explicitly disabled; some AM versions
+    // omit `enabled` from the trees query entirely.
     const raw: RawJourney = { _id: "x", entryNodeId: "e" };
+    expect(mapJourney(raw).enabled).toBe(true);
+  });
+
+  it("respects an explicit enabled: false (still shows Disabled)", () => {
+    const raw: RawJourney = { _id: "x", entryNodeId: "e", enabled: false };
     expect(mapJourney(raw).enabled).toBe(false);
   });
 

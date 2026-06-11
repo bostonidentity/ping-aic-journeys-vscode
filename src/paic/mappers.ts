@@ -87,7 +87,10 @@ export function mapJourney(raw: RawJourney): Journey {
   return {
     id: raw._id,
     description: raw.description,
-    enabled: raw.enabled ?? false,
+    // AM treats a tree as enabled unless explicitly `enabled: false`. Older AM
+    // versions omit the field entirely from the trees query — default those to
+    // enabled, not disabled (B-04). Only an explicit `false` means Disabled.
+    enabled: raw.enabled ?? true,
     identityResource: raw.identityResource,
     entryNodeId: raw.entryNodeId,
     innerTreeOnly: raw.innerTreeOnly,
