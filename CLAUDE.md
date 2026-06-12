@@ -77,6 +77,7 @@ All detailed rules live in `.claude/rules/` (auto-loaded each session):
 
 - [docs/design-plan.md](docs/design-plan.md) — design plan, locked decisions (D1–D16), data model, milestones, open questions
 - [docs/sidebar-tree.md](docs/sidebar-tree.md) — sidebar tree shape reference
+- [docs/transfer-endpoints.md](docs/transfer-endpoints.md) — empirically-confirmed write/CRUD endpoints per component (cross-env transfer / import; D42/D43)
 - [docs/logging-spec.md](docs/logging-spec.md) — structured logging contract (pino + NDJSON)
 - [docs/progress.md](docs/progress.md) — current task tracker
 - [docs/lessons.md](docs/lessons.md) — corrections and patterns to avoid repeating
