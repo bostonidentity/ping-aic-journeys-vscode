@@ -133,7 +133,7 @@ Tech locked: **D17** (script body via `vscode.FileSystemProvider`) and **D18** (
 - [x] InnerJourneyCard diagram — `InnerJourneyNode.ensureJourney()` lazy-fetches + caches the inner journey's full skeleton (shared with tree expansion to dedupe the request). `InspectorPanel.toSelectPayload` is now async and awaits `ensureJourney()` so the diagram has real nodes to render. `InnerJourneyCard.tsx` embeds `<JourneyDiagram>` when both `journey.nodes` and `deps.nodeIndex` are present. Fetch failure falls back to a placeholder + warns.
 - [x] Hover tooltips on tree items — every `PaicNode` subclass now sets `this.tooltip = vscode.MarkdownString` with kind-specific structured metadata (host / realm / status / entry-node / ancestor chain / etc.). `isTrusted: false` (no commands), `supportThemeIcons: true` for future icon embedding.
 - [x] Tree collapse + selection state persistence — `TreeItem.id` set to `this.uid` on Connection/Realm/Journey/Script nodes. VS Code automatically persists collapse state per-id across reloads. Skipped on `InnerJourneyNode` because the class's domain `id` field (inner-journey AIC id like `PasswordReset`) shadows `TreeItem.id`; trade documented inline.
-- [x] "Open in Diff Editor" command (`paicJourneys.diffScriptAcrossConnections`) — right-click a ScriptNode → optional peer-connection QuickPick (auto-picks when there's only one other connection) → `vscode.diff` opens the two `paic-script://` URIs side-by-side. Cross-tenant script diff is the headline use-case; free side-effect of D17.
+- [x] ~~"Open in Diff Editor" command (`paicJourneys.diffScriptAcrossConnections`) — right-click a ScriptNode → optional peer-connection QuickPick → `vscode.diff` opens the two `paic-script://` URIs side-by-side.~~ **REMOVED (2026-06)** — superseded by the cross-env **export / import / compare** feature (D42 / M9); the dedicated cross-tenant script-diff command + its 3 `package.json` entries were deleted to avoid overlapping with the new Compare pillar. (The underlying `paic-script://` FS provider still supports ad-hoc `vscode.diff` if ever needed.)
 - [x] Diagram node hover → full schema tooltip — `NodeInfo` extended with `outcomes` / `inputs` / `outputs` / `rawNodeType`; populated by `panel.ts:sendJourneyDeps`; rendered as native browser `title` attribute via the new shared `buildNodeTooltip` helper. Browser tooltip is dependency-free and keyboard-accessible.
 
 
@@ -594,6 +594,73 @@ POC complete: live AM 7.5.2 bed at `poc/onprem-am/` (Vagrant+libvirt), endpoint 
 - [x] Unit (done across Slices 1–4): `onprem-strategy`, `paic-strategy`, `client-cache` kind-branch, `normalizeConnection`, `am-url`, the kind-split form
 - [x] Live: `tests/integration/onprem-live.integration.test.ts` — permanent, gated by `PAIC_LIVE=1` (self-skips otherwise), against the `poc/onprem-am/` bed. 7 tests through the real shipped client code: listRealms (root present), listJourneys, node→script resolve chain, getScriptByName (LIBRARY), listSocialIdps, Tier-B/C short-circuit. `ONPREM_AM_{HOST,USER,PASSWORD}` overridable; documented in `.claude/rules/testing.md`.
 - [x] **Verified**: lint 0 errors, typecheck clean; default `npm test` → suite skips (541 pass + 7 skipped); `test:fast` excludes it; `PAIC_LIVE=1 npm test` → 7 on-prem live tests green against the bed
+
+---
+
+## M9 — Cross-environment transfer (export / import / compare) ⏳ — D42
+
+> New initiative. Read-only **export** first (within D6); import (write) is a later phase that will amend D6. Running decisions + endpoint results live in `poc/transfer-endpoints/{DESIGN-DECISIONS,TRACKER}.md` (gitignored).
+
+### POC — endpoint CRUD research ✅ (gitignored `poc/transfer-endpoints/`)
+
+- [x] Round-trip CRUD probes for all 7 leaves against PAIC sb2x — email template, ESV variable, social IdP, script, library script, theme, ESV secret — every verb confirmed and cleaned up
+- [x] On-prem VM (AM 7.5.2): the 3 AM-native leaves (script / library script / social IdP) behave **identically** to PAIC; the 4 IDM/platform leaves confirmed **N/A** on bare AM
+- [x] Captured per-leaf endpoints + diff masks + cross-leaf findings (client-chosen UUID preserved; secrets redacted; create-vs-update signal varies per leaf) → promoted into D42
+- [x] Format decided: frodo/PAIC-UI `{meta, trees}` (journeys) + per-type `{meta, <kind>:{<id>:raw}}` (leaves); two-axis options (contents always, depth toggle); `meta` on-by-default (TD-1 / TD-2)
+
+### Phase 1 — Leaf node export ⏳ (current)
+
+**Slice 1 — Export engine + script end-to-end ✅**
+- [x] `src/paic/client.ts` — `getRawScript(realm, id)` raw accessor (unmapped wire object); `getScript` refactored to delegate to it (no URL duplication)
+- [x] `src/export/serialize.ts` — pure serializer: frodo per-type shape `{meta, script:{<id>:raw}}` + strip diff-mask fields (keep `_id`) + stringified-decoded script body (isolated in `scriptBodyToExport()`)
+- [x] `src/export/meta.ts` — pure `buildExportMeta(conn, realm, version, nowIso)` (date injected → deterministic); maps `kind` → `connectionType` (`am-onprem`), `saId`/`username` → `exportedBy`
+- [x] `src/commands/export-component.ts` — `exportComponent(deps, arg)`: raw-fetch → serialize → `showSaveDialog` → `workspace.fs.writeFile`; cancel/bad-arg/error paths logged + surfaced
+- [x] `messages.ts`: `exportComponent` W2E variant + `isW2E`; `panel.ts:onMessage` routes it to the command (mirrors `openScriptBody`)
+- [x] `App.tsx` `onExport` callback + `ScriptCard` **Export…** button (mirrors `onOpenBody`); `extension.ts` registers the command; `package.json` declares it (hidden from palette)
+- [x] Tests: `serialize.test.ts` (shape / mask-strip / body form), `meta.test.ts` (paic + onprem), `export-component.test.ts` (happy / cancel / bad-arg), `client.test.ts` (raw passthrough); `vscode-mock` extended with `showSaveDialog` / `showInformationMessage` / `Uri.file` / `workspace.fs.writeFile`
+- [x] Verified: `/check all` green (0 lint errors, typecheck clean, 559 tests pass); `npm run build` → extension.js + webview.js clean
+
+**Slice 2 — Fan out to the remaining five leaf cards ✅**
+- [x] `src/paic/client.ts` — 4 raw accessors: `getRawTheme`/`getRawEmailTemplate` (mapped getters refactored to delegate) + `getRawSocialIdp`/`getRawEsv` (independent; `getRawEsv` returns `RawEsvResult` = discovered `{kind, raw}`)
+- [x] `src/export/serialize.ts` — generalized to `serializeLeaf(kind, raw, meta, fallbackId)` over frodo per-type keys (`theme`/`emailTemplate`/`idp`/`variable`/`secret`); keyed by wire `_id`; body-transform scripts only; `_type` retained for social IdP
+- [x] `src/commands/export-component.ts` — `fetchAndSerialize` switch over six message kinds (esv → variable/secret via the accessor's kind); null result → error + no write; filename `<name>.<typeLabel>.json`
+- [x] `messages.ts` `ExportComponentKind` + widened W2E variant; `App.tsx` `onExport` passed into all five cases; **Export… button on all five cards** (EmailTemplate + SocialIdp got a new `card-actions` div)
+- [x] Theme source is the whole `themerealm` doc (`getRawTheme` filters the realm array); ESV secret export is metadata-only by nature (value never returned) — no special code
+- [x] Tests: `serialize.test.ts` `serializeLeaf` per-kind cases; `client.test.ts` 4 raw-accessor tests; `export-component.test.ts` theme/esv/not-found cases; `vscode-mock` + `fakes.ts` extended
+- [x] Verified: `/check all` green (0 lint errors, typecheck clean, **571 tests pass**); `npm run build` → extension.js + webview.js clean
+
+**Slice 3 — Interop verification (per D42 contract)**
+- [ ] Round-trip: our leaf export → `frodo <kind> import` and the PAIC-UI Import → confirm it lands (golden refs in `poc/`)
+
+### Phase 2 — Journey / sub-journey export ✅ (TD-5)
+
+> Same `{meta, trees}` envelope for both depths (no structural fork); depth carried by content + recorded in `meta`. Contents always bundled (TD-1); only inner-journey depth is a choice.
+- [x] `src/paic/client.ts` — `getRawJourney` / `getRawNode` / `getRawScriptByName` raw accessors (+ mapped getters refactored to delegate)
+- [x] `src/export/journey-bundle.ts` — **dedicated raw per-tree walk** (not the resolver — it's mapped/flat/no-host): raw-fetch each node, `mapNodePayload` locally for discovery (`getScriptIdIfRef`, themeId, emailTemplateName, filteredProviders, childRefs, inner-tree), keep raw for the bundle. Per-tree `SingleTreeExport` (nodes / innerNodes / scripts incl. transitive `require()` libs / themes / emailTemplates / socialIdentityProviders); `buildJourneyBundle` does level-1 vs all-levels BFS with a `visited` cycle guard. **ESVs not bundled** → `requires.esvs` (TD-1/TD-4)
+- [x] `src/export/serialize.ts` — `stripMask` exported; `ExportMeta` extended with `depthMode` / `treesSelectedForExport` / `innerTreesIncluded` / `requires`
+- [x] `src/commands/export-journey.ts` — QuickPick depth (`Level 1 only` default / `All levels`) → `showSaveDialog` → `vscode.window.withProgress`(walk + write); cancel/not-found/error paths
+- [x] UI: `exportJourney` W2E + `panel.ts` route; `App.tsx` `onExportJourney`; **Export… button on `JourneyCard` (new actions block) + `InnerJourneyCard`**; `extension.ts` + `package.json` registration
+- [x] Tests: `journey-bundle.test.ts` (level1 / allLevels / cycle / transitive-lib / mask+body / missing-journey), `client.test.ts` (3 raw accessors), `export-journey.test.ts` (depth-pick → write / pick-cancel / save-cancel); `vscode-mock` gains `withProgress` + `ProgressLocation`
+- [x] Verified: `/check all` green (0 lint errors, typecheck clean, **582 tests pass**); `npm run build` → extension.js + webview.js clean
+
+### Phase 4 — Import (write — amends D6) ⏳ (current) — TD-6
+
+> The first **write** phase. Design locked in **TD-6** (dedicated Transfer page · file-first workflow · per-component compat gate · three-tier compare over **fresh REST**, not the index · validate-before-first-write). Endpoint mechanics already proven by the endpoint-CRUD POC (**7/7 PAIC + 3/3 on-prem**) → the leaf batches are a **build, not a POC**. Risk-staged in 3 batches.
+
+**Batch 1 — atom leaves (theme · email template · social IdP)** ⏳ — plain-object writes; no body transform, no closure. CRUD-proven → build-ready.
+- [ ] `src/webview/transfer/` — new React entry (4th bundle → `out/transfer.js`): panel singleton + typed message protocol + file-first `App.tsx` (Source → Target → Plan → Resolve → Execute, reveal-on-complete); reuses ScopeSelector/Combobox (D38) + inspector cards for the bundle preview
+- [ ] Source: extension-side `showOpenDialog` → parse bundle → detect type (top-level key) → post `meta` + contents inventory to the webview
+- [ ] Compat gate: per-component vs target `kind` (on-prem = script/lib/idp; **hard-block** sole-unsupported, **skip-with-warn** incidental dep)
+- [ ] Import engine `src/import/` (pure, no vscode): inverse-serializer transforms + the proven writes — email `PUT /emailTemplate/<name>`; theme **splice** on `themerealm` (preserve siblings · drop `linkedTrees` · `isDefault` exclusivity); social IdP `PUT …/<typeId>/<id>` with re-supplied `clientSecret`
+- [ ] Compare (fresh REST by identity): New / Identical / Differs verdicts; reuse export raw accessors + `stripMask`/normalize on **both** sides
+- [ ] Section ④ secret re-supply (shared prompt — Batch 1 use: idp `clientSecret`)
+- [ ] Execute: validate-first → ordered PUTs → per-component ✓/✗ log (no fake atomicity)
+- [ ] Command + entry points: `paicJourneys.importBundle` (palette) + right-click connection "Import here…" (pre-fills target); `extension.ts` + `package.json`
+- [ ] Tests: import transforms (email/theme/idp), compat gate, compare verdicts, command happy/cancel
+
+**Batch 2 — ESV + script/lib** — stringified→base64 body (POC-proven, `import-poc-script.mjs`) · ESV-secret/value write-only re-supply · transitive lib closure + name→UUID reuse. *(after B1)*
+
+**Batch 3 — journey / inner-journey** — ordered structural write (nodes→tree · inner-tree-before-its-evaluator-node · ref-handling). **Needs the structural-wiring POC first** (TRACKER "Later round"). *(last)*
 
 ---
 

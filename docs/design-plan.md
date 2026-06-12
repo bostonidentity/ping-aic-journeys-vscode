@@ -898,6 +898,61 @@ The resolver already treats Tier-B/C lookups as best-effort (miss → `null`, lo
 4. Connection form + registry — kind toggle, two field groups, per-kind Test Connection, generalized secret storage + `package.json` schema.
 5. Tests — `onprem-strategy`, `client-cache` kind-branch, form payload, registry round-trip; live test behind `PAIC_LIVE=1` against the `poc/onprem-am/` bed.
 
+### D42 — Cross-environment transfer (export / import / compare): initiative, phased roadmap, bundle format, Phase-1 leaf export
+
+**New initiative (scoping 2026-06).** Extend the tool from read-only analysis toward moving and comparing journeys + components **across connections (environments)**. Validated by a live endpoint-CRUD POC (gitignored `poc/transfer-endpoints/`) against PAIC sb2x + the on-prem AM bed.
+
+**Relationship to D6 (read-only).** Export and Compare are **read-only** and stay fully within D6. Only **Import (write)** lifts D6 — when it lands it gets its own decision amending D6 + the "No write operations" non-goal. **Phase 1 (leaf export) is export-only → no D6 change.**
+
+**Phased roadmap (risk-staged):**
+1. **Leaf export** (read-only) — Export button on each leaf card → frodo-compatible per-type JSON. ← M9 first slice
+2. **Journey export** — `{meta, trees}` bundle (tree + nodes + leaf closure), depth toggle.
+3. **Compare** — diff two bundles (file↔file, file↔live). Still read-only; rides on the export serializer.
+4. **Import** (write — amends D6) — ordered PUTs (scripts→nodes→tree) with pre-flight validation; no rollback in AM, so validate-before-first-write. The careful, isolated phase.
+5. **Transfer page** — centralized from→to UI over the proven engine.
+
+**Bundle format — adopt frodo / PAIC-UI shapes verbatim (interop):**
+- **Journey bundle** = frodo `MultiTreeExportInterface`: `{ meta, trees: { <name>: SingleTreeExportInterface } }`.
+- **Single-leaf export** = frodo per-type interface: `{ meta, <kind>: { <id>: <raw entity> } }` (`script` / `theme` / `emailTemplate` / `variable` / `secret` / `idp`).
+- **Interop contract:** our bundles must import via `frodo` and the PAIC-UI "Import"; verify by round-trip (export-ours → import-theirs). Emit the **stringified-string** script-body form (what PAIC-UI uses; frodo also accepts it) and quarantine all extra fields inside `meta` so a `trees`-only reader is unaffected.
+
+**Export options — two orthogonal axes (journey export):**
+- **Content axis: leaf contents are ALWAYS bundled.** No skeleton/reference-only *import* path — comparison and conflict detection are impossible without the bodies, and a contents-less bundle is self-unverifiable (produces broken-journey 404s). frodo's `--no-deps` is unsafe for cross-env import (structure-preview / same-env only).
+- **Depth axis: inner-journey depth is a deliberate TOGGLE** (`Level 1 only` default / `All levels` closure). Always-deep is an *integrity hazard* (importing the full closure overwrites shared sub-journeys; ~21× blast radius), not a win.
+- **Unbundled deps → a `requires` manifest** (inner journeys when shallow + ESVs + custom node types) for import pre-flight.
+
+**Metadata block** (`meta`, on by default, opt-out): provenance + version-skew + self-describing depth. **The comparison engine never diffs `meta`** (timestamps churn). Strip server-managed diff-mask fields at export (`_rev`, `createdBy`/`creationDate`, `lastModifiedBy`/`lastModifiedDate`, `evaluatorVersion`, per-leaf `loaded`/`lastChange*`/`_type`) — but **keep `_id`** (UUIDs are preserved on import → real transferable identity). Fields: `bundleSchemaVersion`, `origin`, `originAmVersion`, `connectionType`, `realm`, `exportedBy`, `exportDate`, `exportTool` (`"paic-journeys-vscode"`), `exportToolVersion`, + journey-only `treesSelectedForExport` / `innerTreesIncluded` / `depthMode` / `requires`. (Future: a scrub-provenance option for external sharing.)
+
+**Per-leaf transfer surface (POC-confirmed — endpoints, masks, gotchas).** All 7 leaves round-trip full CRUD on PAIC; the 3 AM-native leaves are **identical** on bare AM (no per-leaf deployment branch — only auth + base path differ); the 4 IDM/platform leaves are N/A on on-prem.
+
+| Leaf | Match | Deploy | Endpoint (C/R/U/D) | Notes |
+|---|---|---|---|---|
+| Script / library script | UUID / name | both | `PUT(201)/GET/PUT/DELETE /am/json/<realm>/scripts/<id>` | **client-chosen UUID preserved**; lib resolves via `_queryFilter=name eq "<n>"` |
+| Social IdP | (type, id) | both | `…/SocialIdentityProviders/<typeId>/<id>` | **clientSecret redacted on read** (re-supply on import) |
+| Email template | name | PAIC | `/openidm/config/emailTemplate/<name>` | diff mask = `_id` only |
+| ESV variable | name | PAIC | `/environment/variables/<hyphen-id>` | value readable; dotted↔hyphen id |
+| ESV secret | name | PAIC | `/environment/secrets/<hyphen-id>` (+ `/versions?_action=create`) | **value write-only** → import prompts |
+| Theme | id / name | PAIC | whole-doc splice on `/openidm/config/ui/themerealm` | never a per-theme PUT |
+
+**Phase-1 leaf-export architecture (the only new code; ~75% reuses the card/message/command stack):**
+- **Raw-fetch path** — `PaicClient` returns *mapped domain* types; export needs the **raw REST** object → add a raw passthrough accessor (sibling to `buildSelectPayload`).
+- **Serializer** — `src/export/serialize.ts` (pure TS, no vscode): frodo per-type shape + `meta` + strip mask fields + string body.
+- **Command + save** — `paicJourneys.exportComponent`: raw-fetch → serialize → `vscode.window.showSaveDialog` → write. Webview never touches FS/network.
+- **Card buttons** — mirror the existing `ScriptCard.onOpenBody` button → `messages.ts` gains an `exportComponent` W2E variant → `panel.ts:onMessage` routes it to the command (same shape as `openScriptBody`).
+
+**Script-dependency closure + comparison depth (TD-3 / TD-4).**
+- **Script deps are captured FLAT, never nested.** A script's `require('<lib>')` / `esv.<X>` edges live as text in the JS body, so a single-script object can't represent the `script → lib → lib → esv` closure. When depth is needed (journey export / Compare), transitively-required libs are added **side-by-side in the same `script` map** (deduped by id) and ESVs go in the `requires` manifest — *not* a new nested format (matches frodo/PAIC-UI; the D20 transitive-`require()` resolver already produces the closure). A **single-leaf** script export stays a **single object** (matches `frodo script export -i`) — no closure bundled.
+- **Comparison depth:** value-compare the **entity you select to transfer**; **existence-check its dependency closure** (libs + ESVs = the `requires` pre-flight). **ESV values are never value-compared** (env-specific by design; secrets unreadable). **Library scripts** are existence-checked **+ an optional non-blocking "lib body differs" note** (libs are code — "exists but different" silently changes behavior, and we already have the bodies). **Secret values / custom node types** are existence-only (unreadable).
+
+**Journey / sub-journey export — depth representation + UI (TD-5).**
+- **One envelope, no structural fork.** Level-1 and All-levels are both `{ meta, trees }` (proven by the PAIC-UI captures). The depth is carried by **content**: Level-1 → only the selected journey is in `trees` (inner journeys referenced by name); All-levels → the selected journey **+ the full transitive inner-journey closure** as sibling trees. The JSON is self-describing from content, **and** `meta` records it explicitly — `depthMode` (`level1`/`allLevels`), `innerTreesIncluded` (bundled), `requires.innerJourneys` (referenced-but-not-bundled, = import pre-flight). Do **not** invent a second JSON shape.
+- **UI:** the only choice is inner-journey depth (contents always bundled, TD-1) → an **Export… button on `JourneyCard` + `InnerJourneyCard`** → a 2-item **QuickPick** (`Level 1 only` *(default)* / `All levels`, each with a consequence `detail`) → `showSaveDialog`. All-levels runs the **D35 resolver** closure walk under `withProgress`. The "would touch N journeys" blast-radius count is deferred to **import** (read-only export only costs file size).
+- **Engine:** reuse the D35 resolver + Slice-2 leaf serializers + meta builder; the one new piece is a per-tree `SingleTreeExportInterface` assembler.
+
+**Import (write — P4; amends D6) — design (TD-6).** Dedicated `src/webview/transfer/` page (4th React entry — **peer to Search, reuses the framework but NOT the Search surface**: read-vs-write boundary, a source+target *pair* scope, its own singleton). **File-first** workflow — ① Source (upload → `meta` + detected type, zero-network) → ② Target (connection + realm) → ③ Plan/compat → ④ Resolve (secret re-supply) → ⑤ Execute — reveal-on-complete; chosen over connection-first because the file is the subject and one bundle is often evaluated against N targets. Per-component **compatibility gate** vs the *target's* capability matrix (on-prem = script/lib/idp only → **hard-block** a sole unsupported artifact, **skip-with-warn** an incidental dep). **Three-tier compare** — value-compare the primary (journey/tree + its decision scripts) · **non-blocking** library-body-diff note (we already hold the bodies, TD-3/TD-4) · existence-only for ESV / secret-value / custom-node-type — run over **fresh REST by identity, NOT the metadata-only & staleness-prone RealmIndex** (reuse the export accessors + serializer `stripMask`/normalize on *both* sides). Redacted `clientSecret` / secret values **re-supplied** via one shared prompt. **Validate-before-first-write** (AM has no rollback) → ordered leaf-first PUTs + per-component log, no fake atomicity. **Risk-staged in 3 batches:** B1 atoms (theme/email/idp — CRUD-proven, build-ready) · B2 ESV + script/lib (stringified→base64 body [POC-proven] + write-only re-supply + name→UUID lib reuse) · B3 journey wiring (node→tree order, inner-tree-first — the one remaining POC). Full form: TD-6.
+
+**Decision register.** Running sub-decisions live in `poc/transfer-endpoints/DESIGN-DECISIONS.md` (TD-1 export options · TD-2 metadata · TD-3 script closure · TD-4 comparison depth · TD-5 journey export · TD-6 import design) with endpoint results in `…/TRACKER.md`; promoted here as D42 for the committed record.
+
 ### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
 
 Today the sidebar tree builds a journey's (or script's) children in **discovery order** — whatever order the dependency walker emits as it crawls a journey's nodes. A real journey can mix Inner Journeys, Scripts, Themes, Email Templates, and Social IdPs in any sequence, and the result is hard to scan.
@@ -1388,6 +1443,15 @@ Implements D41; reuses the entire data layer and every consumer unchanged — th
 - **Slice 4 — form + storage:** connection form split by kind; `registry.ts` generalized secret storage; `package.json` settings schema for the union.
 - **Slice 5 — tests:** `onprem-strategy`, `client-cache` kind-branch, form payload, registry round-trip; live tests behind `PAIC_LIVE=1` against the bed.
 
+### M9 — Cross-environment transfer (export / import / compare)
+
+**User-facing outcome (Phase 1):** *"I can click **Export** on any leaf component's card — script, library script, theme, email template, social IdP, ESV — and save a frodo / PAIC-UI-compatible JSON file to disk."*
+
+Implements **D42**. Read-only export → no D6 change. Phased: **P1 leaf export** (this milestone's first slice) → P2 journey export → P3 compare → P4 import (will amend D6) → P5 transfer page.
+
+- **Phase 1 — leaf export:** raw-fetch accessor + `src/export/serialize.ts` (frodo per-type shape + `meta`, per D42) + `paicJourneys.exportComponent` command + save dialog + an Export button on all six leaf cards. ~75% reuses the existing card→message→command plumbing (`openScriptBody` is the template); the only new code is the raw accessor + serializer + save dialog.
+- Endpoint surface + diff masks validated by the `poc/transfer-endpoints/` CRUD POC (all 7 leaves on PAIC; the 3 AM-native leaves identical on the on-prem bed).
+
 ## Open questions
 
 **Foundation**
@@ -1416,7 +1480,7 @@ Implements D41; reuses the entire data layer and every consumer unchanged — th
 
 ## Non-goals
 
-- No write operations to PAIC.
+- No write operations to PAIC **yet**. Browse, analysis, and **export** (D42 / M9 Phase 1) are all read-only. *Import* (write) is a planned later phase of the transfer feature that will explicitly amend this non-goal when it ships; until then the tool never writes to a tenant.
 - No alternative auth flows (2FA, SSO, basic auth). PAIC = service-account JWT-bearer; on-prem AM = admin username/password → session token (D41). Nothing else.
 - No support for PingOne or PingFederate. (Self-managed on-prem PingAM / ForgeRock AM **is** now in scope — see D41 / M8.)
 - No telemetry, no analytics, no remote sync.
