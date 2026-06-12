@@ -13,6 +13,7 @@ interface Props {
   onRefresh: () => void;
   onPreviewResolved: (node: ResolvedNode) => void;
   onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
+  onExportJourney?: (d: Extract<W2E, { type: "exportJourney" }>) => void;
 }
 
 export function InnerJourneyCard({
@@ -24,6 +25,7 @@ export function InnerJourneyCard({
   onRefresh,
   onPreviewResolved,
   onFindUsages,
+  onExportJourney,
 }: Props) {
   const { journey, realmName, host, visited } = payload;
   const nodeCount = Object.keys(journey.nodes).length;
@@ -70,25 +72,46 @@ export function InnerJourneyCard({
           </>
         ) : null}
       </dl>
-      {onFindUsages ? (
+      {onFindUsages || onExportJourney ? (
         <div className="card-actions">
-          <button
-            type="button"
-            className="primary"
-            onClick={() =>
-              onFindUsages({
-                type: "findUsages",
-                host,
-                realm: realmName,
-                kind: "journey",
-                id: journey.id,
-                displayName: journey.id,
-              })
-            }
-          >
-            <i className="codicon codicon-search" aria-hidden />
-            Find usages
-          </button>
+          {onExportJourney ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() =>
+                onExportJourney({
+                  type: "exportJourney",
+                  host,
+                  realm: realmName,
+                  journeyId: journey.id,
+                  name: journey.id,
+                  isInner: true,
+                })
+              }
+            >
+              <i className="codicon codicon-export" aria-hidden />
+              Export…
+            </button>
+          ) : null}
+          {onFindUsages ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() =>
+                onFindUsages({
+                  type: "findUsages",
+                  host,
+                  realm: realmName,
+                  kind: "journey",
+                  id: journey.id,
+                  displayName: journey.id,
+                })
+              }
+            >
+              <i className="codicon codicon-search" aria-hidden />
+              Find usages
+            </button>
+          ) : null}
         </div>
       ) : null}
       {deps?.nodeIndex && nodeCount > 0 ? (

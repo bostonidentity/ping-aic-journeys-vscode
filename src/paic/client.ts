@@ -31,6 +31,7 @@ import {
   type RawRealm,
   type RawScript,
   type RawSocialIdp,
+  type RawTheme,
   type RawThemeRealmConfig,
 } from "./mappers";
 import { listAllPaged, type PagedResponse } from "./pagination";
@@ -58,12 +59,22 @@ export interface ClientCapabilities {
 
 const ALL_CAPABILITIES: ClientCapabilities = { themes: true, emailTemplates: true, esvs: true };
 
+/** Result of a raw ESV fetch — the discovered kind plus the unmapped object.
+ * Used by the export feature to pick the frodo per-type key (variable/secret). */
+export type RawEsvResult =
+  | { kind: "variable"; raw: RawEsvVariable }
+  | { kind: "secret"; raw: RawEsvSecret };
+
 export interface PaicClient {
   listRealms(): Promise<Realm[]>;
   listJourneys(realm: string): Promise<Journey[]>;
   getJourney(realm: string, id: string): Promise<Journey>;
   getNode(realm: string, nodeType: string, nodeId: string): Promise<NodePayload>;
   getScript(realm: string, id: string): Promise<Script>;
+  /** Fetch the RAW, unmapped REST script object (base64 body, `_rev`, audit
+   * fields intact). The export feature needs the faithful wire shape rather
+   * than the cleaned domain `Script`. */
+  getRawScript(realm: string, id: string): Promise<RawScript>;
   /** Lookup a script by name in a realm. Used to resolve library-script
    * references (`require('<name>')`) discovered during script-body parsing.
    * Returns `null` if no script in the realm has that name. */
@@ -97,6 +108,24 @@ export interface PaicClient {
   /** List all ESV secrets in the tenant (paged). Same scope + naming notes
    * as `listVariables`. */
   listSecrets(realm: string): Promise<EsvSecret[]>;
+
+  // ── Raw accessors (export feature) — return the unmapped wire object ──
+  /** Raw journey skeleton (entry node + nodes map + staticNodes). */
+  getRawJourney(realm: string, id: string): Promise<RawJourney>;
+  /** Raw node payload (wire `_type` / `script` / `stage` / etc.). */
+  getRawNode(realm: string, nodeType: string, nodeId: string): Promise<RawNodePayload>;
+  /** Raw script looked up by name (the `require()` resolution path); null on miss. */
+  getRawScriptByName(realm: string, name: string): Promise<RawScript | null>;
+  /** Raw theme element from the realm's `ui/themerealm` array; null if absent
+   * or no IDM on this backend. */
+  getRawTheme(realm: string, themeId: string): Promise<RawTheme | null>;
+  /** Raw IDM email-template config; null on 404 or no IDM. */
+  getRawEmailTemplate(name: string): Promise<RawEmailTemplate | null>;
+  /** Raw social-IdP provider config (full object incl. `_type`); null if absent. */
+  getRawSocialIdp(realm: string, name: string): Promise<RawSocialIdp | null>;
+  /** Raw ESV with the discovered kind (variable vs secret); null on miss or no
+   * IDC ESV API. Secret raw is metadata-only (the API never returns the value). */
+  getRawEsv(name: string): Promise<RawEsvResult | null>;
 }
 
 export interface PaicClientOptions {
@@ -123,7 +152,53 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
   const amPath = opts.amPath ?? DEFAULT_AM_PATH;
   const caps = opts.capabilities ?? ALL_CAPABILITIES;
 
+  const getRawScript = async (realm: string, id: string): Promise<RawScript> => {
+    const realmPath = getRealmPath(realm);
+    const resp = await http.get<RawScript>(
+      `${amPath}/json${realmPath}/scripts/${encodeURIComponent(id)}`,
+      { apiVersion: SCRIPT_API_VERSION },
+    );
+    return resp.data;
+  };
+
+  const getRawJourney = async (realm: string, id: string): Promise<RawJourney> => {
+    const realmPath = getRealmPath(realm);
+    const resp = await http.get<RawJourney>(
+      `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(id)}`,
+      { apiVersion: TREE_API_VERSION },
+    );
+    return resp.data;
+  };
+
+  const getRawNode = async (
+    realm: string,
+    nodeType: string,
+    nodeId: string,
+  ): Promise<RawNodePayload> => {
+    const realmPath = getRealmPath(realm);
+    const resp = await http.get<RawNodePayload>(
+      `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/nodes/${encodeURIComponent(nodeType)}/${encodeURIComponent(nodeId)}`,
+      { apiVersion: TREE_API_VERSION },
+    );
+    return resp.data;
+  };
+
+  const getRawScriptByName = async (realm: string, name: string): Promise<RawScript | null> => {
+    const realmPath = getRealmPath(realm);
+    const params = new URLSearchParams({ _queryFilter: `name eq "${name}"` });
+    const resp = await http.get<PagedResponse<RawScript>>(
+      `${amPath}/json${realmPath}/scripts?${params.toString()}`,
+      { apiVersion: SCRIPT_API_VERSION },
+    );
+    return resp.data.result[0] ?? null;
+  };
+
   return {
+    getRawScript,
+    getRawJourney,
+    getRawNode,
+    getRawScriptByName,
+
     async listRealms(): Promise<Realm[]> {
       const all = await listAllPaged<RawRealm>(async (cookie) => {
         const params = new URLSearchParams({ _queryFilter: "true" });
@@ -154,63 +229,46 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     },
 
     async getJourney(realm: string, id: string): Promise<Journey> {
-      const realmPath = getRealmPath(realm);
-      const resp = await http.get<RawJourney>(
-        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(id)}`,
-        { apiVersion: TREE_API_VERSION },
-      );
-      return mapJourney(resp.data);
+      return mapJourney(await getRawJourney(realm, id));
     },
 
     async getNode(realm: string, nodeType: string, nodeId: string): Promise<NodePayload> {
-      const realmPath = getRealmPath(realm);
-      const resp = await http.get<RawNodePayload>(
-        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/nodes/${encodeURIComponent(nodeType)}/${encodeURIComponent(nodeId)}`,
-        { apiVersion: TREE_API_VERSION },
-      );
-      return mapNodePayload(resp.data);
+      return mapNodePayload(await getRawNode(realm, nodeType, nodeId));
     },
 
     async getScript(realm: string, id: string): Promise<Script> {
-      const realmPath = getRealmPath(realm);
-      const resp = await http.get<RawScript>(
-        `${amPath}/json${realmPath}/scripts/${encodeURIComponent(id)}`,
-        { apiVersion: SCRIPT_API_VERSION },
-      );
-      return mapScript(resp.data);
+      return mapScript(await getRawScript(realm, id));
     },
 
     async getScriptByName(realm: string, name: string): Promise<Script | null> {
-      const realmPath = getRealmPath(realm);
-      const params = new URLSearchParams({ _queryFilter: `name eq "${name}"` });
-      const resp = await http.get<PagedResponse<RawScript>>(
-        `${amPath}/json${realmPath}/scripts?${params.toString()}`,
-        { apiVersion: SCRIPT_API_VERSION },
-      );
-      const first = resp.data.result[0];
-      if (!first) {
+      const raw = await getRawScriptByName(realm, name);
+      if (!raw) {
         log.debug(
           { event: "client.getScriptByName.miss", realm, script_name: name },
           "No script with that name in realm",
         );
         return null;
       }
-      return mapScript(first);
+      return mapScript(raw);
     },
 
-    async getTheme(realm: string, themeId: string): Promise<Theme | null> {
+    async getRawTheme(realm: string, themeId: string): Promise<RawTheme | null> {
       if (!caps.themes) return null; // no IDM on this backend (e.g. on-prem AM)
       // AIC stores all themes for all realms in one IDM config doc. The
       // top-level key is `realm` (singular) and the per-realm value is the
       // theme array directly — no `.themes` wrapper. Verified against sb3.
       const resp = await http.get<RawThemeRealmConfig>("/openidm/config/ui/themerealm");
-      const themes = resp.data.realm?.[realm] ?? [];
-      const found = themes.find((t) => t._id === themeId);
+      const found = (resp.data.realm?.[realm] ?? []).find((t) => t._id === themeId);
       if (!found) {
         log.debug({ event: "client.getTheme.miss", realm, theme_id: themeId }, "Theme not found");
         return null;
       }
-      return mapTheme(realm, found);
+      return found;
+    },
+
+    async getTheme(realm: string, themeId: string): Promise<Theme | null> {
+      const raw = await this.getRawTheme(realm, themeId);
+      return raw ? mapTheme(realm, raw) : null;
     },
 
     async listThemes(realm: string): Promise<Theme[]> {
@@ -223,17 +281,22 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
       return raws.map((raw) => mapTheme(realm, raw));
     },
 
-    async getEmailTemplate(name: string): Promise<EmailTemplate | null> {
+    async getRawEmailTemplate(name: string): Promise<RawEmailTemplate | null> {
       if (!caps.emailTemplates) return null; // no IDM on this backend (e.g. on-prem AM)
       try {
         const resp = await http.get<RawEmailTemplate>(
           `/openidm/config/emailTemplate/${encodeURIComponent(name)}`,
         );
-        return mapEmailTemplate(name, resp.data);
+        return resp.data;
       } catch (err) {
         if (err instanceof PaicError && err.status === 404) return null;
         throw err;
       }
+    },
+
+    async getEmailTemplate(name: string): Promise<EmailTemplate | null> {
+      const raw = await this.getRawEmailTemplate(name);
+      return raw ? mapEmailTemplate(name, raw) : null;
     },
 
     async listSocialIdps(realm: string): Promise<SocialIdp[]> {
@@ -257,6 +320,16 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
         return null;
       }
       return found;
+    },
+
+    async getRawSocialIdp(realm: string, name: string): Promise<RawSocialIdp | null> {
+      const realmPath = getRealmPath(realm);
+      const resp = await http.post<{ result?: RawSocialIdp[] }>(
+        `${amPath}/json${realmPath}/realm-config/services/SocialIdentityProviders?_action=nextdescendents`,
+        {},
+        { apiVersion: SOCIAL_IDP_API_VERSION },
+      );
+      return (resp.data.result ?? []).find((r) => r._id === name) ?? null;
     },
 
     async listVariables(_realm: string): Promise<EsvVariable[]> {
@@ -312,6 +385,32 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
           { apiVersion: ESV_API_VERSION },
         );
         return mapEsvSecret(name, resp.data);
+      } catch (err) {
+        if (err instanceof PaicError && err.status === 404) return null;
+        throw err;
+      }
+    },
+
+    async getRawEsv(name: string): Promise<RawEsvResult | null> {
+      if (!caps.esvs) return null; // no IDC ESV API on this backend (e.g. on-prem AM)
+      // Dotted display name → hyphenated REST id (see getEsv). Variable vs
+      // secret is discovered by which endpoint resolves.
+      const apiId = name.replaceAll(".", "-");
+      try {
+        const resp = await http.get<RawEsvVariable>(
+          `/environment/variables/${encodeURIComponent(apiId)}`,
+          { apiVersion: ESV_API_VERSION },
+        );
+        return { kind: "variable", raw: resp.data };
+      } catch (err) {
+        if (!(err instanceof PaicError) || err.status !== 404) throw err;
+      }
+      try {
+        const resp = await http.get<RawEsvSecret>(
+          `/environment/secrets/${encodeURIComponent(apiId)}`,
+          { apiVersion: ESV_API_VERSION },
+        );
+        return { kind: "secret", raw: resp.data };
       } catch (err) {
         if (err instanceof PaicError && err.status === 404) return null;
         throw err;

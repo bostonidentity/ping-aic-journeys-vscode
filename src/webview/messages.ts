@@ -169,6 +169,15 @@ export type SelectPayload =
     }
   | { kind: "message"; uid: string; label: string };
 
+/** Leaf kinds the Export… button can request (one per leaf card). */
+export type ExportComponentKind =
+  | "script"
+  | "libraryScript"
+  | "theme"
+  | "emailTemplate"
+  | "socialIdp"
+  | "esv";
+
 /** Webview → extension. */
 export type W2E =
   | { type: "ready" }
@@ -236,6 +245,27 @@ export type W2E =
       displayName: string;
       isLibrary?: boolean;
       esvKind?: "variable" | "secret" | "missing";
+    }
+  /** D42 / M9 — export a single leaf component to a JSON file. Posted by the
+   * `[Export…]` button on inspector cards; the panel routes it to the
+   * `paicJourneys.exportComponent` command. */
+  | {
+      type: "exportComponent";
+      host: string;
+      realm: string;
+      kind: ExportComponentKind;
+      id: string;
+      name?: string;
+    }
+  /** D42 / M9 Phase 2 — export a whole journey (or inner journey). The depth
+   * choice (Level 1 / All levels) is a QuickPick shown extension-side. */
+  | {
+      type: "exportJourney";
+      host: string;
+      realm: string;
+      journeyId: string;
+      name?: string;
+      isInner?: boolean;
     };
 
 // ─── Type-guard helpers ───────────────────────────────────────────────────
@@ -264,6 +294,8 @@ export function isW2E(msg: unknown): msg is W2E {
     t === "resolveFull" ||
     t === "refreshResolved" ||
     t === "previewResolved" ||
-    t === "findUsages"
+    t === "findUsages" ||
+    t === "exportComponent" ||
+    t === "exportJourney"
   );
 }

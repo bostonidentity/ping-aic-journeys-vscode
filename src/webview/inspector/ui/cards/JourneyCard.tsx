@@ -1,6 +1,6 @@
 import type { ResolvedNode } from "../../../../domain/resolved-graph";
 import type { Journey } from "../../../../domain/types";
-import type { NodeInfo, NodeRef, SelectPayload } from "../../../messages";
+import type { NodeInfo, NodeRef, SelectPayload, W2E } from "../../../messages";
 import { JourneyDiagram } from "../diagram/JourneyDiagram";
 import { ResolvedView, type ResolveState } from "./ResolvedView";
 
@@ -33,6 +33,9 @@ interface Props {
    * right `PaicNode` and spawns a fresh tab (resolver keys don't match
    * the sidebar's `uidIndex`). */
   onPreviewResolved: (node: ResolvedNode) => void;
+  /** D42 / M9 Phase 2 — Export… button. Posts an `exportJourney` W2E; the
+   * extension shows the depth QuickPick + writes the bundle. */
+  onExportJourney?: (d: Extract<W2E, { type: "exportJourney" }>) => void;
 }
 
 export function JourneyCard({
@@ -43,6 +46,7 @@ export function JourneyCard({
   onResolve,
   onRefresh,
   onPreviewResolved,
+  onExportJourney,
 }: Props) {
   const { journey, realmName, host } = payload;
   const nodeCount = Object.keys(journey.nodes).length;
@@ -83,6 +87,26 @@ export function JourneyCard({
         <dd>{nodeCount}</dd>
         <JourneyFlags journey={journey} />
       </dl>
+      {onExportJourney ? (
+        <div className="card-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={() =>
+              onExportJourney({
+                type: "exportJourney",
+                host,
+                realm: realmName,
+                journeyId: journey.id,
+                name: journey.id,
+              })
+            }
+          >
+            <i className="codicon codicon-export" aria-hidden />
+            Export…
+          </button>
+        </div>
+      ) : null}
       {deps?.nodeIndex ? (
         <JourneyDiagram journey={journey} nodeIndex={deps.nodeIndex} onPreview={onPreview} />
       ) : null}

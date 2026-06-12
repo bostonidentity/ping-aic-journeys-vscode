@@ -99,6 +99,9 @@ export class MockUri {
     const sep = base.path.endsWith("/") ? "" : "/";
     return new MockUri([base.path, segments.join("/")].join(sep), base.scheme, base.authority);
   }
+  static file(p: string): MockUri {
+    return new MockUri(p, "file", "");
+  }
   toString(): string {
     if (!this.scheme) return this.path;
     return `${this.scheme}://${this.authority}${this.path}`;
@@ -223,8 +226,10 @@ export function makeVscodeMock(): Record<string, unknown> {
         update: vi.fn(),
       })),
       registerFileSystemProvider: vi.fn(() => ({ dispose: () => undefined })),
+      fs: { writeFile: vi.fn(() => Promise.resolve()) },
     },
     FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+    ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
     FilePermission: { Readonly: 1 },
     FileSystemError: MockFileSystemErrorFactory,
     window: {
@@ -242,7 +247,12 @@ export function makeVscodeMock(): Record<string, unknown> {
         dispose: vi.fn(),
       })),
       showErrorMessage: vi.fn(),
+      showInformationMessage: vi.fn(),
       showQuickPick: vi.fn(),
+      showSaveDialog: vi.fn(),
+      withProgress: vi.fn((_opts: unknown, task: (p: unknown, t: unknown) => unknown) =>
+        task({ report: () => undefined }, {}),
+      ),
     },
     commands: {
       registerCommand: vi.fn(() => ({ dispose: () => undefined })),

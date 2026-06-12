@@ -1,5 +1,5 @@
 import type { ResolvedNode } from "../../../../domain/resolved-graph";
-import type { SelectPayload, W2E } from "../../../messages";
+import type { ExportComponentKind, SelectPayload, W2E } from "../../../messages";
 import { ResolvedView, type ResolveState } from "./ResolvedView";
 import { type ScriptCardDeps, ScriptDepsBlock } from "./ScriptCard";
 
@@ -12,6 +12,13 @@ interface Props {
   onRefresh: () => void;
   onPreviewResolved: (node: ResolvedNode) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
+  onExport?: (
+    host: string,
+    realm: string,
+    kind: ExportComponentKind,
+    id: string,
+    name?: string,
+  ) => void;
   onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
@@ -24,6 +31,7 @@ export function LibraryScriptCard({
   onRefresh,
   onPreviewResolved,
   onOpenBody,
+  onExport,
   onFindUsages,
 }: Props) {
   const { name, scriptId, host, realmName, script } = payload;
@@ -51,7 +59,7 @@ export function LibraryScriptCard({
           </>
         ) : null}
       </dl>
-      {onOpenBody || onFindUsages ? (
+      {onOpenBody || onExport || onFindUsages ? (
         <div className="card-actions">
           {onOpenBody ? (
             <button
@@ -60,6 +68,16 @@ export function LibraryScriptCard({
               onClick={() => onOpenBody(host, realmName, scriptId, script?.language)}
             >
               Open body in editor
+            </button>
+          ) : null}
+          {onExport ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => onExport(host, realmName, "libraryScript", scriptId, name)}
+            >
+              <i className="codicon codicon-export" aria-hidden />
+              Export…
             </button>
           ) : null}
           {onFindUsages ? (

@@ -87,11 +87,6 @@
         "icon": "$(go-to-file)"
       },
       {
-        "command": "paicJourneys.diffScriptAcrossConnections",
-        "title": "Diff with Another Connection…",
-        "icon": "$(diff)"
-      },
-      {
         "command": "paicJourneys.openSearch",
         "title": "PAIC: Search…",
         "icon": "$(search)"
@@ -100,6 +95,16 @@
         "command": "paicJourneys.findUsages",
         "title": "PAIC: Find Usages…",
         "icon": "$(search)"
+      },
+      {
+        "command": "paicJourneys.exportComponent",
+        "title": "Export Component",
+        "icon": "$(export)"
+      },
+      {
+        "command": "paicJourneys.exportJourney",
+        "title": "Export Journey",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -113,11 +118,15 @@
           "when": "false"
         },
         {
-          "command": "paicJourneys.diffScriptAcrossConnections",
+          "command": "paicJourneys.findUsages",
           "when": "false"
         },
         {
-          "command": "paicJourneys.findUsages",
+          "command": "paicJourneys.exportComponent",
+          "when": "false"
+        },
+        {
+          "command": "paicJourneys.exportJourney",
           "when": "false"
         }
       ],
@@ -153,11 +162,6 @@
           "command": "paicJourneys.openScriptBody",
           "when": "view == paicJourneys.connections && viewItem =~ /^(script|libraryScript)$/",
           "group": "1@1"
-        },
-        {
-          "command": "paicJourneys.diffScriptAcrossConnections",
-          "when": "view == paicJourneys.connections && viewItem == script",
-          "group": "1@2"
         },
         {
           "command": "paicJourneys.editConnection",

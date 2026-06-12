@@ -199,6 +199,118 @@ describe("PaicClient", () => {
     });
   });
 
+  it("getRawScript returns the unmapped raw object (base64 body + _rev intact)", async () => {
+    const b64 = Buffer.from("var x = 1;", "utf8").toString("base64");
+    fake.enqueueGet({
+      _id: "s-2",
+      _rev: "7",
+      name: "RawScript",
+      language: "JAVASCRIPT",
+      script: b64,
+      context: "AUTHENTICATION_TREE_DECISION_NODE",
+    });
+
+    const raw = await client.getRawScript("alpha", "s-2");
+
+    expect(fake.calls[0].url).toBe("/am/json/realms/root/realms/alpha/scripts/s-2");
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.0,resource=1.0");
+    expect(raw._id).toBe("s-2");
+    expect(raw._rev).toBe("7");
+    expect(raw.script).toBe(b64); // raw passthrough — NOT decoded
+  });
+
+  it("getRawTheme returns the raw theme element filtered from the themerealm doc", async () => {
+    fake.enqueueGet({
+      _id: "ui/themerealm",
+      realm: {
+        alpha: [
+          { _id: "theme-1", name: "Corp", _rev: "5" },
+          { _id: "theme-2", name: "Other" },
+        ],
+      },
+    });
+    const raw = await client.getRawTheme("alpha", "theme-1");
+    expect(fake.calls[0].url).toBe("/openidm/config/ui/themerealm");
+    expect(raw).toEqual({ _id: "theme-1", name: "Corp", _rev: "5" });
+  });
+
+  it("getRawTheme returns null when the theme isn't in the realm", async () => {
+    fake.enqueueGet({ realm: { alpha: [] } });
+    expect(await client.getRawTheme("alpha", "nope")).toBeNull();
+  });
+
+  it("getRawEmailTemplate returns the raw IDM config object", async () => {
+    fake.enqueueGet({ _id: "emailTemplate/welcome", enabled: true, subject: { en: "Hi" } });
+    const raw = await client.getRawEmailTemplate("welcome");
+    expect(fake.calls[0].url).toBe("/openidm/config/emailTemplate/welcome");
+    expect(raw).toEqual({ _id: "emailTemplate/welcome", enabled: true, subject: { en: "Hi" } });
+  });
+
+  it("getRawSocialIdp posts nextdescendents and returns the matching raw element", async () => {
+    fake.enqueuePost({
+      result: [
+        { _id: "google", _type: { _id: "oidcConfig" }, clientId: "abc" },
+        { _id: "apple", _type: { _id: "appleConfig" } },
+      ],
+    });
+    const raw = await client.getRawSocialIdp("alpha", "google");
+    expect(fake.calls[0].method).toBe("POST");
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(raw).toEqual({ _id: "google", _type: { _id: "oidcConfig" }, clientId: "abc" });
+  });
+
+  it("getRawEsv returns the variable raw object + kind, using the hyphenated id", async () => {
+    fake.enqueueGet({ _id: "esv-foo-bar", valueBase64: "eA==", expressionType: "string" });
+    const r = await client.getRawEsv("esv.foo.bar");
+    expect(fake.calls[0].url).toBe("/environment/variables/esv-foo-bar");
+    expect(fake.calls[0].apiVersion).toBe("protocol=1.0,resource=1.0");
+    expect(r).toEqual({
+      kind: "variable",
+      raw: { _id: "esv-foo-bar", valueBase64: "eA==", expressionType: "string" },
+    });
+  });
+
+  it("getRawJourney returns the unmapped journey skeleton", async () => {
+    fake.enqueueGet({
+      _id: "Login",
+      _rev: "3",
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "PageNode" } },
+    });
+    const raw = await client.getRawJourney("alpha", "Login");
+    expect(fake.calls[0].url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/trees/Login",
+    );
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(raw).toEqual({
+      _id: "Login",
+      _rev: "3",
+      entryNodeId: "n1",
+      nodes: { n1: { nodeType: "PageNode" } },
+    });
+  });
+
+  it("getRawNode returns the unmapped node payload", async () => {
+    fake.enqueueGet({ _id: "n1", _rev: "2", _type: { _id: "ScriptedDecisionNode" }, script: "s1" });
+    const raw = await client.getRawNode("alpha", "ScriptedDecisionNode", "n1");
+    expect(fake.calls[0].url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/nodes/ScriptedDecisionNode/n1",
+    );
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(raw._type).toEqual({ _id: "ScriptedDecisionNode" });
+    expect(raw.script).toBe("s1");
+  });
+
+  it("getRawScriptByName returns the first raw result, or null on miss", async () => {
+    fake.enqueueGet({ result: [{ _id: "s1", name: "helpers", script: "eA==" }] });
+    const hit = await client.getRawScriptByName("alpha", "helpers");
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.0,resource=1.0");
+    expect(hit).toEqual({ _id: "s1", name: "helpers", script: "eA==" });
+
+    fake.enqueueGet({ result: [] });
+    expect(await client.getRawScriptByName("alpha", "nope")).toBeNull();
+  });
+
   it("getTheme fetches the whole themerealm config and filters by realm + id", async () => {
     // The wire shape uses `realm` (singular) and the value is the theme
     // array directly — no `.themes` wrapper. Verified against sb3 via the

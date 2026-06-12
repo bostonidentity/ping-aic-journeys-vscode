@@ -1,10 +1,17 @@
-import type { SelectPayload } from "../../../messages";
+import type { ExportComponentKind, SelectPayload } from "../../../messages";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "socialIdp" }>;
+  onExport?: (
+    host: string,
+    realm: string,
+    kind: ExportComponentKind,
+    id: string,
+    name?: string,
+  ) => void;
 }
 
-export function SocialIdpCard({ payload }: Props) {
+export function SocialIdpCard({ payload, onExport }: Props) {
   const { name, host, realmName, idp } = payload;
   return (
     <article className="card">
@@ -35,6 +42,18 @@ export function SocialIdpCard({ payload }: Props) {
         ) : null}
       </dl>
       {idp ? null : <p className="hint">Social-IdP resolution failed; showing name only.</p>}
+      {onExport ? (
+        <div className="card-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={() => onExport(host, realmName, "socialIdp", name, name)}
+          >
+            <i className="codicon codicon-export" aria-hidden />
+            Export…
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }

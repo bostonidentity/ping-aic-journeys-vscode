@@ -1,7 +1,8 @@
 import type { Level } from "pino";
 import * as vscode from "vscode";
+import { exportComponent } from "./commands/export-component";
+import { exportJourney } from "./commands/export-journey";
 import { type EntityKind, entityKeyOf } from "./domain/realm-index";
-
 import type { Connection } from "./domain/types";
 import {
   EMAIL_TEMPLATE_URI_SCHEME,
@@ -54,9 +55,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const cfg = vscode.workspace.getConfiguration();
   const level = cfg.inspect<Level>(LOG_LEVEL_SETTING)?.globalValue ?? "info";
   const fileEnabled = cfg.inspect<boolean>(LOG_FILE_ENABLED_SETTING)?.globalValue ?? true;
+  const extensionVersion = (context.extension.packageJSON as { version: string }).version;
   log = makeLogger({
     storageUri: context.globalStorageUri,
-    version: (context.extension.packageJSON as { version: string }).version,
+    version: extensionVersion,
     level,
     fileEnabled,
     channel,
@@ -246,52 +248,12 @@ export function activate(context: vscode.ExtensionContext): void {
       });
     }),
 
-    vscode.commands.registerCommand(
-      "paicJourneys.diffScriptAcrossConnections",
-      async (arg: unknown) => {
-        const parsed = parseOpenScriptArg(arg);
-        if (!parsed) {
-          log.warn(
-            { event: "diffScript.badArg" },
-            "diffScriptAcrossConnections invoked without host / realm / scriptId",
-          );
-          return;
-        }
-        const others = registry.list().filter((c) => c.host !== parsed.host);
-        if (others.length === 0) {
-          vscode.window.showInformationMessage(
-            "No other connections to diff against. Add a second connection in the PAIC Journeys sidebar.",
-          );
-          return;
-        }
-        let peer = others[0];
-        if (others.length > 1) {
-          const pick = await vscode.window.showQuickPick(
-            others.map((c) => ({
-              label: c.name ?? c.host,
-              description: c.host,
-              host: c.host,
-            })),
-            { placeHolder: `Diff "${parsed.scriptId}" with which connection?` },
-          );
-          if (!pick) return;
-          peer = others.find((c) => c.host === pick.host) ?? peer;
-        }
-        const left = makeScriptUri(parsed.host, parsed.realm, parsed.scriptId, parsed.language);
-        const right = makeScriptUri(peer.host, parsed.realm, parsed.scriptId, parsed.language);
-        const title = `Script Diff: ${parsed.host} ↔ ${peer.host} · ${parsed.scriptId}`;
-        log.info(
-          {
-            event: "diffScript",
-            host_left: parsed.host,
-            host_right: peer.host,
-            realm: parsed.realm,
-            script_id: parsed.scriptId,
-          },
-          "Opening cross-tenant script diff",
-        );
-        await vscode.commands.executeCommand("vscode.diff", left, right, title);
-      },
+    vscode.commands.registerCommand("paicJourneys.exportComponent", (arg: unknown) =>
+      exportComponent({ clientCache, registry, log, extensionVersion }, arg),
+    ),
+
+    vscode.commands.registerCommand("paicJourneys.exportJourney", (arg: unknown) =>
+      exportJourney({ clientCache, registry, log, extensionVersion }, arg),
     ),
 
     vscode.commands.registerCommand("paicJourneys.refreshNode", (node: PaicNode) => {

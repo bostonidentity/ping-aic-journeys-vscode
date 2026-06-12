@@ -19,6 +19,7 @@ interface Props {
   onRefresh: () => void;
   onPreviewResolved: (node: ResolvedNode) => void;
   onOpenBody?: (host: string, realm: string, scriptId: string, language?: string) => void;
+  onExport?: (host: string, realm: string, kind: "script", id: string, name?: string) => void;
   onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
@@ -31,6 +32,7 @@ export function ScriptCard({
   onRefresh,
   onPreviewResolved,
   onOpenBody,
+  onExport,
   onFindUsages,
 }: Props) {
   const { scriptId, host, realmName, script } = payload;
@@ -102,7 +104,7 @@ export function ScriptCard({
           </>
         )}
       </dl>
-      {onOpenBody || onFindUsages ? (
+      {onOpenBody || onExport || onFindUsages ? (
         <div className="card-actions">
           {onOpenBody ? (
             <button
@@ -111,6 +113,16 @@ export function ScriptCard({
               onClick={() => onOpenBody(host, realmName, scriptId, script?.language)}
             >
               Open body in editor
+            </button>
+          ) : null}
+          {onExport ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => onExport(host, realmName, "script", scriptId, script?.name)}
+            >
+              <i className="codicon codicon-export" aria-hidden />
+              Export…
             </button>
           ) : null}
           {onFindUsages ? (

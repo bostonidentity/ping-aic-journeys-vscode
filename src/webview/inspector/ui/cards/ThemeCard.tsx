@@ -1,12 +1,19 @@
 import type { Theme } from "../../../../domain/types";
-import type { SelectPayload, W2E } from "../../../messages";
+import type { ExportComponentKind, SelectPayload, W2E } from "../../../messages";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "theme" }>;
+  onExport?: (
+    host: string,
+    realm: string,
+    kind: ExportComponentKind,
+    id: string,
+    name?: string,
+  ) => void;
   onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
-export function ThemeCard({ payload, onFindUsages }: Props) {
+export function ThemeCard({ payload, onExport, onFindUsages }: Props) {
   const { themeId, host, realmName, theme } = payload;
   const heading = theme?.name || themeId;
   return (
@@ -33,25 +40,37 @@ export function ThemeCard({ payload, onFindUsages }: Props) {
         <LinkedTrees ids={theme.linkedTrees} />
       ) : null}
       {theme ? null : <p className="hint">Theme resolution failed; showing id only.</p>}
-      {onFindUsages ? (
+      {onFindUsages || onExport ? (
         <div className="card-actions">
-          <button
-            type="button"
-            className="primary"
-            onClick={() =>
-              onFindUsages({
-                type: "findUsages",
-                host,
-                realm: realmName,
-                kind: "theme",
-                id: themeId,
-                displayName: theme?.name ?? themeId,
-              })
-            }
-          >
-            <i className="codicon codicon-search" aria-hidden />
-            Find usages
-          </button>
+          {onExport ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => onExport(host, realmName, "theme", themeId, theme?.name ?? themeId)}
+            >
+              <i className="codicon codicon-export" aria-hidden />
+              Export…
+            </button>
+          ) : null}
+          {onFindUsages ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() =>
+                onFindUsages({
+                  type: "findUsages",
+                  host,
+                  realm: realmName,
+                  kind: "theme",
+                  id: themeId,
+                  displayName: theme?.name ?? themeId,
+                })
+              }
+            >
+              <i className="codicon codicon-search" aria-hidden />
+              Find usages
+            </button>
+          ) : null}
         </div>
       ) : null}
     </article>

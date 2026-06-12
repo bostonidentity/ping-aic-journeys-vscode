@@ -62,6 +62,20 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
       if (!s) return Promise.reject(new Error(`no fixture for getScript(${key})`));
       return Promise.resolve(s);
     }),
+    getRawScript: vi.fn((realm: string, id: string) =>
+      Promise.reject(new Error(`getRawScript not stubbed in fake (${realm}:${id})`)),
+    ),
+    getRawJourney: vi.fn((realm: string, id: string) =>
+      Promise.reject(new Error(`getRawJourney not stubbed in fake (${realm}:${id})`)),
+    ),
+    getRawNode: vi.fn((realm: string, t: string, id: string) =>
+      Promise.reject(new Error(`getRawNode not stubbed in fake (${realm}:${t}:${id})`)),
+    ),
+    getRawScriptByName: vi.fn(() => Promise.resolve(null)),
+    getRawTheme: vi.fn(() => Promise.resolve(null)),
+    getRawEmailTemplate: vi.fn(() => Promise.resolve(null)),
+    getRawSocialIdp: vi.fn(() => Promise.resolve(null)),
+    getRawEsv: vi.fn(() => Promise.resolve(null)),
     getScriptByName: vi.fn((realm: string, name: string) => {
       const key = `${realm}:byName:${name}`;
       // Returning null mirrors the real client's "miss" — caller emits a

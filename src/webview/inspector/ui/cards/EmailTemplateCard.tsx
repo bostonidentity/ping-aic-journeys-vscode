@@ -1,12 +1,19 @@
 import type { EmailTemplate } from "../../../../domain/types";
-import type { SelectPayload } from "../../../messages";
+import type { ExportComponentKind, SelectPayload } from "../../../messages";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "emailTemplate" }>;
   onOpenBody?: (host: string, name: string, locale: string) => void;
+  onExport?: (
+    host: string,
+    realm: string,
+    kind: ExportComponentKind,
+    id: string,
+    name?: string,
+  ) => void;
 }
 
-export function EmailTemplateCard({ payload, onOpenBody }: Props) {
+export function EmailTemplateCard({ payload, onOpenBody, onExport }: Props) {
   const { name, host, realmName, template } = payload;
   const heading = template?.displayName || name;
   return (
@@ -36,6 +43,20 @@ export function EmailTemplateCard({ payload, onOpenBody }: Props) {
       {template ? null : (
         <p className="hint">Email template resolution failed; showing name only.</p>
       )}
+      {onExport ? (
+        <div className="card-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={() =>
+              onExport(host, realmName, "emailTemplate", name, template?.displayName ?? name)
+            }
+          >
+            <i className="codicon codicon-export" aria-hidden />
+            Export…
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }

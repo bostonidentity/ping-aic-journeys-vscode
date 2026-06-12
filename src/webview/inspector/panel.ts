@@ -423,6 +423,26 @@ export class InspectorTab implements vscode.Disposable {
         ...(m.isLibrary === undefined ? {} : { isLibrary: m.isLibrary }),
         ...(m.esvKind === undefined ? {} : { esvKind: m.esvKind }),
       });
+      return;
+    }
+    if (m.type === "exportComponent") {
+      await vscode.commands.executeCommand("paicJourneys.exportComponent", {
+        host: m.host,
+        realm: m.realm,
+        kind: m.kind,
+        id: m.id,
+        ...(m.name === undefined ? {} : { name: m.name }),
+      });
+      return;
+    }
+    if (m.type === "exportJourney") {
+      await vscode.commands.executeCommand("paicJourneys.exportJourney", {
+        host: m.host,
+        realm: m.realm,
+        journeyId: m.journeyId,
+        ...(m.name === undefined ? {} : { name: m.name }),
+        ...(m.isInner === undefined ? {} : { isInner: m.isInner }),
+      });
     }
   }
 

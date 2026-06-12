@@ -1,13 +1,20 @@
 import { useState } from "react";
 import type { Esv, EsvSecret, EsvVariable } from "../../../../domain/types";
-import type { SelectPayload, W2E } from "../../../messages";
+import type { ExportComponentKind, SelectPayload, W2E } from "../../../messages";
 
 interface Props {
   payload: Extract<SelectPayload, { kind: "esv" }>;
+  onExport?: (
+    host: string,
+    realm: string,
+    kind: ExportComponentKind,
+    id: string,
+    name?: string,
+  ) => void;
   onFindUsages?: (d: Extract<W2E, { type: "findUsages" }>) => void;
 }
 
-export function EsvCard({ payload, onFindUsages }: Props) {
+export function EsvCard({ payload, onExport, onFindUsages }: Props) {
   const { name, host, realmName, esv } = payload;
   const esvKind: "variable" | "secret" | undefined =
     esv?.kind === "variable" || esv?.kind === "secret" ? esv.kind : undefined;
@@ -33,26 +40,38 @@ export function EsvCard({ payload, onFindUsages }: Props) {
         {esv ? <SharedAuditFields esv={esv} /> : null}
       </dl>
       {esv ? null : <p className="hint">ESV not found in this tenant.</p>}
-      {onFindUsages ? (
+      {onFindUsages || onExport ? (
         <div className="card-actions">
-          <button
-            type="button"
-            className="primary"
-            onClick={() =>
-              onFindUsages({
-                type: "findUsages",
-                host,
-                realm: realmName,
-                kind: "esv",
-                id: name,
-                displayName: name,
-                ...(esvKind === undefined ? {} : { esvKind }),
-              })
-            }
-          >
-            <i className="codicon codicon-search" aria-hidden />
-            Find usages
-          </button>
+          {onExport ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => onExport(host, realmName, "esv", name, name)}
+            >
+              <i className="codicon codicon-export" aria-hidden />
+              Export…
+            </button>
+          ) : null}
+          {onFindUsages ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() =>
+                onFindUsages({
+                  type: "findUsages",
+                  host,
+                  realm: realmName,
+                  kind: "esv",
+                  id: name,
+                  displayName: name,
+                  ...(esvKind === undefined ? {} : { esvKind }),
+                })
+              }
+            >
+              <i className="codicon codicon-search" aria-hidden />
+              Find usages
+            </button>
+          ) : null}
         </div>
       ) : null}
     </article>

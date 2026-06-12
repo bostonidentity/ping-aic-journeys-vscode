@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ResolvedNode } from "../../../domain/resolved-graph";
-import type { E2W, NodeInfo, NodeRef, SelectPayload, W2E } from "../../messages";
+import type {
+  E2W,
+  ExportComponentKind,
+  NodeInfo,
+  NodeRef,
+  SelectPayload,
+  W2E,
+} from "../../messages";
 import { ConnectionCard } from "./cards/ConnectionCard";
 import { EmailTemplateCard } from "./cards/EmailTemplateCard";
 import { EsvCard } from "./cards/EsvCard";
@@ -78,6 +85,21 @@ export function App({ vscode }: Props) {
 
   const openBody = (host: string, realm: string, scriptId: string, language?: string) =>
     vscode.postMessage({ type: "openScriptBody", host, realm, scriptId, language });
+  const onExport = (
+    host: string,
+    realm: string,
+    kind: ExportComponentKind,
+    id: string,
+    name?: string,
+  ) =>
+    vscode.postMessage({
+      type: "exportComponent",
+      host,
+      realm,
+      kind,
+      id,
+      ...(name === undefined ? {} : { name }),
+    });
   const openEmailBody = (host: string, name: string, locale: string) =>
     vscode.postMessage({ type: "openEmailTemplateBody", host, name, locale });
   const previewNode = (uid: string) => vscode.postMessage({ type: "previewNode", uid });
@@ -103,6 +125,10 @@ export function App({ vscode }: Props) {
   );
   const onFindUsages = useCallback(
     (descriptor: Extract<W2E, { type: "findUsages" }>) => vscode.postMessage(descriptor),
+    [vscode],
+  );
+  const onExportJourney = useCallback(
+    (descriptor: Extract<W2E, { type: "exportJourney" }>) => vscode.postMessage(descriptor),
     [vscode],
   );
 
@@ -133,6 +159,7 @@ export function App({ vscode }: Props) {
           onResolve={onResolve}
           onRefresh={onRefresh}
           onPreviewResolved={onPreviewResolved}
+          onExportJourney={onExportJourney}
         />
       );
     case "innerJourney":
@@ -146,6 +173,7 @@ export function App({ vscode }: Props) {
           onRefresh={onRefresh}
           onPreviewResolved={onPreviewResolved}
           onFindUsages={onFindUsages}
+          onExportJourney={onExportJourney}
         />
       );
     case "script":
@@ -159,6 +187,7 @@ export function App({ vscode }: Props) {
           onRefresh={onRefresh}
           onPreviewResolved={onPreviewResolved}
           onOpenBody={openBody}
+          onExport={onExport}
           onFindUsages={onFindUsages}
         />
       );
@@ -173,17 +202,20 @@ export function App({ vscode }: Props) {
           onRefresh={onRefresh}
           onPreviewResolved={onPreviewResolved}
           onOpenBody={openBody}
+          onExport={onExport}
           onFindUsages={onFindUsages}
         />
       );
     case "esv":
-      return <EsvCard payload={selection} onFindUsages={onFindUsages} />;
+      return <EsvCard payload={selection} onExport={onExport} onFindUsages={onFindUsages} />;
     case "theme":
-      return <ThemeCard payload={selection} onFindUsages={onFindUsages} />;
+      return <ThemeCard payload={selection} onExport={onExport} onFindUsages={onFindUsages} />;
     case "emailTemplate":
-      return <EmailTemplateCard payload={selection} onOpenBody={openEmailBody} />;
+      return (
+        <EmailTemplateCard payload={selection} onOpenBody={openEmailBody} onExport={onExport} />
+      );
     case "socialIdp":
-      return <SocialIdpCard payload={selection} />;
+      return <SocialIdpCard payload={selection} onExport={onExport} />;
     case "message":
       return <div className="empty">{selection.label}</div>;
   }
