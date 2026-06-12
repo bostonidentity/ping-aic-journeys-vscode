@@ -34,6 +34,7 @@ import {
 } from "./webview/connection-form/panel";
 import { InspectorFactory } from "./webview/inspector/panel";
 import { SearchFactory } from "./webview/search/panel";
+import { TransferFactory } from "./webview/transfer/panel";
 
 const LOG_LEVEL_SETTING = "paicJourneys.logging.level";
 const LOG_FILE_ENABLED_SETTING = "paicJourneys.logging.fileEnabled";
@@ -131,6 +132,16 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
   });
   context.subscriptions.push(searchFactory);
+
+  const transferFactory = new TransferFactory({
+    context,
+    listConnections: () =>
+      registry.list().map((c) => ({ host: c.host, name: c.name, kind: c.kind })),
+    cache: clientCache,
+    connectionKindOf: (host) => registry.list().find((c) => c.host === host)?.kind,
+    log,
+  });
+  context.subscriptions.push(transferFactory);
 
   // Register the FileSystemProvider that surfaces script bodies as
   // `paic-script://<host>/<realm>/<scriptId>.<ext>` editor tabs (D17).
@@ -283,6 +294,11 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       log.info({ event: "search.openSearch", source }, "Opening Search panel");
       searchFactory.spawn(opts);
+    }),
+
+    vscode.commands.registerCommand("paicJourneys.openTransfer", () => {
+      log.info({ event: "transfer.openTransfer" }, "Opening Transfer panel");
+      transferFactory.spawn();
     }),
 
     vscode.commands.registerCommand("paicJourneys.findUsages", (arg: unknown) => {

@@ -20,6 +20,9 @@
     "src/webview/connection-form/ui/**",
     "tests/webview/connection-form/ui/**",
     "src/webview/search/ui/**",
-    "tests/webview/search/ui/**"
+    "tests/webview/search/ui/**",
+    "src/webview/transfer/ui/**",
+    "tests/webview/transfer/ui/**",
+    "src/webview/shared/**"
   ]
 }

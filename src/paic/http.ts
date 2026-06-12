@@ -22,9 +22,11 @@ export interface PaicRequestConfig extends AxiosRequestConfig {
 
 export interface HttpClient {
   get<T>(url: string, config?: PaicRequestConfig): Promise<AxiosResponse<T>>;
-  /** Hatch for AIC's `_action=` POSTs. We're a read-only product but the
-   * action semantics are technically POSTs. */
+  /** Hatch for AIC's `_action=` POSTs. */
   post<T>(url: string, data?: unknown, config?: PaicRequestConfig): Promise<AxiosResponse<T>>;
+  /** Import writes (D43). Idempotent (same-id PUT); callers may pass an
+   * `If-Match` header via `config.headers` (preserved by the interceptor). */
+  put<T>(url: string, data?: unknown, config?: PaicRequestConfig): Promise<AxiosResponse<T>>;
 }
 
 export interface HttpClientOptions {
@@ -182,5 +184,7 @@ export function makeHttpClient(opts: HttpClientOptions): HttpClient {
     get: <T>(url: string, config?: PaicRequestConfig) => instance.get<T>(url, config),
     post: <T>(url: string, data?: unknown, config?: PaicRequestConfig) =>
       instance.post<T>(url, data, config),
+    put: <T>(url: string, data?: unknown, config?: PaicRequestConfig) =>
+      instance.put<T>(url, data, config),
   };
 }

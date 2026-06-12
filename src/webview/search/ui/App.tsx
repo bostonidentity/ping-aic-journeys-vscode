@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EntityKind, RealmIndexEntity, UsagePaths } from "../../../domain/realm-index";
+import { Combobox, type ComboboxOption } from "../../shared/combobox";
 import type {
   CacheStatus,
   E2W,
@@ -464,6 +465,7 @@ function ScopeSelector(props: ScopeSelectorProps) {
         selectedValue={selectedHost ?? ""}
         onSelect={props.onConnectionChange}
         placeholder="Select a connection…"
+        emptyLabel="No entity matches"
       />
       <label htmlFor="scope-realm" className="field-label">
         Realm
@@ -475,6 +477,7 @@ function ScopeSelector(props: ScopeSelectorProps) {
         onSelect={props.onRealmChange}
         placeholder={realmPlaceholder(selectedHost, realms)}
         disabled={realmDisabled}
+        emptyLabel="No entity matches"
       />
     </section>
   );
@@ -675,162 +678,8 @@ function QueryControls(props: QueryControlsProps) {
   return <UnusedControls {...props} />;
 }
 
-/** One selectable option in a `Combobox`. `value` is the stable identity
- * the caller stores; `label` is the displayed + filtered-on text. */
-interface ComboboxOption {
-  value: string;
-  label: string;
-}
-
-/**
- * Type-to-filter dropdown — the single dropdown primitive for every
- * webview `<select>` (D38). An input + an HTML-drawn popup: because the
- * popup is our own markup it honors the VS Code theme (dark in dark
- * mode), unlike a native `<select>` whose open list the OS draws. Typing
- * narrows the popup by case-insensitive substring on `label` (the same
- * matcher the By-name query uses); empty input shows every option.
- *
- * `id` must be unique per instance on the page — it scopes the
- * `aria-controls` / option ids.
- */
-function Combobox({
-  id,
-  options,
-  selectedValue,
-  onSelect,
-  placeholder = "Type to filter…",
-  disabled = false,
-}: {
-  id: string;
-  options: readonly ComboboxOption[];
-  selectedValue: string;
-  onSelect: (value: string) => void;
-  placeholder?: string;
-  disabled?: boolean;
-}) {
-  const [text, setText] = useState("");
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  // Keep the input text in sync when the selection changes from outside
-  // (a dependent dropdown clears it, a card-portal prefill sets it).
-  const selectedLabel = options.find((o) => o.value === selectedValue)?.label ?? "";
-  useEffect(() => {
-    setText(selectedLabel);
-  }, [selectedLabel]);
-
-  const matches = useMemo(() => {
-    const needle = text.trim().toLocaleLowerCase();
-    if (needle.length === 0) return options;
-    return options.filter((o) => o.label.toLocaleLowerCase().includes(needle));
-  }, [options, text]);
-
-  // Close the popup on an outside click.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (ev: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(ev.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  const choose = (o: ComboboxOption) => {
-    onSelect(o.value);
-    setText(o.label);
-    setOpen(false);
-  };
-
-  const onKeyDown = (ev: React.KeyboardEvent) => {
-    if (ev.key === "Escape") {
-      setOpen(false);
-      return;
-    }
-    if (!open && (ev.key === "ArrowDown" || ev.key === "ArrowUp")) {
-      setOpen(true);
-      return;
-    }
-    if (ev.key === "ArrowDown") {
-      ev.preventDefault();
-      setActive((i) => Math.min(i + 1, matches.length - 1));
-    } else if (ev.key === "ArrowUp") {
-      ev.preventDefault();
-      setActive((i) => Math.max(i - 1, 0));
-    } else if (ev.key === "Enter" && open && matches[active]) {
-      ev.preventDefault();
-      choose(matches[active]);
-    }
-  };
-
-  // Active option id for `aria-activedescendant` — in the ARIA combobox
-  // pattern focus stays on the input; the highlighted option is announced
-  // by id rather than being tab-focusable itself.
-  const optId = (value: string) => `${id}-opt-${value}`;
-  const activeId = open && matches[active] ? optId(matches[active].value) : undefined;
-
-  return (
-    <div className={`entity-combobox${open ? " open" : ""}`} ref={rootRef}>
-      {/* Field wrapper — the chevron is positioned against THIS box only,
-          not the whole combobox (which grows tall when the popup opens). */}
-      <div className="entity-combobox-field">
-        <input
-          id={id}
-          type="text"
-          role="combobox"
-          aria-expanded={open}
-          aria-autocomplete="list"
-          aria-controls={`${id}-listbox`}
-          aria-activedescendant={activeId}
-          autoComplete="off"
-          placeholder={placeholder}
-          disabled={disabled}
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            setOpen(true);
-            setActive(0);
-            if (e.target.value.trim() === "") onSelect("");
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={onKeyDown}
-        />
-        <i
-          className={`codicon codicon-chevron-${open ? "up" : "down"} entity-combobox-chevron`}
-          aria-hidden
-        />
-      </div>
-      {open && !disabled ? (
-        // Generic `div`s carry the listbox/option roles — focus stays on
-        // the input (ARIA combobox pattern), so the options are not
-        // tab-focusable; `aria-activedescendant` announces the highlight.
-        <div id={`${id}-listbox`} className="entity-combobox-list" role="listbox">
-          {matches.length === 0 ? (
-            <div className="entity-combobox-empty">No entity matches</div>
-          ) : (
-            matches.map((o, i) => (
-              // biome-ignore lint/a11y/useFocusableInteractive: ARIA combobox pattern — focus stays on the input; the option is announced via aria-activedescendant, not tab-focused
-              <div
-                key={o.value}
-                id={optId(o.value)}
-                role="option"
-                aria-selected={o.value === selectedValue}
-                className={`entity-combobox-option${i === active ? " active" : ""}`}
-                onMouseDown={(ev) => {
-                  // mousedown, not click — fires before the input blur.
-                  ev.preventDefault();
-                  choose(o);
-                }}
-              >
-                {o.label}
-              </div>
-            ))
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+// `Combobox` + `ComboboxOption` now live in the shared module (D38) —
+// imported at the top of this file and reused by the Transfer page.
 
 function FindUsagesControls(props: QueryControlsProps) {
   const entities = props.entitiesByKind?.[props.usagesKind] ?? [];
@@ -857,6 +706,7 @@ function FindUsagesControls(props: QueryControlsProps) {
             props.onUsagesKindChange(v as EntityKind);
             props.onUsagesTargetChange("");
           }}
+          emptyLabel="No entity matches"
         />
         <label htmlFor="usages-target">Target</label>
         <Combobox
@@ -864,6 +714,7 @@ function FindUsagesControls(props: QueryControlsProps) {
           options={targetOptions}
           selectedValue={props.usagesTargetKey}
           onSelect={props.onUsagesTargetChange}
+          emptyLabel="No entity matches"
         />
       </div>
       <div className="query-submit">

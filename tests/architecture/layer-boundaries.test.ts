@@ -50,6 +50,10 @@ describe("D21 layer boundaries", () => {
       from: "src/webview/connection-form/ui",
       forbidden: /from\s+["'](?:@\/|(?:\.\.?\/)+)(?:realm-index|resolver|tenants|paic)\b/,
     },
+    {
+      from: "src/webview/transfer/ui",
+      forbidden: /from\s+["'](?:@\/|(?:\.\.?\/)+)(?:realm-index|resolver|tenants|paic)\b/,
+    },
   ];
 
   for (const { from, forbidden } of cases) {

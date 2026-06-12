@@ -111,6 +111,13 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
     listSecrets: vi.fn((_realm: string) => {
       return Promise.resolve(data.secrets ?? []);
     }),
+    writeEmailTemplate: vi.fn(() => Promise.resolve("created" as const)),
+    writeSocialIdp: vi.fn(() => Promise.resolve("created" as const)),
+    writeTheme: vi.fn(() => Promise.resolve("created" as const)),
+    writeEsvVariable: vi.fn(() => Promise.resolve("created" as const)),
+    writeEsvSecret: vi.fn(() => Promise.resolve("created" as const)),
+    getStartupStatus: vi.fn(() => Promise.resolve("ready" as const)),
+    applyEsvUpdates: vi.fn(() => Promise.resolve()),
   };
 }
 

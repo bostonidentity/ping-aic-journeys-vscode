@@ -1,13 +1,17 @@
 import type { AxiosResponse } from "axios";
 import { beforeEach, describe, expect, it } from "vitest";
 import { makePaicClient, type PaicClient, type PaicClientOptions } from "@/paic/client";
+import { PaicError } from "@/paic/errors";
 import type { HttpClient, PaicRequestConfig } from "@/paic/http";
 
 // In-memory fake HttpClient that records every call and serves canned responses.
 interface FakeCall {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PUT";
   url: string;
   apiVersion?: string;
+  /** Request body (PUT) + headers — for write-path assertions (If-Match, etc.). */
+  body?: unknown;
+  headers?: Record<string, unknown>;
 }
 
 function makeFakeHttp(): {
@@ -17,15 +21,20 @@ function makeFakeHttp(): {
   enqueueGet: <T>(data: T) => void;
   /** Same, but for POST. Not used at M1 but kept for completeness. */
   enqueuePost: <T>(data: T) => void;
+  /** Push a canned PUT response (FIFO) with an optional HTTP status (201 create / 200 update). */
+  enqueuePut: <T>(data: T, status?: number) => void;
+  /** Push a rejection for the NEXT PUT (e.g. a 412 PaicError). */
+  enqueuePutReject: (err: unknown) => void;
 } {
   const calls: FakeCall[] = [];
   const getQueue: unknown[] = [];
   const postQueue: unknown[] = [];
+  const putQueue: ({ data: unknown; status: number } | { reject: unknown })[] = [];
 
-  function build<T>(data: T): AxiosResponse<T> {
+  function build<T>(data: T, status = 200): AxiosResponse<T> {
     return {
       data,
-      status: 200,
+      status,
       statusText: "OK",
       headers: {},
       // biome-ignore lint/suspicious/noExplicitAny: test stub; the real config shape is opaque
@@ -50,6 +59,21 @@ function makeFakeHttp(): {
       }
       return Promise.resolve(build<T>(next as T));
     },
+    put: <T>(url: string, data?: unknown, config?: PaicRequestConfig) => {
+      calls.push({
+        method: "PUT",
+        url,
+        apiVersion: config?.apiVersion,
+        body: data,
+        headers: config?.headers as Record<string, unknown> | undefined,
+      });
+      const next = putQueue.shift();
+      if (next === undefined) {
+        return Promise.reject(new Error(`unexpected PUT ${url} — no canned response`));
+      }
+      if ("reject" in next) return Promise.reject(next.reject);
+      return Promise.resolve(build<T>(next.data as T, next.status));
+    },
   };
 
   return {
@@ -57,6 +81,8 @@ function makeFakeHttp(): {
     calls,
     enqueueGet: (data) => getQueue.push(data),
     enqueuePost: (data) => postQueue.push(data),
+    enqueuePut: (data, status = 200) => putQueue.push({ data, status }),
+    enqueuePutReject: (err) => putQueue.push({ reject: err }),
   };
 }
 
@@ -565,5 +591,155 @@ describe("PaicClient", () => {
     expect(fake.calls[0].url).toBe(
       "/openam/json/realms/root/realm-config/authentication/authenticationtrees/trees?_queryFilter=true",
     );
+  });
+});
+
+describe("import writes (D43)", () => {
+  it("writeEmailTemplate PUTs the body to /emailTemplate/<name>; 201 → created", async () => {
+    fake.enqueuePut({}, 201);
+    const out = await client.writeEmailTemplate("welcome", { subject: { en: "Hi" } });
+    expect(out).toBe("created");
+    const put = fake.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/openidm/config/emailTemplate/welcome");
+    expect(put?.body).toEqual({ subject: { en: "Hi" } });
+  });
+
+  it("writeEmailTemplate 200 → overwritten", async () => {
+    fake.enqueuePut({}, 200);
+    expect(await client.writeEmailTemplate("w", {})).toBe("overwritten");
+  });
+
+  it("writeSocialIdp PUTs to <typeId>/<id> with the social-idp api version", async () => {
+    fake.enqueuePut({}, 201);
+    const out = await client.writeSocialIdp("alpha", "oidcConfig", "g", {
+      _id: "g",
+      clientSecret: "x",
+    });
+    expect(out).toBe("created");
+    const put = fake.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/services/SocialIdentityProviders/oidcConfig/g",
+    );
+    expect(put?.apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(put?.body).toMatchObject({ _id: "g", clientSecret: "x" });
+  });
+
+  it("writeTheme splices into themerealm with If-Match, preserving siblings; create → isDefault:false", async () => {
+    fake.enqueueGet({
+      _id: "ui/themerealm",
+      _rev: "7",
+      realm: { alpha: [{ _id: "other", isDefault: true }] },
+    });
+    fake.enqueuePut({}, 200);
+    const out = await client.writeTheme("alpha", { _id: "new", backgroundColor: "#1" });
+    expect(out).toBe("created");
+    const put = fake.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/openidm/config/ui/themerealm");
+    expect(put?.headers?.["If-Match"]).toBe("7");
+    const body = put?.body as { _id: string; realm: { alpha: Array<Record<string, unknown>> } };
+    expect(body._id).toBe("ui/themerealm"); // doc id kept
+    expect(body.realm.alpha).toHaveLength(2); // sibling preserved + new appended
+    expect(body.realm.alpha.find((t) => t._id === "new")?.isDefault).toBe(false);
+    expect(body.realm.alpha.find((t) => t._id === "other")?.isDefault).toBe(true); // untouched
+  });
+
+  it("writeTheme overwrite preserves the target's existing isDefault, replaces content", async () => {
+    fake.enqueueGet({
+      _id: "ui/themerealm",
+      _rev: "1",
+      realm: { alpha: [{ _id: "t", isDefault: true, backgroundColor: "#0" }] },
+    });
+    fake.enqueuePut({}, 200);
+    expect(
+      await client.writeTheme("alpha", { _id: "t", isDefault: false, backgroundColor: "#9" }),
+    ).toBe("overwritten");
+    const put = fake.calls.find((c) => c.method === "PUT");
+    const body = put?.body as { realm: { alpha: Array<Record<string, unknown>> } };
+    const t = body.realm.alpha.find((x) => x._id === "t");
+    expect(t?.isDefault).toBe(true); // default-state preserved
+    expect(t?.backgroundColor).toBe("#9"); // content overwritten
+  });
+
+  it("writeTheme retries the splice once on a 412", async () => {
+    fake.enqueueGet({ _id: "ui/themerealm", _rev: "1", realm: { alpha: [] } });
+    fake.enqueuePutReject(new PaicError("precondition failed", { status: 412 }));
+    fake.enqueueGet({ _id: "ui/themerealm", _rev: "2", realm: { alpha: [] } });
+    fake.enqueuePut({}, 200);
+    const out = await client.writeTheme("alpha", { _id: "t", backgroundColor: "#1" });
+    expect(out).toBe("created");
+    const puts = fake.calls.filter((c) => c.method === "PUT");
+    expect(puts).toHaveLength(2);
+    expect(puts[1].headers?.["If-Match"]).toBe("2"); // re-GET picked up the new _rev
+  });
+
+  it("writeTheme throws on a no-IDM (on-prem) backend instead of silently skipping", async () => {
+    const onprem = makePaicClient({
+      http: fake.http,
+      log: makeFakeLogger(),
+      capabilities: { themes: false, emailTemplates: false, esvs: false },
+    });
+    await expect(onprem.writeTheme("alpha", { _id: "t" })).rejects.toThrow(/no IDM/);
+  });
+
+  it("writeEsvVariable PUTs the body + ESV api version; reports 'created' on a 200", async () => {
+    fake.enqueuePut({}, 200);
+    const out = await client.writeEsvVariable("esv-x", { valueBase64: "dg==" });
+    expect(out).toBe("created"); // 200, not 201, but import is create-only
+    const put = fake.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/environment/variables/esv-x");
+    expect(put?.apiVersion).toBe("protocol=1.0,resource=1.0");
+    expect(put?.body).toEqual({ valueBase64: "dg==" });
+  });
+
+  it("writeEsvSecret PUTs to /environment/secrets/<id>", async () => {
+    fake.enqueuePut({}, 200);
+    expect(await client.writeEsvSecret("esv-s", { valueBase64: "dg==" })).toBe("created");
+    expect(fake.calls.find((c) => c.method === "PUT")?.url).toBe("/environment/secrets/esv-s");
+  });
+
+  it("writeEsvVariable normalizes a dotted id to hyphens for the URL", async () => {
+    fake.enqueuePut({}, 200);
+    await client.writeEsvVariable("esv.zzz.export.var", { valueBase64: "dg==" });
+    expect(fake.calls.find((c) => c.method === "PUT")?.url).toBe(
+      "/environment/variables/esv-zzz-export-var",
+    );
+  });
+
+  it("writeEsvVariable throws on a no-ESV (on-prem) backend", async () => {
+    const onprem = makePaicClient({
+      http: fake.http,
+      log: makeFakeLogger(),
+      capabilities: { themes: false, emailTemplates: false, esvs: false },
+    });
+    await expect(onprem.writeEsvVariable("esv-x", {})).rejects.toThrow(/no IDC ESV/);
+  });
+
+  it("getStartupStatus reads /environment/startup → restartStatus", async () => {
+    fake.enqueueGet({ restartStatus: "restarting" });
+    expect(await client.getStartupStatus()).toBe("restarting");
+    const get = fake.calls.find((c) => c.url === "/environment/startup");
+    expect(get?.apiVersion).toBe("protocol=1.0,resource=1.0");
+  });
+
+  it("getStartupStatus defaults to 'ready' when restartStatus is absent", async () => {
+    fake.enqueueGet({});
+    expect(await client.getStartupStatus()).toBe("ready");
+  });
+
+  it("applyEsvUpdates POSTs ?_action=restart with the ESV api version", async () => {
+    fake.enqueuePost({ restartStatus: "restarting" });
+    await client.applyEsvUpdates();
+    const post = fake.calls.find((c) => c.method === "POST");
+    expect(post?.url).toBe("/environment/startup?_action=restart");
+    expect(post?.apiVersion).toBe("protocol=1.0,resource=1.0");
+  });
+
+  it("getStartupStatus throws on a no-ESV backend", async () => {
+    const onprem = makePaicClient({
+      http: fake.http,
+      log: makeFakeLogger(),
+      capabilities: { themes: false, emailTemplates: false, esvs: false },
+    });
+    await expect(onprem.getStartupStatus()).rejects.toThrow(/no IDC ESV/);
   });
 });

@@ -105,6 +105,11 @@
         "command": "paicJourneys.exportJourney",
         "title": "Export Journey",
         "icon": "$(export)"
+      },
+      {
+        "command": "paicJourneys.openTransfer",
+        "title": "PAIC: Import / Transfer…",
+        "icon": "$(cloud-upload)"
       }
     ],
     "menus": {
@@ -142,9 +147,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "paicJourneys.refresh",
+          "command": "paicJourneys.openTransfer",
           "when": "view == paicJourneys.connections",
           "group": "navigation@3"
+        },
+        {
+          "command": "paicJourneys.refresh",
+          "when": "view == paicJourneys.connections",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -259,12 +269,14 @@
     "build:webview": "esbuild src/webview/inspector/ui/main.tsx --bundle --outfile=out/webview.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
     "build:connection-form": "esbuild src/webview/connection-form/ui/main.tsx --bundle --outfile=out/connection-form.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
     "build:search": "esbuild src/webview/search/ui/main.tsx --bundle --outfile=out/search.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
+    "build:transfer": "esbuild src/webview/transfer/ui/main.tsx --bundle --outfile=out/transfer.js --platform=browser --format=iife --jsx=automatic --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
     "build:codicons": "mkdir -p out && cp node_modules/@vscode/codicons/dist/codicon.css out/codicon.css && cp node_modules/@vscode/codicons/dist/codicon.ttf out/codicon.ttf",
-    "build": "npm run build:ext && npm run build:webview && npm run build:connection-form && npm run build:search && npm run build:codicons",
+    "build": "npm run build:ext && npm run build:webview && npm run build:connection-form && npm run build:search && npm run build:transfer && npm run build:codicons",
     "watch": "npm run build:ext -- --watch",
     "watch:webview": "npm run build:webview -- --watch",
     "watch:connection-form": "npm run build:connection-form -- --watch",
     "watch:search": "npm run build:search -- --watch",
+    "watch:transfer": "npm run build:transfer -- --watch",
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.webview.json --noEmit",

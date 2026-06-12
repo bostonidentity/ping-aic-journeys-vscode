@@ -65,6 +65,13 @@ export type RawEsvResult =
   | { kind: "variable"; raw: RawEsvVariable }
   | { kind: "secret"; raw: RawEsvSecret };
 
+/** Whether a write created a new resource or overwrote an existing one
+ * (201 vs 200, or array insert vs replace for the theme splice). */
+export type WriteOutcome = "created" | "overwritten";
+
+/** Environment restart ("apply") status — `GET /environment/startup`. */
+export type EsvRestartStatus = "ready" | "restarting";
+
 export interface PaicClient {
   listRealms(): Promise<Realm[]>;
   listJourneys(realm: string): Promise<Journey[]>;
@@ -126,6 +133,34 @@ export interface PaicClient {
   /** Raw ESV with the discovered kind (variable vs secret); null on miss or no
    * IDC ESV API. Secret raw is metadata-only (the API never returns the value). */
   getRawEsv(name: string): Promise<RawEsvResult | null>;
+
+  // ── Import writes (D43) — the only methods that mutate a tenant ──
+  /** Create/overwrite an IDM email template. Throws on a no-IDM backend. */
+  writeEmailTemplate(name: string, body: Record<string, unknown>): Promise<WriteOutcome>;
+  /** Create/overwrite a social IdP at `(typeId, id)` in a realm. */
+  writeSocialIdp(
+    realm: string,
+    typeId: string,
+    id: string,
+    body: Record<string, unknown>,
+  ): Promise<WriteOutcome>;
+  /** Create/overwrite a theme via a whole-doc splice of `ui/themerealm`
+   * (`If-Match` guarded; preserves siblings + the realm's default). Throws on
+   * a no-IDM backend. */
+  writeTheme(realm: string, theme: Record<string, unknown>): Promise<WriteOutcome>;
+  /** Create/update an ESV variable (`PUT /environment/variables/<id>`). Always
+   * reports `"created"` (the API returns 200 for both). Throws on no-ESV
+   * backend. ESV writes land pending until applied (D43 / TD-7). */
+  writeEsvVariable(id: string, body: Record<string, unknown>): Promise<WriteOutcome>;
+  /** Create an ESV secret (`PUT /environment/secrets/<id>`) with a re-supplied
+   * `valueBase64`. Always reports `"created"`. Throws on no-ESV backend. */
+  writeEsvSecret(id: string, body: Record<string, unknown>): Promise<WriteOutcome>;
+  /** Environment restart ("apply") status — `ready` or `restarting`. ESV
+   * writes only take effect after a restart. Throws on no-ESV backend. */
+  getStartupStatus(): Promise<EsvRestartStatus>;
+  /** Trigger the environment restart that applies pending ESV changes
+   * (tenant-wide; requires status `ready`). Throws on no-ESV backend. */
+  applyEsvUpdates(): Promise<void>;
 }
 
 export interface PaicClientOptions {
@@ -415,6 +450,138 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
         if (err instanceof PaicError && err.status === 404) return null;
         throw err;
       }
+    },
+
+    // ── Import writes (D43) ──────────────────────────────────────────────────
+
+    async writeEmailTemplate(name: string, body: Record<string, unknown>): Promise<WriteOutcome> {
+      if (!caps.emailTemplates) {
+        throw new Error("This backend has no IDM; cannot write email templates.");
+      }
+      const resp = await http.put(
+        `/openidm/config/emailTemplate/${encodeURIComponent(name)}`,
+        body,
+      );
+      const outcome: WriteOutcome = resp.status === 201 ? "created" : "overwritten";
+      log.info(
+        { event: "client.writeEmailTemplate", name, status: resp.status },
+        "Wrote email template",
+      );
+      return outcome;
+    },
+
+    async writeSocialIdp(
+      realm: string,
+      typeId: string,
+      id: string,
+      body: Record<string, unknown>,
+    ): Promise<WriteOutcome> {
+      const realmPath = getRealmPath(realm);
+      const resp = await http.put(
+        `${amPath}/json${realmPath}/realm-config/services/SocialIdentityProviders/${encodeURIComponent(typeId)}/${encodeURIComponent(id)}`,
+        body,
+        { apiVersion: SOCIAL_IDP_API_VERSION },
+      );
+      const outcome: WriteOutcome = resp.status === 201 ? "created" : "overwritten";
+      log.info(
+        { event: "client.writeSocialIdp", realm, type_id: typeId, idp_id: id, status: resp.status },
+        "Wrote social IdP",
+      );
+      return outcome;
+    },
+
+    async writeTheme(realm: string, theme: Record<string, unknown>): Promise<WriteOutcome> {
+      if (!caps.themes) throw new Error("This backend has no IDM; cannot write themes.");
+      const themeId = typeof theme._id === "string" ? theme._id : undefined;
+
+      // One read-modify-write of the whole `ui/themerealm` doc — there is no
+      // per-theme endpoint. `If-Match: <_rev>` guards the shared doc; a 412
+      // means the doc advanced under us → re-GET, re-splice, retry once.
+      const attempt = async (): Promise<WriteOutcome> => {
+        const resp = await http.get<RawThemeRealmConfig & { _id?: string; _rev?: string }>(
+          "/openidm/config/ui/themerealm",
+        );
+        const doc = resp.data;
+        const themes = [...(doc.realm?.[realm] ?? [])];
+        const idx = themes.findIndex((t) => t._id === themeId);
+        const outcome: WriteOutcome = idx >= 0 ? "overwritten" : "created";
+        // Overwrite preserves the target's default-state for this theme; a new
+        // theme is never made the realm default by an import.
+        const element = (
+          idx >= 0 ? { ...theme, isDefault: themes[idx].isDefault } : { ...theme, isDefault: false }
+        ) as RawTheme;
+        if (idx >= 0) themes[idx] = element;
+        else themes.push(element);
+        const realmMap = { ...(doc.realm ?? {}), [realm]: themes };
+        const { _rev, ...rest } = doc as Record<string, unknown>;
+        await http.put(
+          "/openidm/config/ui/themerealm",
+          { ...rest, realm: realmMap },
+          _rev ? { headers: { "If-Match": String(_rev) } } : undefined,
+        );
+        log.info(
+          { event: "client.writeTheme", realm, theme_id: themeId, outcome },
+          "Wrote theme (themerealm splice)",
+        );
+        return outcome;
+      };
+
+      try {
+        return await attempt();
+      } catch (err) {
+        if (err instanceof PaicError && err.status === 412) {
+          log.warn(
+            { event: "client.writeTheme.precondition", realm, theme_id: themeId },
+            "themerealm changed under us — retrying the splice once",
+          );
+          return await attempt();
+        }
+        throw err;
+      }
+    },
+
+    async writeEsvVariable(id: string, body: Record<string, unknown>): Promise<WriteOutcome> {
+      if (!caps.esvs) throw new Error("This backend has no IDC ESV API; cannot write variables.");
+      // Hyphenated REST id (dotted display names translate the same way reads do).
+      const apiId = id.replaceAll(".", "-");
+      const resp = await http.put(`/environment/variables/${encodeURIComponent(apiId)}`, body, {
+        apiVersion: ESV_API_VERSION,
+      });
+      // ESV create + update both return 200 → always "created" (import is create-only).
+      log.info(
+        { event: "client.writeEsvVariable", id: apiId, status: resp.status },
+        "Wrote ESV variable",
+      );
+      return "created";
+    },
+
+    async writeEsvSecret(id: string, body: Record<string, unknown>): Promise<WriteOutcome> {
+      if (!caps.esvs) throw new Error("This backend has no IDC ESV API; cannot write secrets.");
+      const apiId = id.replaceAll(".", "-");
+      const resp = await http.put(`/environment/secrets/${encodeURIComponent(apiId)}`, body, {
+        apiVersion: ESV_API_VERSION,
+      });
+      log.info(
+        { event: "client.writeEsvSecret", id: apiId, status: resp.status },
+        "Wrote ESV secret",
+      );
+      return "created";
+    },
+
+    async getStartupStatus(): Promise<EsvRestartStatus> {
+      if (!caps.esvs) throw new Error("This backend has no IDC ESV API; no restart status.");
+      const resp = await http.get<{ restartStatus?: EsvRestartStatus }>("/environment/startup", {
+        apiVersion: ESV_API_VERSION,
+      });
+      return resp.data.restartStatus === "restarting" ? "restarting" : "ready";
+    },
+
+    async applyEsvUpdates(): Promise<void> {
+      if (!caps.esvs) throw new Error("This backend has no IDC ESV API; cannot apply updates.");
+      await http.post("/environment/startup?_action=restart", null, {
+        apiVersion: ESV_API_VERSION,
+      });
+      log.info({ event: "client.applyEsvUpdates" }, "Initiated ESV apply (environment restart)");
     },
   };
 }
