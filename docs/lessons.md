@@ -100,3 +100,31 @@ All three appear under `staticNodes` on the wire. `startNode` is connected to `e
 **Mistake:** Assumed any bearer token from the admin UI's auth flow would work on AM endpoints.
 **Correction:** That token is scoped `fr:idm:*` and audience `idmAdminClient` — it's for IDM-side calls only. AM REST endpoints under `/am/json/.../realm-config/...` rejected it with 401. The UI's actual AM auth is the per-tenant session cookie, not this token.
 **How to avoid next time:** Decode any token (`jwt.io`-style) and check `scope` + `aud` before assuming it works against a given endpoint. Auth flows for AM and IDM in PAIC are not the same.
+
+## 2026-06-11 — Adding a webview surface means touching BOTH tsconfigs
+
+**Context:** Added a 4th React webview surface (`src/webview/transfer/ui`) for the import Transfer page.
+**Mistake:** Created the files + added `tsconfig.webview.json` `include`, but the base `tsconfig.json` typecheck (`tsc --noEmit`, first half of `npm run typecheck`) then failed on the new `.tsx` with "Cannot use JSX / Cannot find name 'window'" — because the base config (node, `lib: ["ES2022"]`, no jsx) was now checking the DOM/jsx files.
+**Correction:** The base `tsconfig.json` `exclude` list **enumerates each surface's `src/webview/<name>/ui/**` + `tests/webview/<name>/ui/**`** so those are left to `tsconfig.webview.json` (DOM lib + jsx). A new surface must be added to the base `exclude` AND the webview `include`.
+**How to avoid next time:** When adding a webview surface, update three config spots together: `tsconfig.json` exclude, `tsconfig.webview.json` include, and `package.json` `build:`/`watch:` scripts (+ the `build` chain). The per-surface `ui` editor diagnostics (JSX/window/`MessageEvent` not generic) are config-association false positives — only `tsc -p tsconfig.webview.json` is authoritative.
+
+## 2026-06-11 — Extracting a shared webview component must move its CSS + parametrize hard-coded copy
+
+**Context:** Extracted the `Combobox` from `search/ui/App.tsx` into `src/webview/shared/combobox.tsx` so the Transfer page could reuse it (D38).
+**Mistake (caught in planning + by a test):** (1) The component's styles (`.entity-combobox*` + the base `input` rules) lived **inline in `search/panel.ts`'s `SEARCH_CSS` template string**, not with the component — extracting just the `.tsx` would render an unstyled, mispositioned dropdown in the new surface. (2) The component hard-coded the empty-state text `"No entity matches"`, which a Search test asserts on; the shared default `"No matches"` broke that test.
+**Correction:** Each webview panel hand-rolls its own `<style>` string (no CSS-sharing mechanism), so a shared component needs a companion shared **CSS const** (`combobox-css.ts` → `COMBOBOX_CSS`) that every consuming panel concatenates into its CSS. And consumer-specific copy must become a **prop** (`emptyLabel`), with the original consumer passing its exact string to stay byte-identical.
+**How to avoid next time:** When extracting any webview UI component, extract THREE things together: the component, its CSS (from the panel's inline `*_CSS` string), and any consumer-specific text → props. Also: a new shared dir under `src/webview/` with JSX must be added to the base `tsconfig.json` `exclude` (DOM/jsx live in `tsconfig.webview.json`). CSS regressions aren't test-caught → verify the original consumer's dropdowns still render in EDH.
+
+## 2026-06-12 — IDM whole-doc config PUTs (themerealm) need `If-Match: <_rev>`, not a plain PUT
+
+**Context:** Implementing `writeTheme` (D43) — themes have no per-theme endpoint, so a write is a read-modify-write of the shared `/openidm/config/ui/themerealm` doc (every realm's themes in one document).
+**Mistake (caught in planning vs the POC):** The first design did "GET → splice → drop `_rev` → plain PUT." That silently clobbers concurrent edits to the *whole* doc — including other realms' themes — if anything changed between the GET and the PUT.
+**Correction:** Strip `_rev` from the body but send it back as an **`If-Match: <_rev>` header** (the proven `poc/transfer-endpoints/theme-crud.mjs` payload). A stale `_rev` then fails with **412 Precondition Failed** instead of overwriting; handle 412 by re-GET → re-splice → retry once. Keep the doc `_id` (`ui/themerealm`) in the body. (Email templates have no `_rev` → plain PUT is fine there — it's a per-endpoint fact, not general.)
+**How to avoid next time:** For any IDM `/openidm/config/*` whole-document write, mirror the POC's exact payload (`*-crud.mjs`), not just the endpoint+verb — concurrency headers (`If-Match`), which fields stay in the body (`_id`), and per-endpoint `_rev` presence are all load-bearing and only visible in the captured request. Read-modify-write of a shared doc is a clobber risk; gate it with the optimistic-concurrency header.
+
+## 2026-06-12 — Don't assume an import value needs re-supply — the export is the faithful raw wire object
+
+**Context:** Designing ESV import value-supply. I drafted an AskUserQuestion treating the *variable* value as the "source env's value" that might need a prompt or transform (the env-specific concern).
+**Mistake:** I conflated the *compare* rule (ESV values are env-specific → compare existence-only) with the *write* path. The user stopped me: a variable's value travels in the bundle as `valueBase64` — the **exact raw PAIC API field** the PUT accepts — so there's nothing to re-derive or prompt for; you just write it back.
+**Correction:** Every export comes from the `getRaw*` accessors (the faithful unmapped wire object); `stripMask` only drops `_rev`/audit (keeps `_id` + content). So before assuming any import field needs a prompt/transform, check whether the bundle already carries the exact wire field. The genuine prompts are only for fields the API **never returns** (write-only) — ESV secret value, social-IdP `clientSecret` — not for readable ones (variable `valueBase64`).
+**How to avoid next time:** "Existence-only compare" ≠ "can't write the value." Separate the compare policy from the write payload. For each import field ask: did the read API return it (then it's in the bundle, write it) or is it write-only (then prompt)? Verify against `mappers.ts` `Raw*` + an actual exported sample before designing a prompt.

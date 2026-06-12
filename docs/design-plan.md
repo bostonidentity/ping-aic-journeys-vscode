@@ -61,9 +61,11 @@ Not a synthetic UUID, not a user-given name. Hosts are unique, stable, and human
 
 User-facing vocabulary follows frodo's "connection profile" idea. Matches what the data actually is (a connected session against a host with creds). Avoids the "environment" overload from VS Code's own usage.
 
-### D6 — Read-only
+### D6 — Read-only (AMENDED 2026-06-12 by D43)
 
 No pull, no push, no promote. If anyone wants those, they use paic-pipeline. We stay focused on analysis.
+
+**Amendment (D43):** the import feature now writes the **3 atom leaves** (theme, email template, social IdP) to a tenant, gated by a modal confirm + a fresh validate-before-write pre-flight. Everything else stays read-only. See D43.
 
 ### D7 — Resolver: full-depth BFS with cycle guard
 
@@ -953,6 +955,16 @@ The resolver already treats Tier-B/C lookups as best-effort (miss → `null`, lo
 
 **Decision register.** Running sub-decisions live in `poc/transfer-endpoints/DESIGN-DECISIONS.md` (TD-1 export options · TD-2 metadata · TD-3 script closure · TD-4 comparison depth · TD-5 journey export · TD-6 import design) with endpoint results in `…/TRACKER.md`; promoted here as D42 for the committed record.
 
+### D43 — Import write phase (atom leaves) — amends D6
+
+**Lifts D6 for a bounded write surface** (M9 Phase 4 Batch 1 Slice C). The Transfer page may now **write the 3 atom leaves** — theme, email template, social IdP — to a target tenant. Scripts/ESVs (Batch 2), journeys (Batch 3), and any bulk/promote flow remain out. Endpoints POC-proven (`poc/transfer-endpoints/TRACKER.md`). Locked sub-decisions:
+
+- **Semantics:** Execute writes verdict ∈ {New→create, Differs→overwrite}, skips Identical. "Overwrite" replaces the target's version entirely (no merge).
+- **Safety gate:** a single `showWarningMessage({modal:true})` confirm naming **host + realm** + create/overwrite counts + "cannot be undone", after a **fresh validate-before-write pre-flight** (re-run compare immediately before writing; the modal shows the fresh counts). No setting-gate.
+- **Secrets:** the redacted social-IdP `clientSecret` is re-supplied via extension-side `showInputBox({password:true})` — **never** in the webview. Collected **after** the confirm; cancelling skips that idp (never writes a blank secret).
+- **Write mechanics:** **sequential** (theme writes splice the shared `themerealm` doc → parallel self-races), attempt-all, **no rollback**, per-component result log. Theme splice uses **`If-Match: <_rev>`** (412 → re-GET/re-splice once); preserves siblings; never changes the realm's default (`isDefault` preserved on overwrite, `false` on create). Email PUT strips `_id` (URL-derived); idp PUT keeps `_id`, drops server-added `_type`. Capability guard is a **throw** in the write methods (a silent skip would falsely report success). Never log secret values / `valueBase64` / full bodies.
+- **Architecture:** `src/paic/http.ts` gains `put`; `src/paic/client.ts` gains `writeTheme`/`writeEmailTemplate`/`writeSocialIdp`; pure transforms in `src/import/write.ts`; client-injected orchestration in `src/import/execute.ts` (mirrors `preflight.ts`). Full form: the Slice C plan + TD-6.
+
 ### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
 
 Today the sidebar tree builds a journey's (or script's) children in **discovery order** — whatever order the dependency walker emits as it crawls a journey's nodes. A real journey can mix Inner Journeys, Scripts, Themes, Email Templates, and Social IdPs in any sequence, and the result is hard to scan.
@@ -1480,7 +1492,7 @@ Implements **D42**. Read-only export → no D6 change. Phased: **P1 leaf export*
 
 ## Non-goals
 
-- No write operations to PAIC **yet**. Browse, analysis, and **export** (D42 / M9 Phase 1) are all read-only. *Import* (write) is a planned later phase of the transfer feature that will explicitly amend this non-goal when it ships; until then the tool never writes to a tenant.
+- Write operations are limited to the **import of the 3 atom leaves** (theme / email template / social IdP), gated by a modal confirm (**D43**, amends D6). Browse, analysis, and **export** stay read-only; scripts/ESVs/journeys are not yet writable; no bulk/promote flow.
 - No alternative auth flows (2FA, SSO, basic auth). PAIC = service-account JWT-bearer; on-prem AM = admin username/password → session token (D41). Nothing else.
 - No support for PingOne or PingFederate. (Self-managed on-prem PingAM / ForgeRock AM **is** now in scope — see D41 / M8.)
 - No telemetry, no analytics, no remote sync.
