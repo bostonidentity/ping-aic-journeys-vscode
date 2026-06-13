@@ -18,6 +18,8 @@ function client(over: Record<string, () => Promise<unknown>> = {}): PreflightCli
     getRawSocialIdp: async () => null,
     getRawScriptByName: async () => null,
     findRawScriptsByName: async () => [],
+    // getRawScript throws on 404 (UUID free) by default — the safe-create case.
+    getRawScript: () => Promise.reject(new Error("404 not found")),
     getRawEsv: async () => null,
     listVariables: async () => [],
     listSecrets: async () => [],
@@ -108,6 +110,34 @@ describe("runPreflight", () => {
     ]);
     expect(v[0].resolvedTargetId).toBe("first");
     expect(v[0].targetMatchCount).toBe(2);
+  });
+
+  it("create whose bundle UUID is held by a DIFFERENT-named script → id-collision", async () => {
+    // No name match (findRawScriptsByName empty → new), but the bundle UUID is
+    // occupied on the target by a differently-named script.
+    const getRawScript = vi.fn(async () => ({ _id: "U1", name: "Bar" }));
+    const v = await runPreflight(client({ getRawScript }), "alpha", "paic", [
+      comp({
+        kind: "script",
+        id: "U1",
+        raw: { _id: "U1", name: "Foo", script: JSON.stringify("x") },
+      }),
+    ]);
+    expect(v[0].status).toBe("id-collision");
+    expect(v[0].message).toMatch(/Bar/);
+    expect(getRawScript).toHaveBeenCalledWith("alpha", "U1");
+  });
+
+  it("create whose bundle UUID is free (getRawScript 404) → stays new", async () => {
+    // Default fake's getRawScript throws (404) → UUID free → safe create.
+    const v = await runPreflight(client(), "alpha", "paic", [
+      comp({
+        kind: "script",
+        id: "U2",
+        raw: { _id: "U2", name: "Foo", script: JSON.stringify("x") },
+      }),
+    ]);
+    expect(v[0].status).toBe("new");
   });
 
   it("variable/secret discovered-kind mismatch → new", async () => {

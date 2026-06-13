@@ -411,6 +411,23 @@ describe("Transfer App", () => {
     expect(screen.getByText("Unsupported")).toBeTruthy();
   });
 
+  it("an id-collision row is blocked (disabled checkbox) + names the occupant (TD-9)", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "s.script.json", bundle: scriptBundle() });
+    selectTargetAndPreflight([
+      {
+        kind: "script",
+        id: "U1",
+        displayName: "Foo",
+        status: "id-collision",
+        message: 'UUID U1 is already used by a different script "Bar" on the target',
+      },
+    ]);
+    expect(screen.getByText("ID collision")).toBeTruthy();
+    expect((screen.getByLabelText("Import Foo") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText(/already used by a different script "Bar"/)).toBeTruthy();
+  });
+
   it("select-all checks every actionable row; button counts follow", () => {
     render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
     postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });

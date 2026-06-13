@@ -17,6 +17,7 @@ export type PreflightClient = Pick<
   | "getRawTheme"
   | "getRawEmailTemplate"
   | "getRawSocialIdp"
+  | "getRawScript"
   | "getRawScriptByName"
   | "findRawScriptsByName"
   | "getRawEsv"
@@ -119,15 +120,48 @@ async function verdictFor(
   }
   try {
     const { raw, resolvedTargetId, targetMatchCount } = await fetchTarget(client, realm, comp);
+    const status = classifyCompare(comp.kind, comp.raw, raw);
+    // Script create path (no name match → `new`): the write would fall back to
+    // the bundle UUID, but that UUID may already be held by a DIFFERENTLY-NAMED
+    // script (rename-after-copy). AM's PUT-by-id would silently overwrite it, so
+    // guard here and block instead (TD-9). Name match (resolvedTargetId set) is
+    // already handled by reconciliation — only check on a true create.
+    if (comp.kind === "script" && status === "new") {
+      const collision = await scriptIdCollision(client, realm, comp);
+      if (collision) {
+        return { ...base, status: "id-collision", message: collision };
+      }
+    }
     return {
       ...base,
-      status: classifyCompare(comp.kind, comp.raw, raw),
+      status,
       ...(resolvedTargetId ? { resolvedTargetId } : {}),
       ...(targetMatchCount === undefined ? {} : { targetMatchCount }),
     };
   } catch (err) {
     return { ...base, status: "error", message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** On a script create, is the bundle UUID already occupied on the target by a
+ * differently-named script? Returns a human message naming the occupant, or
+ * null when the UUID is free (404) — the safe-to-create case. */
+async function scriptIdCollision(
+  client: PreflightClient,
+  realm: string,
+  comp: ImportComponent,
+): Promise<string | null> {
+  const bundleId = typeof comp.raw._id === "string" ? comp.raw._id : comp.id;
+  if (!bundleId) return null;
+  let existing: Record<string, unknown> | null;
+  try {
+    existing = asRecord(await client.getRawScript(realm, bundleId));
+  } catch {
+    return null; // 404 (or any fetch failure) → treat the UUID as free
+  }
+  if (!existing) return null;
+  const occupantName = typeof existing.name === "string" ? existing.name : "(unnamed)";
+  return `UUID ${bundleId} is already used by a different script "${occupantName}" on the target`;
 }
 
 /** Run the read-only pre-flight for every component. Each runs independently

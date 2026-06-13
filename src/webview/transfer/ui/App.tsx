@@ -451,7 +451,8 @@ type RowState = "writable" | "noop" | "blocked";
 
 function rowStateOf(v: ComponentVerdict): RowState {
   if (v.status === "new" || v.status === "differs") return "writable";
-  if (v.status === "unsupported" || v.status === "error") return "blocked";
+  if (v.status === "unsupported" || v.status === "error" || v.status === "id-collision")
+    return "blocked";
   return "noop"; // identical | exists
 }
 
@@ -470,6 +471,8 @@ function beforeStatus(v: ComponentVerdict): { text: string; cls: string } {
       return { text: "Unsupported", cls: "transfer-v-bad" };
     case "error":
       return { text: v.message ?? "Error", cls: "transfer-v-bad" };
+    case "id-collision":
+      return { text: "ID collision", cls: "transfer-v-bad" };
   }
 }
 
@@ -538,11 +541,20 @@ function verdictRowData(v: ComponentVerdict, checked: boolean, result?: WriteRes
     statusText: status.text,
     statusCls: status.cls,
     name: v.displayName,
-    nameNote:
-      v.targetMatchCount && v.targetMatchCount > 1
-        ? `(${v.targetMatchCount} on target)`
-        : undefined,
+    nameNote: collisionNote(v) ?? matchCountNote(v),
   };
+}
+
+function matchCountNote(v: ComponentVerdict): string | undefined {
+  return v.targetMatchCount && v.targetMatchCount > 1
+    ? `(${v.targetMatchCount} on target)`
+    : undefined;
+}
+
+function collisionNote(v: ComponentVerdict): string | undefined {
+  return v.status === "id-collision"
+    ? `— ${v.message ?? "UUID already in use on target"}`
+    : undefined;
 }
 
 function depRowData(d: RequiredDepVerdict): PlanRowData {

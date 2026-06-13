@@ -15,8 +15,10 @@ import type { BundleKind } from "./parse";
 export type CompareVerdict = "new" | "identical" | "differs" | "exists";
 
 /** Per-component pre-flight status — `classifyCompare`'s output plus the
- * panel-set `unsupported` (compat gate) and `error` (the fetch threw). */
-export type ComponentStatus = CompareVerdict | "unsupported" | "error";
+ * panel-set `unsupported` (compat gate), `error` (the fetch threw), and
+ * `id-collision` (scripts: a create whose bundle UUID is already held by a
+ * differently-named script on the target — TD-9; blocked, never written). */
+export type ComponentStatus = CompareVerdict | "unsupported" | "error" | "id-collision";
 
 export interface ComponentVerdict {
   kind: BundleKind;

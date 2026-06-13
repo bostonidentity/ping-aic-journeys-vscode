@@ -16,6 +16,13 @@ Corrections and patterns to avoid repeating. Append entries here whenever a user
 
 <!-- Entries below, newest first. -->
 
+## 2026-06-12 — "Create" by name can silently overwrite a different script that holds the same UUID
+
+**Context:** Script import matches the target by name (cross-env identity). On a create (no name match) it falls back to writing the bundle's `_id` (UUID) — to preserve cross-env script identity so journey node `script` refs stay valid.
+**Mistake:** Checking only the *name* before a create, then `PUT /scripts/<bundleUUID>`. AM's PUT overwrites whatever entity already lives at that UUID — which may be a **differently-named** script. Realistic trigger isn't random UUID collision (astronomically unlikely) but **rename-after-copy**: `Foo`@U1 exported → imported to target (UUID preserved) → renamed to `Bar` on the target → re-importing `Foo` finds no name match → "create" → overwrites `Bar`, reported as a clean `created`. Two independent axes (name says new, UUID says occupied) were conflated into one "new" verdict.
+**Correction:** On the create path, pre-flight also GETs the bundle UUID (`getRawScript(realm, bundleId)`): 404 → safe create; 200 → a different script holds that UUID → a distinct **`id-collision`** verdict (blocked, non-selectable), naming the occupant. Never silently overwrite; never re-mint a fresh UUID (that would trade a rare silent-clobber for a guaranteed silent reference-break — UUID stability is the whole point). User resolves manually.
+**How to avoid next time:** When the match key (name) and the write key (UUID) are different axes, validate BOTH before a write — a "not found by key A" verdict does not imply "key B is free." Especially when the platform's write is an idempotent PUT-by-id that overwrites silently.
+
 ## 2026-06-12 — Script import compares by NAME but writes by UUID — a same-named/different-UUID target can be mis-judged
 
 **Context:** Building the script/library-script write path for cross-env import (M9 Phase 4 Batch 2). Pre-flight fetches the target version via `getRawScriptByName(realm, name)` (scripts have no name→one-id guarantee); the write addresses `PUT …/scripts/<uuid>` using the **bundle's `_id` (UUID)** to preserve cross-env script identity so node `script` refs stay valid.
