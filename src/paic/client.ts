@@ -123,6 +123,10 @@ export interface PaicClient {
   getRawNode(realm: string, nodeType: string, nodeId: string): Promise<RawNodePayload>;
   /** Raw script looked up by name (the `require()` resolution path); null on miss. */
   getRawScriptByName(realm: string, name: string): Promise<RawScript | null>;
+  /** All raw scripts with the given name. AM allows duplicate names, so this
+   * returns every hit (the count drives cross-env match-ambiguity detection,
+   * TD-9). Empty array on no match. */
+  findRawScriptsByName(realm: string, name: string): Promise<RawScript[]>;
   /** Raw theme element from the realm's `ui/themerealm` array; null if absent
    * or no IDM on this backend. */
   getRawTheme(realm: string, themeId: string): Promise<RawTheme | null>;
@@ -155,6 +159,10 @@ export interface PaicClient {
   /** Create an ESV secret (`PUT /environment/secrets/<id>`) with a re-supplied
    * `valueBase64`. Always reports `"created"`. Throws on no-ESV backend. */
   writeEsvSecret(id: string, body: Record<string, unknown>): Promise<WriteOutcome>;
+  /** Create/overwrite a decision or library script (`PUT …/scripts/<uuid>`).
+   * The UUID (the bundle `_id`) is preserved; `context: "LIBRARY"` round-trips
+   * for library scripts. 201 → created / 200 → overwritten. */
+  writeScript(realm: string, id: string, body: Record<string, unknown>): Promise<WriteOutcome>;
   /** Environment restart ("apply") status — `ready` or `restarting`. ESV
    * writes only take effect after a restart. Throws on no-ESV backend. */
   getStartupStatus(): Promise<EsvRestartStatus>;
@@ -218,21 +226,25 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     return resp.data;
   };
 
-  const getRawScriptByName = async (realm: string, name: string): Promise<RawScript | null> => {
+  const findRawScriptsByName = async (realm: string, name: string): Promise<RawScript[]> => {
     const realmPath = getRealmPath(realm);
     const params = new URLSearchParams({ _queryFilter: `name eq "${name}"` });
     const resp = await http.get<PagedResponse<RawScript>>(
       `${amPath}/json${realmPath}/scripts?${params.toString()}`,
       { apiVersion: SCRIPT_API_VERSION },
     );
-    return resp.data.result[0] ?? null;
+    return resp.data.result;
   };
+
+  const getRawScriptByName = async (realm: string, name: string): Promise<RawScript | null> =>
+    (await findRawScriptsByName(realm, name))[0] ?? null;
 
   return {
     getRawScript,
     getRawJourney,
     getRawNode,
     getRawScriptByName,
+    findRawScriptsByName,
 
     async listRealms(): Promise<Realm[]> {
       const all = await listAllPaged<RawRealm>(async (cookie) => {
@@ -566,6 +578,27 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
         "Wrote ESV secret",
       );
       return "created";
+    },
+
+    async writeScript(
+      realm: string,
+      id: string,
+      body: Record<string, unknown>,
+    ): Promise<WriteOutcome> {
+      const realmPath = getRealmPath(realm);
+      // PUT to the bundle's UUID — preserves cross-env script identity so node
+      // `script` refs stay valid. Never log the body (it's the user's source).
+      const resp = await http.put(
+        `${amPath}/json${realmPath}/scripts/${encodeURIComponent(id)}`,
+        body,
+        { apiVersion: SCRIPT_API_VERSION },
+      );
+      const outcome: WriteOutcome = resp.status === 201 ? "created" : "overwritten";
+      log.info(
+        { event: "client.writeScript", realm, script_id: id, status: resp.status },
+        "Wrote script",
+      );
+      return outcome;
     },
 
     async getStartupStatus(): Promise<EsvRestartStatus> {

@@ -337,6 +337,20 @@ describe("PaicClient", () => {
     expect(await client.getRawScriptByName("alpha", "nope")).toBeNull();
   });
 
+  it("findRawScriptsByName returns ALL same-named hits (dup-name count, TD-9)", async () => {
+    fake.enqueueGet({
+      result: [
+        { _id: "a", name: "dup" },
+        { _id: "b", name: "dup" },
+      ],
+    });
+    const hits = await client.findRawScriptsByName("alpha", "dup");
+    expect(hits.map((h) => h._id)).toEqual(["a", "b"]);
+
+    fake.enqueueGet({ result: [] });
+    expect(await client.findRawScriptsByName("alpha", "nope")).toEqual([]);
+  });
+
   it("getTheme fetches the whole themerealm config and filters by realm + id", async () => {
     // The wire shape uses `realm` (singular) and the value is the theme
     // array directly — no `.themes` wrapper. Verified against sb3 via the
@@ -622,6 +636,21 @@ describe("import writes (D43)", () => {
     );
     expect(put?.apiVersion).toBe("protocol=2.1,resource=1.0");
     expect(put?.body).toMatchObject({ _id: "g", clientSecret: "x" });
+  });
+
+  it("writeScript PUTs to /scripts/<uuid> with the script api version; 201 → created", async () => {
+    fake.enqueuePut({}, 201);
+    const out = await client.writeScript("alpha", "s-1", { _id: "s-1", script: "ZA==" });
+    expect(out).toBe("created");
+    const put = fake.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe("/am/json/realms/root/realms/alpha/scripts/s-1");
+    expect(put?.apiVersion).toBe("protocol=2.0,resource=1.0");
+    expect(put?.body).toMatchObject({ _id: "s-1", script: "ZA==" });
+  });
+
+  it("writeScript 200 → overwritten", async () => {
+    fake.enqueuePut({}, 200);
+    expect(await client.writeScript("alpha", "s-1", { _id: "s-1" })).toBe("overwritten");
   });
 
   it("writeTheme splices into themerealm with If-Match, preserving siblings; create → isDefault:false", async () => {

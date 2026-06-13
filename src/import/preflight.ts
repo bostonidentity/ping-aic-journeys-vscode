@@ -8,49 +8,102 @@
 import type { PaicClient } from "../paic/client";
 import { type ComponentVerdict, classifyCompare } from "./compare";
 import { compatFor } from "./compat";
+import type { DiscoveredRef } from "./discover";
 import type { ImportComponent } from "./parse";
 
 /** The subset of `PaicClient` the pre-flight reads. */
 export type PreflightClient = Pick<
   PaicClient,
-  "getRawTheme" | "getRawEmailTemplate" | "getRawSocialIdp" | "getRawScriptByName" | "getRawEsv"
+  | "getRawTheme"
+  | "getRawEmailTemplate"
+  | "getRawSocialIdp"
+  | "getRawScriptByName"
+  | "findRawScriptsByName"
+  | "getRawEsv"
+  | "listVariables"
+  | "listSecrets"
 >;
+
+/** Existence verdict for a discovered (info-only) dependency ref — TD-9. The
+ * bundle carries no body/value for these, so they're never written; the Plan
+ * shows them as "what this script needs on the target". */
+export interface RequiredDepVerdict {
+  kind: "script" | "esv";
+  name: string;
+  status: "present" | "missing";
+  /** e.g. "variable" / "secret" for an ESV, or "2 on target" for a dup-name. */
+  detail?: string;
+}
+
+/**
+ * The confirm-modal warning for unmet dependency prerequisites (TD-9). Advisory
+ * — the bundle can't supply a missing lib/ESV, and a referenced-but-missing dep
+ * means an imported script may fail at runtime until the user adds it. Returns
+ * "" when nothing is missing (so the caller can concatenate unconditionally).
+ */
+export function missingDepsNote(requires: readonly RequiredDepVerdict[]): string {
+  const missing = requires.filter((d) => d.status === "missing");
+  if (missing.length === 0) return "";
+  return (
+    ` ⚠ ${missing.length} referenced dependency(ies) are missing on the target ` +
+    `(${missing.map((d) => d.name).join(", ")}); imported scripts may fail at runtime ` +
+    "until these are added."
+  );
+}
 
 const asRecord = (o: unknown): Record<string, unknown> | null =>
   o && typeof o === "object" ? (o as Record<string, unknown>) : null;
 
-/** Fetch the target's current version of one component by identity; null when
- * absent (→ "new"). All accessors are null-on-absence except scripts, which
- * resolve by name (`getRawScript` throws on 404). */
+/** A fetched target version + (scripts only) the cross-env reconcile metadata:
+ * the resolved target `_id` to write to and how many same-named hits there were. */
+interface TargetFetch {
+  raw: Record<string, unknown> | null;
+  resolvedTargetId?: string;
+  targetMatchCount?: number;
+}
+
+/** Fetch the target's current version of one component by identity; `raw` is
+ * null when absent (→ "new"). Scripts resolve by NAME (their cross-env identity,
+ * TD-9) and also report the matched target's `_id` + same-name count. */
 async function fetchTarget(
   client: PreflightClient,
   realm: string,
   comp: ImportComponent,
-): Promise<Record<string, unknown> | null> {
+): Promise<TargetFetch> {
   switch (comp.kind) {
     case "theme":
-      return asRecord(await client.getRawTheme(realm, comp.id));
+      return { raw: asRecord(await client.getRawTheme(realm, comp.id)) };
     case "emailTemplate":
-      return asRecord(await client.getRawEmailTemplate(comp.id.replace(/^emailTemplate\//, "")));
+      return {
+        raw: asRecord(await client.getRawEmailTemplate(comp.id.replace(/^emailTemplate\//, ""))),
+      };
     case "socialIdp": {
       // Look up by the raw object's `_id` — `getRawSocialIdp` filters on `_id`,
       // which can differ from the display name.
       const idpId = typeof comp.raw._id === "string" ? comp.raw._id : comp.id;
-      return asRecord(await client.getRawSocialIdp(realm, idpId));
+      return { raw: asRecord(await client.getRawSocialIdp(realm, idpId)) };
     }
     case "script": {
       const name = typeof comp.raw.name === "string" ? comp.raw.name : "";
-      return name ? asRecord(await client.getRawScriptByName(realm, name)) : null;
+      if (!name) return { raw: null };
+      // Name is the cross-env identity; AM allows dup names so collect all hits.
+      const hits = await client.findRawScriptsByName(realm, name);
+      const first = hits[0];
+      return {
+        raw: asRecord(first ?? null),
+        resolvedTargetId: typeof first?._id === "string" ? first._id : undefined,
+        targetMatchCount: hits.length,
+      };
     }
     case "variable":
     case "secret": {
       // `getRawEsv` discovers the kind by which endpoint resolves — only a
       // matching kind counts as the same entity.
       const r = await client.getRawEsv(comp.id);
-      return r && r.kind === comp.kind ? asRecord(r.raw) : null;
+      return { raw: r && r.kind === comp.kind ? asRecord(r.raw) : null };
     }
     case "journey":
-      return null; // journeys aren't compared in B2
+      return { raw: null }; // journeys aren't compared in B2
   }
 }
 
@@ -65,8 +118,13 @@ async function verdictFor(
     return { ...base, status: "unsupported" };
   }
   try {
-    const targetRaw = await fetchTarget(client, realm, comp);
-    return { ...base, status: classifyCompare(comp.kind, comp.raw, targetRaw) };
+    const { raw, resolvedTargetId, targetMatchCount } = await fetchTarget(client, realm, comp);
+    return {
+      ...base,
+      status: classifyCompare(comp.kind, comp.raw, raw),
+      ...(resolvedTargetId ? { resolvedTargetId } : {}),
+      ...(targetMatchCount === undefined ? {} : { targetMatchCount }),
+    };
   } catch (err) {
     return { ...base, status: "error", message: err instanceof Error ? err.message : String(err) };
   }
@@ -81,4 +139,55 @@ export function runPreflight(
   rawComponents: readonly ImportComponent[],
 ): Promise<ComponentVerdict[]> {
   return Promise.all(rawComponents.map((c) => verdictFor(client, realm, targetKind, c)));
+}
+
+/**
+ * Existence-check the discovered (info-only) dependency refs against the target
+ * — TD-9. Library refs resolve by name; ESV refs match against the tenant's
+ * variable + secret lists fetched ONCE (mirrors `walk.ts:ensureEsvIndex`, never
+ * per-ref). Read-only; a fetch failure for one ref yields `missing`, not a throw.
+ */
+export async function discoverDeps(
+  client: PreflightClient,
+  realm: string,
+  refs: readonly DiscoveredRef[],
+): Promise<RequiredDepVerdict[]> {
+  if (refs.length === 0) return [];
+
+  // Build the dotted-name → kind ESV index once, only if any ESV ref exists.
+  let esvIndex: Map<string, "variable" | "secret"> | null = null;
+  const needEsv = refs.some((r) => r.kind === "esv");
+  if (needEsv) {
+    esvIndex = new Map();
+    const [vars, secrets] = await Promise.all([
+      client.listVariables(realm).catch(() => []),
+      client.listSecrets(realm).catch(() => []),
+    ]);
+    for (const v of vars) esvIndex.set(v.name, "variable");
+    for (const s of secrets) esvIndex.set(s.name, "secret");
+  }
+
+  return Promise.all(
+    refs.map(async (ref): Promise<RequiredDepVerdict> => {
+      if (ref.kind === "esv") {
+        const k = esvIndex?.get(ref.name);
+        return k
+          ? { kind: "esv", name: ref.name, status: "present", detail: k }
+          : { kind: "esv", name: ref.name, status: "missing" };
+      }
+      // Library reference — existence by name (the cross-env identity, TD-9).
+      try {
+        const hits = await client.findRawScriptsByName(realm, ref.name);
+        if (hits.length === 0) return { kind: "script", name: ref.name, status: "missing" };
+        return {
+          kind: "script",
+          name: ref.name,
+          status: "present",
+          ...(hits.length > 1 ? { detail: `${hits.length} on target` } : {}),
+        };
+      } catch {
+        return { kind: "script", name: ref.name, status: "missing" };
+      }
+    }),
+  );
 }

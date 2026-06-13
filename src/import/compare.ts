@@ -24,6 +24,13 @@ export interface ComponentVerdict {
   displayName: string;
   status: ComponentStatus;
   message?: string;
+  /** Scripts only — the target entity's real `_id` when a name-match resolved
+   * one (TD-9). The write reconciles to this UUID instead of the bundle's, so a
+   * same-named/different-UUID target is overwritten in place, not duplicated. */
+  resolvedTargetId?: string;
+  /** Scripts only — count of same-named scripts on the target (AM allows dups).
+   * >1 means the name match was ambiguous; the UI shows a `(N on target)` note. */
+  targetMatchCount?: number;
 }
 
 /** Kinds whose CONTENT we value-compare (the Batch-1 atoms). Everything else
@@ -40,11 +47,47 @@ export function classifyCompare(
   targetRaw: Record<string, unknown> | null,
 ): CompareVerdict {
   if (targetRaw === null) return "new";
+  // Scripts share `kind: "script"` but split by policy (TD-4): a DECISION
+  // script value-compares (its body is the artifact); a LIBRARY script is
+  // existence-only (existence-checked as part of a closure, not diffed). The
+  // bundle object is the authoritative side — it determines what we import.
+  if (kind === "script") {
+    if (bundleRaw.context === "LIBRARY") return "exists";
+    return eq(kind, bundleRaw, targetRaw) ? "identical" : "differs";
+  }
   if (!VALUE_COMPARED.has(kind)) return "exists";
-  return stableStringify(normalizeForCompare(kind, bundleRaw)) ===
+  return eq(kind, bundleRaw, targetRaw) ? "identical" : "differs";
+}
+
+/** Deep-equal two raw entities after identical normalization. */
+function eq(
+  kind: BundleKind,
+  bundleRaw: Record<string, unknown>,
+  targetRaw: Record<string, unknown>,
+): boolean {
+  return (
+    stableStringify(normalizeForCompare(kind, bundleRaw)) ===
     stableStringify(normalizeForCompare(kind, targetRaw))
-    ? "identical"
-    : "differs";
+  );
+}
+
+/** Canonicalize a script body to plain source regardless of which side it came
+ * from. The bundle carries it JSON-stringified (`serialize.ts:scriptBodyToExport`),
+ * the target read carries it as base64 — reduce both to the same source string
+ * so encoding/padding differences never read as `differs`. JSON-parse first
+ * (the bundle form always starts as a JSON-stringified string), else base64. */
+function canonScriptBody(s: string): string {
+  try {
+    const parsed = JSON.parse(s);
+    if (typeof parsed === "string") return parsed;
+  } catch {
+    // not the bundle's JSON-stringified form — fall through to base64.
+  }
+  try {
+    return Buffer.from(s, "base64").toString("utf8");
+  } catch {
+    return s;
+  }
 }
 
 /** Strip identity + server-managed + env-drift fields so two equivalent
@@ -63,6 +106,13 @@ export function normalizeForCompare(
   if (kind === "socialIdp") {
     delete out.clientSecret; // redacted on read → never equal across envs
     delete out._type; // server-added provider-type object (identity)
+  }
+  if (kind === "script") {
+    // Bundle body is JSON-stringified source, target body is base64 — reduce
+    // both to plain source. Drop the script diff-mask fields (audit churn).
+    if (typeof out.script === "string") out.script = canonScriptBody(out.script);
+    delete out.description;
+    delete out.default;
   }
   return out;
 }

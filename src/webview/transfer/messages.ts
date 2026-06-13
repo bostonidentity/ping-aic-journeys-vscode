@@ -17,6 +17,7 @@
 import type { ComponentVerdict } from "../../import/compare";
 import type { WriteResult } from "../../import/execute";
 import type { ParsedBundle } from "../../import/parse";
+import type { RequiredDepVerdict } from "../../import/preflight";
 
 // Pure import-layer types re-exported so the React sandbox (`ui/*`) imports
 // only from this module (mirrors how the Search UI imports its shared types).
@@ -26,6 +27,7 @@ export type { WriteResult, WriteStatus } from "../../import/execute";
 // write gate and the UI's Import button (re-exported here for the sandbox).
 export { WRITABLE_KINDS } from "../../import/kinds";
 export type { BundleKind, ComponentSummary, ParsedBundle } from "../../import/parse";
+export type { RequiredDepVerdict } from "../../import/preflight";
 
 /** A connection the user can target — carried in the embedded payload for the
  * Slice-B target dropdown. Unused in Slice A (read-only preview). */
@@ -45,7 +47,7 @@ export type W2E =
   | { type: "pickBundle" }
   | { type: "listRealms"; host: string }
   | { type: "runPreflight"; host: string; realm: string }
-  | { type: "execute"; host: string; realm: string }
+  | { type: "execute"; host: string; realm: string; selected: string[] }
   // ESV apply is tenant-wide → host-scoped, not realm-scoped.
   | { type: "applyEsv"; host: string };
 
@@ -54,7 +56,14 @@ export type E2W =
   | { type: "bundleError"; message: string }
   | { type: "realmsResult"; host: string; realms: readonly string[] }
   | { type: "realmsError"; host: string; message: string }
-  | { type: "preflightResult"; host: string; realm: string; verdicts: ComponentVerdict[] }
+  | {
+      type: "preflightResult";
+      host: string;
+      realm: string;
+      verdicts: ComponentVerdict[];
+      /** Discovered info-only dependency refs (libs + ESVs) — TD-9. */
+      requires: RequiredDepVerdict[];
+    }
   | { type: "preflightError"; host: string; realm: string; message: string }
   | {
       type: "executeResult";

@@ -13,6 +13,7 @@ import {
   idpNeedsSecret,
   toEmailWrite,
   toIdpWrite,
+  toScriptWrite,
   toSecretWrite,
   toThemeWrite,
   toVariableWrite,
@@ -36,12 +37,21 @@ export interface WritePlanItem {
    * value (plaintext, base64-encoded by the transform). Collected via
    * `showInputBox`. */
   secret?: string;
+  /** Scripts only — the name-matched target's `_id` (TD-9). When set, the write
+   * reconciles to this UUID (overwrite in place) instead of the bundle's, so a
+   * same-named/different-UUID target isn't duplicated. */
+  resolvedTargetId?: string;
 }
 
 /** The subset of `PaicClient` the executor writes through. */
 export type ExecuteClient = Pick<
   PaicClient,
-  "writeTheme" | "writeEmailTemplate" | "writeSocialIdp" | "writeEsvVariable" | "writeEsvSecret"
+  | "writeTheme"
+  | "writeEmailTemplate"
+  | "writeSocialIdp"
+  | "writeEsvVariable"
+  | "writeEsvSecret"
+  | "writeScript"
 >;
 
 async function writeOne(
@@ -74,6 +84,17 @@ async function writeOne(
       case "variable":
         // The variable's value is in the bundle (`valueBase64`) — written directly.
         outcome = await client.writeEsvVariable(component.id, toVariableWrite(component.raw));
+        break;
+      case "script":
+        // Body is in the bundle (no secret prompt). Reconcile to the target's
+        // own UUID when the name-match resolved one (TD-9) so a same-named/
+        // different-UUID target is overwritten in place; fall back to the bundle
+        // UUID only on a true create. Name is the cross-env identity.
+        outcome = await client.writeScript(
+          realm,
+          item.resolvedTargetId ?? component.id,
+          toScriptWrite(component.raw),
+        );
         break;
       case "secret": {
         if (!item.secret) {

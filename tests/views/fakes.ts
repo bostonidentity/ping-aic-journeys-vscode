@@ -72,6 +72,7 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
       Promise.reject(new Error(`getRawNode not stubbed in fake (${realm}:${t}:${id})`)),
     ),
     getRawScriptByName: vi.fn(() => Promise.resolve(null)),
+    findRawScriptsByName: vi.fn(() => Promise.resolve([])),
     getRawTheme: vi.fn(() => Promise.resolve(null)),
     getRawEmailTemplate: vi.fn(() => Promise.resolve(null)),
     getRawSocialIdp: vi.fn(() => Promise.resolve(null)),
@@ -116,6 +117,7 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
     writeTheme: vi.fn(() => Promise.resolve("created" as const)),
     writeEsvVariable: vi.fn(() => Promise.resolve("created" as const)),
     writeEsvSecret: vi.fn(() => Promise.resolve("created" as const)),
+    writeScript: vi.fn(() => Promise.resolve("created" as const)),
     getStartupStatus: vi.fn(() => Promise.resolve("ready" as const)),
     applyEsvUpdates: vi.fn(() => Promise.resolve()),
   };

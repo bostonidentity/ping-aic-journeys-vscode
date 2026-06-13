@@ -8,7 +8,7 @@ describe("transfer message guards", () => {
       { type: "pickBundle" },
       { type: "listRealms", host: "h" },
       { type: "runPreflight", host: "h", realm: "r" },
-      { type: "execute", host: "h", realm: "r" },
+      { type: "execute", host: "h", realm: "r", selected: ["theme:t"] },
       { type: "applyEsv", host: "h" },
     ]) {
       expect(isW2E(m)).toBe(true);

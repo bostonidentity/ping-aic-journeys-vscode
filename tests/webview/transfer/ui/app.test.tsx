@@ -56,11 +56,17 @@ function variableBundle(): ParsedBundle {
 }
 
 /** Drive the App to a target-selected + preflight-loaded state with the given verdicts. */
-function selectTargetAndPreflight(verdicts: unknown[]): void {
+function selectTargetAndPreflight(verdicts: unknown[], requires: unknown[] = []): void {
   pickCombo("target-connection", "paic", "paic.example");
   postToWebview({ type: "realmsResult", host: "paic.example", realms: ["alpha"] });
   pickCombo("target-realm", "alpha", "alpha");
-  postToWebview({ type: "preflightResult", host: "paic.example", realm: "alpha", verdicts });
+  postToWebview({
+    type: "preflightResult",
+    host: "paic.example",
+    realm: "alpha",
+    verdicts,
+    requires,
+  });
 }
 
 /** Dispatch an extension→webview message the way the panel's postMessage does. */
@@ -162,6 +168,7 @@ describe("Transfer App", () => {
           status: "differs",
         },
       ],
+      requires: [],
     });
     expect(screen.getByText(/Differs/)).toBeTruthy();
   });
@@ -179,8 +186,9 @@ describe("Transfer App", () => {
       verdicts: [
         { kind: "theme", id: "t", displayName: "zzz export test theme", status: "unsupported" },
       ],
+      requires: [],
     });
-    expect(screen.getByText(/not supported on on-prem AM/)).toBeTruthy();
+    expect(screen.getByText("Unsupported")).toBeTruthy();
   });
 
   it("shows the Import button for an ESV variable bundle (variables are writable)", () => {
@@ -189,7 +197,8 @@ describe("Transfer App", () => {
     selectTargetAndPreflight([
       { kind: "variable", id: "esv-x", displayName: "esv.x", status: "new" },
     ]);
-    expect(screen.getByText(/Import 1 component/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Import esv.x")); // opt in
+    expect(screen.getByText(/Import 1 selected/)).toBeTruthy();
   });
 
   it("renders ESV writes as 'pending apply' with the apply-coming hint", () => {
@@ -205,8 +214,9 @@ describe("Transfer App", () => {
       results: [{ kind: "variable", id: "esv-x", displayName: "esv.x", status: "created" }],
       summary: "1 created · 0 overwritten · 0 skipped · 0 failed",
     });
-    expect(screen.getByText(/pending apply/)).toBeTruthy();
     expect(screen.getByText(/aren't live until applied/)).toBeTruthy();
+    // TD-10: the ESV row's Status now reads the outcome.
+    expect(screen.getByText("Created")).toBeTruthy();
   });
 
   /** Drive the App through an ESV import so the Apply button is available. */
@@ -271,12 +281,17 @@ describe("Transfer App", () => {
         status: "new",
       },
     ]);
-    const btn = screen.getByText(/Import 1 component/);
-    fireEvent.click(btn);
-    expect(post).toHaveBeenCalledWith({ type: "execute", host: "paic.example", realm: "alpha" });
+    fireEvent.click(screen.getByLabelText("Import zzz export test theme")); // opt in
+    fireEvent.click(screen.getByText(/Import 1 selected/));
+    expect(post).toHaveBeenCalledWith({
+      type: "execute",
+      host: "paic.example",
+      realm: "alpha",
+      selected: ["theme:zzzexporttesttheme"],
+    });
   });
 
-  it("renders the write log + summary on executeResult", () => {
+  it("after a run, the row Status shows the outcome and the table locks (TD-10)", () => {
     render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
     postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
     selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
@@ -287,15 +302,156 @@ describe("Transfer App", () => {
       results: [{ kind: "theme", id: "t", displayName: "zzz theme", status: "created" }],
       summary: "1 created · 0 overwritten · 0 skipped · 0 failed",
     });
-    expect(screen.getByText(/zzz theme — created/)).toBeTruthy();
-    expect(screen.getByText(/1 created · 0 overwritten/)).toBeTruthy();
+    expect(screen.getByText("Created")).toBeTruthy(); // phase-3 status in the table
+    // Locked: the checkbox is disabled and the read-only note appears.
+    expect((screen.getByLabelText("Import zzz theme") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText(/this plan is now read-only/)).toBeTruthy();
   });
 
-  it("shows a deferral note (no Import button) for a non-atom leaf bundle", () => {
+  it("shows the Import button for a new script bundle (scripts are writable)", () => {
     render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
     postToWebview({ type: "bundleLoaded", fileName: "s.script.json", bundle: scriptBundle() });
-    selectTargetAndPreflight([{ kind: "script", id: "s", displayName: "lib", status: "exists" }]);
-    expect(screen.getByText(/Import for script arrives in a later batch/)).toBeTruthy();
-    expect(screen.queryByText(/Import 1 component/)).toBeNull();
+    selectTargetAndPreflight([
+      { kind: "script", id: "s", displayName: "RiskDecision", status: "new" },
+    ]);
+    fireEvent.click(screen.getByLabelText("Import RiskDecision")); // opt in
+    expect(screen.getByText(/Import 1 selected/)).toBeTruthy();
+    expect(screen.queryByText(/arrives in a later batch/)).toBeNull();
+  });
+
+  it("renders discovered deps as info-only rows IN the table (TD-9, folded into TD-8)", () => {
+    const { container } = render(
+      <App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />,
+    );
+    postToWebview({ type: "bundleLoaded", fileName: "s.script.json", bundle: scriptBundle() });
+    selectTargetAndPreflight(
+      [{ kind: "script", id: "s", displayName: "RiskDecision", status: "new" }],
+      [
+        { kind: "script", name: "fraud-helpers", status: "missing" },
+        { kind: "esv", name: "esv.threshold", status: "present", detail: "variable" },
+      ],
+    );
+    // No separate "Requires" section anymore — deps are table rows.
+    expect(screen.queryByText(/Requires/)).toBeNull();
+    const names = [...container.querySelectorAll(".plan-name")].map((n) => n.textContent);
+    expect(names).toContain("RiskDecision");
+    expect(names).toContain("fraud-helpers");
+    expect(names.some((n) => n?.startsWith("esv.threshold"))).toBe(true);
+    expect(screen.getByText("Missing")).toBeTruthy(); // fraud-helpers
+    // A dep row is info-only: disabled checkbox, Status carries the existence fact.
+    expect((screen.getByLabelText("Import fraud-helpers") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  // ─── TD-8 Plan table ───────────────────────────────────────────────────────
+
+  it("renders the grid table with the three column headers (no Action column)", () => {
+    const { container } = render(
+      <App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />,
+    );
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
+    const headers = [...container.querySelectorAll(".plan-col-head")].map((h) => h.textContent);
+    expect(headers).toEqual(["Type", "Status", "Name"]);
+  });
+
+  it("TD-10: three-phase Status — New → Create (checked) → reverts on uncheck", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
+    const cb = screen.getByLabelText("Import zzz theme") as HTMLInputElement;
+    expect(cb.checked).toBe(false); // opt-in
+    expect(screen.getByText("New")).toBeTruthy(); // phase 1
+    fireEvent.click(cb);
+    expect(screen.getByText("Create")).toBeTruthy(); // phase 2 (pending verb)
+    expect(screen.queryByText("New")).toBeNull();
+    expect(screen.getByText(/Import 1 selected · 1 create · 0 overwrite/)).toBeTruthy();
+    fireEvent.click(cb); // uncheck → reverts to phase 1
+    expect(screen.getByText("New")).toBeTruthy();
+    expect(screen.queryByText("Create")).toBeNull();
+  });
+
+  it("TD-10: a differs row shows Differs → Overwrite when checked", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([
+      { kind: "theme", id: "t", displayName: "zzz theme", status: "differs" },
+    ]);
+    expect(screen.getByText("Differs")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Import zzz theme"));
+    expect(screen.getByText("Overwrite")).toBeTruthy();
+  });
+
+  it("an identical (no-op) row has a disabled checkbox + Status=Identical", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([
+      { kind: "theme", id: "t", displayName: "zzz theme", status: "identical" },
+    ]);
+    const cb = screen.getByLabelText("Import zzz theme") as HTMLInputElement;
+    expect(cb.disabled).toBe(true);
+    expect(cb.checked).toBe(false);
+    expect(screen.getByText("Identical")).toBeTruthy();
+  });
+
+  it("an unsupported row has a disabled checkbox and Status=Unsupported", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [ONPREM_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    pickCombo("target-connection", "onprem", "onprem.example");
+    postToWebview({ type: "realmsResult", host: "onprem.example", realms: ["root"] });
+    pickCombo("target-realm", "root", "root");
+    postToWebview({
+      type: "preflightResult",
+      host: "onprem.example",
+      realm: "root",
+      verdicts: [{ kind: "theme", id: "t", displayName: "zzz theme", status: "unsupported" }],
+      requires: [],
+    });
+    // Uniform column: disabled (not absent) checkbox.
+    expect((screen.getByLabelText("Import zzz theme") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText("Unsupported")).toBeTruthy();
+  });
+
+  it("select-all checks every actionable row; button counts follow", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([
+      { kind: "theme", id: "a", displayName: "aaa", status: "new" },
+      { kind: "theme", id: "b", displayName: "bbb", status: "differs" },
+      { kind: "theme", id: "c", displayName: "ccc", status: "identical" }, // no-op, not selected
+    ]);
+    expect(screen.getByText("Nothing selected")).toBeTruthy(); // default off
+    fireEvent.click(screen.getByLabelText("Select all"));
+    expect(screen.getByText(/Import 2 selected · 1 create · 1 overwrite/)).toBeTruthy();
+  });
+
+  it("button counts follow per-row selection; execute carries only checked keys", () => {
+    const post = vi.fn();
+    render(<App vscode={{ postMessage: post }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([
+      { kind: "theme", id: "a", displayName: "aaa", status: "new" },
+      { kind: "theme", id: "b", displayName: "bbb", status: "differs" },
+    ]);
+    fireEvent.click(screen.getByLabelText("Import bbb")); // pick only the differs
+    expect(screen.getByText(/Import 1 selected · 0 create · 1 overwrite/)).toBeTruthy();
+    fireEvent.click(screen.getByText(/Import 1 selected/));
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "execute", selected: ["theme:b"] }),
+    );
+  });
+
+  it("sorts rows by kind then name (script → theme → variable)", () => {
+    const { container } = render(
+      <App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />,
+    );
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([
+      { kind: "variable", id: "v", displayName: "vee", status: "new" },
+      { kind: "theme", id: "t2", displayName: "bbb", status: "new" },
+      { kind: "theme", id: "t1", displayName: "aaa", status: "new" },
+      { kind: "script", id: "s", displayName: "ess", status: "new" },
+    ]);
+    const names = [...container.querySelectorAll(".plan-name")].map((n) => n.textContent);
+    expect(names).toEqual(["ess", "aaa", "bbb", "vee"]); // script, theme(a,b), variable
   });
 });

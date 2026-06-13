@@ -48,9 +48,56 @@ describe("classifyCompare", () => {
   });
 
   it("existence-only kinds → exists even when content differs", () => {
-    for (const k of ["script", "variable", "secret"] as const) {
+    for (const k of ["variable", "secret"] as const) {
       expect(classifyCompare(k, { a: 1 }, { a: 2 })).toBe("exists");
     }
+  });
+});
+
+describe("classifyCompare — scripts", () => {
+  const enc = (s: string): string => Buffer.from(s, "utf8").toString("base64");
+
+  it("decision script identical when bodies match across encodings", () => {
+    // bundle body = JSON-stringified source; target body = base64.
+    const bundle = { _id: "s", name: "d", script: JSON.stringify("// hi") };
+    const target = { _id: "s", name: "d", script: enc("// hi") };
+    expect(classifyCompare("script", bundle, target)).toBe("identical");
+  });
+
+  it("decision script differs on the body", () => {
+    const bundle = { script: JSON.stringify("// a") };
+    const target = { script: enc("// b") };
+    expect(classifyCompare("script", bundle, target)).toBe("differs");
+  });
+
+  it("decision script identical despite description / default / _id / _rev drift", () => {
+    const bundle = { _id: "s1", name: "d", script: JSON.stringify("x") };
+    const target = {
+      _id: "s2",
+      _rev: "9",
+      name: "d",
+      script: enc("x"),
+      description: "edited",
+      default: true,
+    };
+    expect(classifyCompare("script", bundle, target)).toBe("identical");
+  });
+
+  it("decision script with no context key value-compares", () => {
+    expect(classifyCompare("script", { script: JSON.stringify("x") }, { script: enc("y") })).toBe(
+      "differs",
+    );
+  });
+
+  it("library script is existence-only (exists even when bodies differ)", () => {
+    const bundle = { context: "LIBRARY", script: JSON.stringify("// a") };
+    const target = { context: "LIBRARY", script: enc("// b") };
+    expect(classifyCompare("script", bundle, target)).toBe("exists");
+  });
+
+  it("script is new when the target is absent (decision and library)", () => {
+    expect(classifyCompare("script", { script: JSON.stringify("x") }, null)).toBe("new");
+    expect(classifyCompare("script", { context: "LIBRARY" }, null)).toBe("new");
   });
 });
 
@@ -95,6 +142,21 @@ describe("normalizeForCompare", () => {
     expect(n.clientSecret).toBeUndefined();
     expect(n._type).toBeUndefined();
     expect(n.clientId).toBe("c");
+  });
+
+  it("script canonicalizes the body to plain source + drops description/default", () => {
+    const fromBundle = normalizeForCompare("script", {
+      script: JSON.stringify("// hi"),
+      description: "d",
+      default: true,
+    });
+    const fromTarget = normalizeForCompare("script", {
+      script: Buffer.from("// hi", "utf8").toString("base64"),
+    });
+    expect(fromBundle.script).toBe("// hi");
+    expect(fromTarget.script).toBe("// hi");
+    expect(fromBundle.description).toBeUndefined();
+    expect(fromBundle.default).toBeUndefined();
   });
 
   it("does not mutate the input", () => {

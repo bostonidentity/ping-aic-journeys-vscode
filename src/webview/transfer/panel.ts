@@ -2,11 +2,12 @@ import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import { runEsvApply } from "../../import/apply";
 import type { ComponentVerdict } from "../../import/compare";
+import { discoverScriptDeps } from "../../import/discover";
 import { runExecute, type WritePlanItem, type WriteResult } from "../../import/execute";
 import { WRITABLE_KINDS } from "../../import/kinds";
 import type { ImportComponent } from "../../import/parse";
 import { parseBundle } from "../../import/parse";
-import { runPreflight } from "../../import/preflight";
+import { discoverDeps, missingDepsNote, runPreflight } from "../../import/preflight";
 import { idpNeedsSecret } from "../../import/write";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
@@ -161,7 +162,7 @@ export class TransferTab implements vscode.Disposable {
       return;
     }
     if (raw.type === "execute") {
-      await this.handleExecute(raw.host, raw.realm);
+      await this.handleExecute(raw.host, raw.realm, raw.selected);
       return;
     }
     if (raw.type === "applyEsv") {
@@ -231,9 +232,19 @@ export class TransferTab implements vscode.Disposable {
     try {
       const client = await this.deps.cache.get(host);
       const verdicts = await runPreflight(client, realm, targetKind, this.loaded.rawComponents);
-      this.post({ type: "preflightResult", host, realm, verdicts });
+      // TD-9: discover the script's direct dep refs (bundle-only, pure) and
+      // existence-check them on the target — info-only "Requires" rows.
+      const refs = discoverScriptDeps(this.loaded.rawComponents);
+      const requires = await discoverDeps(client, realm, refs);
+      this.post({ type: "preflightResult", host, realm, verdicts, requires });
       this.childLog.info(
-        { event: "tab.runPreflight", host, realm, verdict_count: verdicts.length },
+        {
+          event: "tab.runPreflight",
+          host,
+          realm,
+          verdict_count: verdicts.length,
+          requires_count: requires.length,
+        },
         "Ran import pre-flight",
       );
     } catch (err) {
@@ -249,7 +260,7 @@ export class TransferTab implements vscode.Disposable {
   /** Execute the import (D43) — the ONLY method that mutates a tenant.
    * Re-validates fresh, confirms, collects idp secrets, writes sequentially,
    * reports per-component, then refreshes the Plan. */
-  private async handleExecute(host: string, realm: string): Promise<void> {
+  private async handleExecute(host: string, realm: string, selected: string[]): Promise<void> {
     if (!this.loaded) return;
     const targetKind = this.deps.connectionKindOf(host) ?? "paic";
     try {
@@ -257,11 +268,13 @@ export class TransferTab implements vscode.Disposable {
       // Validate-before-first-write: a FRESH pre-flight, not the shown Plan.
       const verdicts = await runPreflight(client, realm, targetKind, this.loaded.rawComponents);
       const rawByKey = new Map(this.loaded.rawComponents.map((c) => [`${c.kind}:${c.id}`, c]));
+      const selectedSet = new Set(selected); // TD-8: honor per-row checkbox selection
 
       const items: WritePlanItem[] = [];
       for (const v of verdicts) {
         if (v.status !== "new" && v.status !== "differs") continue;
         if (!WRITABLE_KINDS.has(v.kind)) continue; // Slice C = atoms only
+        if (!selectedSet.has(`${v.kind}:${v.id}`)) continue; // user deselected this row
         const component = rawByKey.get(`${v.kind}:${v.id}`);
         if (!component) {
           this.childLog.warn(
@@ -270,7 +283,12 @@ export class TransferTab implements vscode.Disposable {
           );
           continue;
         }
-        items.push({ component, verdict: v.status });
+        items.push({
+          component,
+          verdict: v.status,
+          // TD-9: write reconciles to the name-matched target's UUID (scripts).
+          ...(v.resolvedTargetId ? { resolvedTargetId: v.resolvedTargetId } : {}),
+        });
       }
       const createN = items.filter((i) => i.verdict === "new").length;
       const overwriteN = items.filter((i) => i.verdict === "differs").length;
@@ -287,6 +305,15 @@ export class TransferTab implements vscode.Disposable {
         return;
       }
 
+      // TD-9: surface unmet dependency prerequisites at the decision point.
+      // Advisory (warn, don't block) — the bundle can't supply a missing lib/ESV.
+      const preflightRequires = await discoverDeps(
+        client,
+        realm,
+        discoverScriptDeps(this.loaded.rawComponents),
+      );
+      const missingNote = missingDepsNote(preflightRequires);
+
       // Confirm modal — fresh counts, names the exact target, no-undo warning.
       const hasEsv = items.some(
         (i) => i.component.kind === "variable" || i.component.kind === "secret",
@@ -295,7 +322,8 @@ export class TransferTab implements vscode.Disposable {
         `Import to ${host} / realm ${realm} — create ${createN}, overwrite ${overwriteN}. ` +
         "Overwrite replaces the target's current version entirely; this cannot be undone." +
         (errorN > 0 ? ` ${errorN} component(s) couldn't be checked and will be skipped.` : "") +
-        (hasEsv ? " ESV changes require a separate Apply step before they take effect." : "");
+        (hasEsv ? " ESV changes require a separate Apply step before they take effect." : "") +
+        missingNote;
       const pick = await vscode.window.showWarningMessage(
         "Write these components to the tenant?",
         { modal: true, detail },
@@ -342,9 +370,11 @@ export class TransferTab implements vscode.Disposable {
         "Import complete",
       );
 
-      // Refresh the Plan (written components should now read Identical).
+      // TD-10: the table STAYS in result-state after a run (rows show
+      // Created/Overwritten/Skipped/Failed) — we do NOT re-post a pre-flight,
+      // which would revert them to Identical. Re-run pre-flight extension-side
+      // only as a diagnostic drift check (logs a warning; never reaches the UI).
       const fresh = await runPreflight(client, realm, targetKind, this.loaded.rawComponents);
-      this.post({ type: "preflightResult", host, realm, verdicts: fresh });
       this.warnOnDrift(results, fresh);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -665,6 +695,62 @@ const TRANSFER_CSS = `
   }
   .transfer-v-bad {
     color: var(--vscode-errorForeground);
+  }
+  /* TD-8 Plan table — one CSS grid; each row is display:contents so its cells
+     join the parent grid (no nested grids). Columns: ☑ · Action · Type · Status · Name. */
+  .transfer-plan {
+    display: grid;
+    grid-template-columns: 28px minmax(120px, max-content) 110px 1fr;
+    align-items: center;
+    column-gap: 12px;
+    margin-top: 12px;
+    font-size: 0.92em;
+    border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+    border-radius: 4px;
+    padding: 4px 12px 8px;
+  }
+  .transfer-plan-head,
+  .transfer-plan-row {
+    display: contents;
+  }
+  .transfer-plan-head > span {
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.82em;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+    padding: 4px 0;
+  }
+  .transfer-plan-row > span {
+    padding: 4px 0;
+  }
+  .transfer-plan-row.is-noop > span {
+    color: var(--vscode-descriptionForeground);
+    opacity: 0.7;
+  }
+  .transfer-plan-row.is-blocked .plan-action {
+    color: var(--vscode-errorForeground);
+  }
+  .plan-check {
+    display: flex;
+    justify-content: center;
+  }
+  .plan-check input {
+    cursor: pointer;
+  }
+  .plan-check input:disabled {
+    cursor: default;
+  }
+  .plan-action {
+    font-weight: 600;
+  }
+  .plan-type .codicon {
+    vertical-align: text-bottom;
+    margin-right: 2px;
+    color: var(--vscode-descriptionForeground);
+  }
+  .plan-name {
+    word-break: break-word;
   }
   ${COMBOBOX_CSS}
 `;

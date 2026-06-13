@@ -16,6 +16,13 @@ Corrections and patterns to avoid repeating. Append entries here whenever a user
 
 <!-- Entries below, newest first. -->
 
+## 2026-06-12 — Script import compares by NAME but writes by UUID — a same-named/different-UUID target can be mis-judged
+
+**Context:** Building the script/library-script write path for cross-env import (M9 Phase 4 Batch 2). Pre-flight fetches the target version via `getRawScriptByName(realm, name)` (scripts have no name→one-id guarantee); the write addresses `PUT …/scripts/<uuid>` using the **bundle's `_id` (UUID)** to preserve cross-env script identity so node `script` refs stay valid.
+**Mistake:** Treating "compare target" and "write target" as the same entity. AM allows **duplicate script names** — name is not unique. So if the destination realm already has a script with the same *name* but a *different* UUID, pre-flight value-compares against script-A (the name hit) while `writeScript` creates/overwrites script-B (the bundle UUID). The plan can say "identical/differs" about one entity while the write touches a different one — and a create can silently produce a second same-named script.
+**Correction:** Shipped the *write* slice with the gap documented, then **resolved it the next slice (TD-9)** once we'd articulated the identity model (UUID in-env, **name cross-env** for scripts). Pre-flight now captures the name-matched target's `_id` (`findRawScriptsByName` → `resolvedTargetId` + `targetMatchCount` on the verdict) and `execute` writes to *that* UUID (overwrite in place), falling back to the bundle UUID only on a true create. Dup-name (>1 hit) is surfaced with a `(N on target)` note rather than silently picking. **Status: RESOLVED** (the platform still can't say *which* of N same-named scripts is canonical — we pick-first and flag it, which is the honest maximum).
+**How to avoid next time:** When a component is matched for compare by one key (name) but addressed for write by another (UUID), they diverge whenever the match key isn't unique. Reconcile the write target to the entity the compare actually resolved (carry the resolved id through preflight→execute), and surface the ambiguity when the match isn't 1:1. Don't assume `getRaw…ByName` returns the entity you're about to PUT — and decide *up front* which key is the identity (here: name, cross-env).
+
 ## 2026-05-26 — Webview-bound `postMessage` must wait for the React-mount handshake, not just panel creation
 
 **Context:** Users on RDP reported the inspector frequently showing "Select a tree node to inspect." after clicking a tree node; clicking away and back often (but not always) made the card appear. On dev machines, the bug was never reproducible.

@@ -1,15 +1,30 @@
 import { describe, expect, it } from "vitest";
+import { type ExportMeta, serializeScript } from "../export/serialize";
+import type { RawScript } from "../paic/mappers";
 import {
   emailTemplateName,
   idpNeedsSecret,
+  scriptBodyToWire,
   toEmailWrite,
   toIdpWrite,
+  toScriptWrite,
   toSecretWrite,
   toThemeWrite,
   toVariableWrite,
 } from "./write";
 
 const decode = (b64: string): string => Buffer.from(b64, "base64").toString("utf8");
+const encode = (s: string): string => Buffer.from(s, "utf8").toString("base64");
+
+const META: ExportMeta = {
+  bundleSchemaVersion: "1.0.0",
+  origin: "openam-tenant.example.forgeblocks.com",
+  connectionType: "paic",
+  realm: "alpha",
+  exportDate: "2026-06-12T00:00:00.000Z",
+  exportTool: "test",
+  exportToolVersion: "0.0.0",
+};
 
 describe("write transforms", () => {
   it("toEmailWrite strips _id and extracts the bare name from the prefix", () => {
@@ -77,5 +92,59 @@ describe("ESV write transforms", () => {
     expect(out.useInPlaceholders).toBe(true);
     expect(out._id).toBeUndefined();
     expect(out.loaded).toBeUndefined();
+  });
+});
+
+describe("script write transforms", () => {
+  const SRC = "// hi\nlogger.message('x');";
+
+  it("scriptBodyToWire decodes the JSON-stringified source then base64-encodes", () => {
+    expect(decode(scriptBodyToWire(JSON.stringify(SRC)))).toBe(SRC);
+  });
+
+  it("toScriptWrite keeps _id/name/language/context, drops audit fields", () => {
+    const out = toScriptWrite({
+      _id: "s-uuid",
+      name: "helpers",
+      language: "JAVASCRIPT",
+      context: "LIBRARY",
+      script: JSON.stringify(SRC),
+      _rev: "9",
+      createdBy: "sa",
+      creationDate: 1,
+      lastModifiedBy: "sa",
+      lastModifiedDate: 2,
+      evaluatorVersion: "2.0",
+    });
+    expect(out._id).toBe("s-uuid");
+    expect(out.name).toBe("helpers");
+    expect(out.language).toBe("JAVASCRIPT");
+    expect(out.context).toBe("LIBRARY"); // library context round-trips
+    expect(out._rev).toBeUndefined();
+    expect(out.createdBy).toBeUndefined();
+    expect(out.evaluatorVersion).toBeUndefined();
+  });
+
+  it("toScriptWrite re-encodes the body to base64", () => {
+    const out = toScriptWrite({ _id: "s", script: JSON.stringify(SRC) });
+    expect(decode(out.script as string)).toBe(SRC);
+  });
+
+  it("toScriptWrite round-trips serializeScript output (forward ∘ inverse = identity)", () => {
+    const raw: RawScript = {
+      _id: "s-uuid",
+      name: "helpers",
+      language: "JAVASCRIPT",
+      script: encode(SRC), // wire form: base64
+    };
+    const bundled = serializeScript(raw, META).script?.["s-uuid"] as Record<string, unknown>;
+    const out = toScriptWrite(bundled);
+    expect(decode(out.script as string)).toBe(SRC);
+    expect(out._id).toBe("s-uuid");
+  });
+
+  it("toScriptWrite leaves a non-string body untouched", () => {
+    const out = toScriptWrite({ _id: "s", script: 42 });
+    expect(out.script).toBe(42);
   });
 });

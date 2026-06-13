@@ -10,6 +10,7 @@ function client(over: Record<string, unknown> = {}): ExecuteClient {
     writeSocialIdp: vi.fn(() => Promise.resolve("created" as const)),
     writeEsvVariable: vi.fn(() => Promise.resolve("created" as const)),
     writeEsvSecret: vi.fn(() => Promise.resolve("created" as const)),
+    writeScript: vi.fn(() => Promise.resolve("created" as const)),
     ...over,
   } as unknown as ExecuteClient;
 }
@@ -153,5 +154,93 @@ describe("runExecute", () => {
       item(comp({ kind: "secret", id: "esv-s", raw: { _id: "esv-s" } }), { secret: "v" }),
     ]);
     expect(r[0].status).toBe("failed");
+  });
+
+  it("writes a decision script by uuid with the re-encoded body → created", async () => {
+    const writeScript = vi.fn(() => Promise.resolve("created" as const));
+    const r = await runExecute(client({ writeScript }), "alpha", [
+      item(
+        comp({
+          kind: "script",
+          id: "s-uuid",
+          raw: {
+            _id: "s-uuid",
+            name: "helpers",
+            script: JSON.stringify("// x"),
+            language: "JAVASCRIPT",
+          },
+        }),
+      ),
+    ]);
+    expect(r[0].status).toBe("created");
+    expect(writeScript).toHaveBeenCalledTimes(1);
+    const [realm, id, body] = writeScript.mock.calls[0] as unknown as [
+      string,
+      string,
+      Record<string, unknown>,
+    ];
+    expect(realm).toBe("alpha");
+    expect(id).toBe("s-uuid");
+    expect(Buffer.from(body.script as string, "base64").toString("utf8")).toBe("// x");
+  });
+
+  it("writes a library script with context LIBRARY round-tripping → overwritten", async () => {
+    const writeScript = vi.fn(() => Promise.resolve("overwritten" as const));
+    const r = await runExecute(client({ writeScript }), "alpha", [
+      item(
+        comp({
+          kind: "script",
+          id: "lib-uuid",
+          raw: { _id: "lib-uuid", name: "util", context: "LIBRARY", script: JSON.stringify("1") },
+        }),
+        { verdict: "differs" },
+      ),
+    ]);
+    expect(r[0].status).toBe("overwritten");
+    const body = (writeScript.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+    expect(body.context).toBe("LIBRARY");
+  });
+
+  it("a throwing writeScript → failed with the error message", async () => {
+    const writeScript = vi.fn(() => Promise.reject(new Error("boom")));
+    const r = await runExecute(client({ writeScript }), "alpha", [
+      item(comp({ kind: "script", id: "s", raw: { _id: "s", script: JSON.stringify("x") } })),
+    ]);
+    expect(r[0].status).toBe("failed");
+    expect(r[0].message).toBe("boom");
+  });
+
+  it("reconciles the write to resolvedTargetId when set (overwrite in place, TD-9)", async () => {
+    const writeScript = vi.fn(() => Promise.resolve("overwritten" as const));
+    await runExecute(client({ writeScript }), "alpha", [
+      item(
+        comp({
+          kind: "script",
+          id: "bundle-uuid",
+          raw: { _id: "bundle-uuid", script: JSON.stringify("x") },
+        }),
+        {
+          verdict: "differs",
+          resolvedTargetId: "target-uuid",
+        },
+      ),
+    ]);
+    const id = (writeScript.mock.calls[0] as unknown[])[1] as string;
+    expect(id).toBe("target-uuid"); // NOT the bundle uuid
+  });
+
+  it("falls back to the bundle uuid on a true create (no resolvedTargetId)", async () => {
+    const writeScript = vi.fn(() => Promise.resolve("created" as const));
+    await runExecute(client({ writeScript }), "alpha", [
+      item(
+        comp({
+          kind: "script",
+          id: "bundle-uuid",
+          raw: { _id: "bundle-uuid", script: JSON.stringify("x") },
+        }),
+      ),
+    ]);
+    const id = (writeScript.mock.calls[0] as unknown[])[1] as string;
+    expect(id).toBe("bundle-uuid");
   });
 });

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { Combobox, type ComboboxOption } from "../../shared/combobox";
 import type {
   BundleKind,
@@ -7,14 +7,28 @@ import type {
   ConnectionInfo,
   E2W,
   ParsedBundle,
+  RequiredDepVerdict,
   TransferPayload,
   W2E,
   WriteResult,
 } from "../messages";
 import { WRITABLE_KINDS } from "../messages";
+import { kindMeta, sortByKindThenName } from "./kind-meta";
 
 const isWritableVerdict = (v: ComponentVerdict) => v.status === "new" || v.status === "differs";
 const isEsvKind = (k: BundleKind) => k === "variable" || k === "secret";
+const verdictKey = (v: ComponentVerdict) => `${v.kind}:${v.id}`;
+
+function importButtonLabel(
+  running: boolean,
+  selectedN: number,
+  createN: number,
+  overwriteN: number,
+): string {
+  if (running) return "Importing…";
+  if (selectedN === 0) return "Nothing selected";
+  return `Import ${selectedN} selected · ${createN} create · ${overwriteN} overwrite`;
+}
 
 interface VsCodeApi {
   postMessage(msg: W2E): void;
@@ -40,7 +54,12 @@ type RealmsState =
 type PreflightState =
   | { status: "idle" }
   | { status: "running" }
-  | { status: "ok"; verdicts: readonly ComponentVerdict[] }
+  | {
+      status: "ok";
+      verdicts: readonly ComponentVerdict[];
+      /** Discovered info-only dependency refs (libs + ESVs) — TD-9. */
+      requires: readonly RequiredDepVerdict[];
+    }
   | { status: "err"; message: string };
 
 /** Write (execute) state. */
@@ -71,6 +90,28 @@ export function App({ vscode, payload }: Props) {
   const [preflight, setPreflight] = useState<PreflightState>({ status: "idle" });
   const [execute, setExecute] = useState<ExecuteState>({ status: "idle" });
   const [apply, setApply] = useState<ApplyState>({ status: "idle" });
+  // TD-8: per-row checkbox selection (keys = `${kind}:${id}`). Seeded to all
+  // writable verdicts when a pre-flight arrives; cleared on a target change.
+  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(new Set());
+  const toggleKey = useCallback((key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  // Select-all header (TD-10): add/remove every actionable key at once.
+  const toggleAll = useCallback((keys: string[], selectAll: boolean) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      for (const k of keys) {
+        if (selectAll) next.add(k);
+        else next.delete(k);
+      }
+      return next;
+    });
+  }, []);
 
   // Announce readiness on mount (the panel re-hydrates the bundle on this).
   useEffect(() => {
@@ -95,7 +136,10 @@ export function App({ vscode, payload }: Props) {
         setRealmsByHost((prev) => ({ ...prev, [m.host]: { status: "err", message: m.message } }));
       } else if (m.type === "preflightResult") {
         if (m.host !== selectedHost || m.realm !== selectedRealm) return; // stale
-        setPreflight({ status: "ok", verdicts: m.verdicts });
+        setPreflight({ status: "ok", verdicts: m.verdicts, requires: m.requires });
+        // TD-10: selection is opt-in — nothing checked by default. The user
+        // accepts suggested actions row by row (or via the select-all header).
+        setSelectedKeys(new Set());
       } else if (m.type === "preflightError") {
         if (m.host !== selectedHost || m.realm !== selectedRealm) return; // stale
         setPreflight({ status: "err", message: m.message });
@@ -148,6 +192,7 @@ export function App({ vscode, payload }: Props) {
   const isJourney = loaded?.bundle.kind === "journey";
   useEffect(() => {
     setExecute({ status: "idle" }); // a new target/bundle invalidates any prior write log
+    setSelectedKeys(new Set()); // drop stale selection; re-seeded when the new preflight lands
     if (!loaded || isJourney || selectedHost === null || selectedRealm === null) {
       setPreflight({ status: "idle" });
       return;
@@ -165,7 +210,12 @@ export function App({ vscode, payload }: Props) {
   const onExecute = () => {
     if (selectedHost === null || selectedRealm === null) return;
     setExecute({ status: "running" });
-    vscode.postMessage({ type: "execute", host: selectedHost, realm: selectedRealm });
+    vscode.postMessage({
+      type: "execute",
+      host: selectedHost,
+      realm: selectedRealm,
+      selected: [...selectedKeys],
+    });
   };
   const onApplyEsv = () => {
     if (selectedHost === null) return;
@@ -212,6 +262,9 @@ export function App({ vscode, payload }: Props) {
           onExecute={onExecute}
           apply={apply}
           onApplyEsv={onApplyEsv}
+          selectedKeys={selectedKeys}
+          onToggle={toggleKey}
+          onToggleAll={toggleAll}
         />
       ) : null}
     </main>
@@ -302,6 +355,9 @@ function PlanSection({
   onExecute,
   apply,
   onApplyEsv,
+  selectedKeys,
+  onToggle,
+  onToggleAll,
 }: {
   preflight: PreflightState;
   bundleKind: BundleKind;
@@ -309,10 +365,25 @@ function PlanSection({
   onExecute: () => void;
   apply: ApplyState;
   onApplyEsv: () => void;
+  selectedKeys: ReadonlySet<string>;
+  onToggle: (key: string) => void;
+  onToggleAll: (keys: string[], selectAll: boolean) => void;
 }) {
   const isWritable = WRITABLE_KINDS.has(bundleKind);
-  const writableCount =
-    preflight.status === "ok" ? preflight.verdicts.filter(isWritableVerdict).length : 0;
+  const verdicts = preflight.status === "ok" ? preflight.verdicts : [];
+  const requires = preflight.status === "ok" ? preflight.requires : [];
+  const hasAnyWritable = verdicts.some(isWritableVerdict);
+  const results = execute.status === "done" ? execute.results : undefined;
+  // TD-10: once an import completes the table locks read-only (the result
+  // report) until re-armed by a fresh pre-flight (re-select target / new bundle).
+  const locked = execute.status === "done";
+  // Button counts come from the SELECTED actionable verdicts (TD-10 — selection
+  // is opt-in, default none). Live preview of the confirm-modal summary.
+  const selected = verdicts.filter((v) => isWritableVerdict(v) && selectedKeys.has(verdictKey(v)));
+  const createN = selected.filter((v) => v.status === "new").length;
+  const overwriteN = selected.filter((v) => v.status === "differs").length;
+  const selectedN = selected.length;
+  const allActionableKeys = verdicts.filter(isWritableVerdict).map(verdictKey);
   // After an ESV import, offer the separate tenant-wide apply (restart).
   const wroteEsv =
     execute.status === "done" &&
@@ -325,26 +396,40 @@ function PlanSection({
         <div className="transfer-error">{preflight.message}</div>
       ) : null}
       {preflight.status === "ok" ? (
-        <ul className="transfer-compat">
-          {preflight.verdicts.map((v) => (
-            <VerdictRow key={`${v.kind}:${v.id}`} verdict={v} />
-          ))}
-        </ul>
+        <PlanTable
+          verdicts={verdicts}
+          requires={requires}
+          results={results}
+          selectedKeys={selectedKeys}
+          locked={locked}
+          onToggle={onToggle}
+          onToggleAll={(selectAll) => onToggleAll(allActionableKeys, selectAll)}
+        />
       ) : null}
       {preflight.status === "ok" && !isWritable ? (
         <p className="transfer-note">Import for {bundleKind} arrives in a later batch.</p>
       ) : null}
-      {preflight.status === "ok" && isWritable && writableCount > 0 ? (
+      {locked ? (
+        <p className="transfer-hint">
+          Import complete — this plan is now read-only. Re-select the target or choose another
+          bundle to run again.
+        </p>
+      ) : null}
+      {preflight.status === "ok" && isWritable && hasAnyWritable && !locked ? (
         <div className="transfer-actions">
-          <button type="button" onClick={onExecute} disabled={execute.status === "running"}>
-            {execute.status === "running"
-              ? "Importing…"
-              : `Import ${writableCount} component${writableCount === 1 ? "" : "s"}`}
+          <button
+            type="button"
+            onClick={onExecute}
+            disabled={execute.status === "running" || selectedN === 0}
+          >
+            {importButtonLabel(execute.status === "running", selectedN, createN, overwriteN)}
           </button>
         </div>
       ) : null}
-      {execute.status === "done" ? (
-        <ExecuteLog results={execute.results} summary={execute.summary} />
+      {wroteEsv ? (
+        <p className="transfer-note">
+          ESV changes aren't live until applied — use the Apply step below.
+        </p>
       ) : null}
       {wroteEsv && apply.status !== "running" ? (
         <div className="transfer-actions">
@@ -355,6 +440,268 @@ function PlanSection({
       ) : null}
       <ApplySection apply={apply} />
     </section>
+  );
+}
+
+// ─── Plan table (TD-8 grid · TD-10 three-phase Status) ───────────────────────
+
+// No Action column. A single Status column tells the whole story across three
+// phases: before (comparison) → selected (checked, pre-import) → after (result).
+type RowState = "writable" | "noop" | "blocked";
+
+function rowStateOf(v: ComponentVerdict): RowState {
+  if (v.status === "new" || v.status === "differs") return "writable";
+  if (v.status === "unsupported" || v.status === "error") return "blocked";
+  return "noop"; // identical | exists
+}
+
+/** Status PHASE 1 — the comparison fact (before any selection). */
+function beforeStatus(v: ComponentVerdict): { text: string; cls: string } {
+  switch (v.status) {
+    case "new":
+      return { text: "New", cls: "transfer-v-new" };
+    case "differs":
+      return { text: "Differs", cls: "transfer-v-diff" };
+    case "identical":
+      return { text: "Identical", cls: "transfer-v-ok" };
+    case "exists":
+      return { text: "Present", cls: "transfer-v-muted" };
+    case "unsupported":
+      return { text: "Unsupported", cls: "transfer-v-bad" };
+    case "error":
+      return { text: v.message ?? "Error", cls: "transfer-v-bad" };
+  }
+}
+
+/** Status PHASE 2 — the pending verb shown when an actionable row is checked. */
+function selectedStatus(v: ComponentVerdict): { text: string; cls: string } {
+  return v.status === "new"
+    ? { text: "Create", cls: "transfer-v-ok" }
+    : { text: "Overwrite", cls: "transfer-v-diff" };
+}
+
+/** Status PHASE 3 — the per-row write outcome after a completed import. */
+function afterStatus(r: WriteResult): { text: string; cls: string } {
+  switch (r.status) {
+    case "created":
+      return { text: "Created", cls: "transfer-v-ok" };
+    case "overwritten":
+      return { text: "Overwritten", cls: "transfer-v-ok" };
+    case "skipped":
+      return { text: "Skipped", cls: "transfer-v-muted" };
+    case "failed":
+      return { text: "Failed", cls: "transfer-v-bad" };
+  }
+}
+
+/** One row in the unified Plan grid — a writable component (verdict) or an
+ * info-only discovered dependency (TD-9). Deps are never selectable (the bundle
+ * has no body/value to write); they show what must already exist on the target. */
+interface PlanRowData {
+  key: string;
+  /** Toggle key for selectable rows; null for non-selectable (deps, blocked). */
+  selectKey: string | null;
+  /** "writable" → live checkbox; "noop" → disabled checkbox; "info"/"blocked" → none. */
+  rowState: RowState | "info";
+  icon: string;
+  typeWord: string;
+  statusText: string;
+  statusCls: string;
+  name: string;
+  nameNote?: string;
+}
+
+/** Resolve the three-phase Status for a verdict row. */
+function pickStatus(
+  v: ComponentVerdict,
+  state: RowState,
+  checked: boolean,
+  result?: WriteResult,
+): { text: string; cls: string } {
+  if (result) return afterStatus(result); // phase 3
+  if (checked && state === "writable") return selectedStatus(v); // phase 2
+  return beforeStatus(v); // phase 1
+}
+
+function verdictRowData(v: ComponentVerdict, checked: boolean, result?: WriteResult): PlanRowData {
+  const state = rowStateOf(v);
+  const { icon, word } = kindMeta(v.kind);
+  // Three-phase Status: after-result wins; else the pending verb when checked;
+  // else the comparison fact.
+  const status = pickStatus(v, state, checked, result);
+  return {
+    key: verdictKey(v),
+    selectKey: state === "blocked" ? null : verdictKey(v),
+    rowState: state,
+    icon,
+    typeWord: word,
+    statusText: status.text,
+    statusCls: status.cls,
+    name: v.displayName,
+    nameNote:
+      v.targetMatchCount && v.targetMatchCount > 1
+        ? `(${v.targetMatchCount} on target)`
+        : undefined,
+  };
+}
+
+function depRowData(d: RequiredDepVerdict): PlanRowData {
+  // A library ref shows the Script icon/word; an ESV ref the variable icon.
+  const meta = d.kind === "script" ? kindMeta("script") : kindMeta("variable");
+  const typeWord = d.kind === "script" ? "Library" : "ESV";
+  const present = d.status === "present";
+  return {
+    key: `dep:${d.kind}:${d.name}`,
+    selectKey: null, // info-only — never importable
+    rowState: "info",
+    icon: meta.icon,
+    typeWord,
+    statusText: present ? "Present" : "Missing",
+    statusCls: present ? "transfer-v-muted" : "transfer-v-bad",
+    name: d.name,
+    nameNote: present && d.detail ? `(${d.detail})` : undefined,
+  };
+}
+
+function PlanTable({
+  verdicts,
+  requires,
+  results,
+  selectedKeys,
+  locked,
+  onToggle,
+  onToggleAll,
+}: {
+  verdicts: readonly ComponentVerdict[];
+  requires: readonly RequiredDepVerdict[];
+  /** Per-row write outcomes after a run (drives Phase-3 Status + lock). */
+  results?: readonly WriteResult[];
+  selectedKeys: ReadonlySet<string>;
+  /** True once an import has completed — table is read-only until re-armed. */
+  locked: boolean;
+  onToggle: (key: string) => void;
+  onToggleAll: (selectAll: boolean) => void;
+}) {
+  const resultByKey = new Map((results ?? []).map((r) => [`${r.kind}:${r.id}`, r]));
+  // Writable + no-op + blocked components first (type-sorted), then the
+  // info-only dependency rows (TD-9) — all in one aligned grid.
+  const rows: PlanRowData[] = [
+    ...sortByKindThenName(verdicts).map((v) =>
+      verdictRowData(v, selectedKeys.has(verdictKey(v)), resultByKey.get(verdictKey(v))),
+    ),
+    ...requires.map(depRowData),
+  ];
+  // Tri-state select-all over the actionable (writable) rows only.
+  const actionable = rows.filter((r) => r.rowState === "writable");
+  const checkedCount = actionable.filter((r) => selectedKeys.has(r.selectKey ?? "")).length;
+  const allChecked = actionable.length > 0 && checkedCount === actionable.length;
+  const someChecked = checkedCount > 0 && !allChecked;
+  return (
+    <PlanGrid
+      rows={rows}
+      selectedKeys={selectedKeys}
+      locked={locked}
+      onToggle={onToggle}
+      headerCheckbox={{
+        hasActionable: actionable.length > 0,
+        allChecked,
+        someChecked,
+        onToggleAll,
+      }}
+    />
+  );
+}
+
+function PlanGrid({
+  rows,
+  selectedKeys,
+  locked,
+  onToggle,
+  headerCheckbox,
+}: {
+  rows: readonly PlanRowData[];
+  selectedKeys: ReadonlySet<string>;
+  onToggle: (key: string) => void;
+  locked: boolean;
+  headerCheckbox: {
+    hasActionable: boolean;
+    allChecked: boolean;
+    someChecked: boolean;
+    onToggleAll: (selectAll: boolean) => void;
+  };
+}) {
+  return (
+    <div className="transfer-plan">
+      <div className="transfer-plan-head">
+        <span className="plan-check">
+          {headerCheckbox.hasActionable ? (
+            <input
+              type="checkbox"
+              aria-label="Select all"
+              checked={headerCheckbox.allChecked}
+              disabled={locked}
+              ref={(el) => {
+                if (el) el.indeterminate = headerCheckbox.someChecked;
+              }}
+              onChange={() => headerCheckbox.onToggleAll(!headerCheckbox.allChecked)}
+            />
+          ) : null}
+        </span>
+        <span className="plan-col-head">Type</span>
+        <span className="plan-col-head">Status</span>
+        <span className="plan-col-head">Name</span>
+      </div>
+      {rows.map((row) => (
+        <PlanRow
+          key={row.key}
+          row={row}
+          checked={row.selectKey !== null && selectedKeys.has(row.selectKey)}
+          locked={locked}
+          onToggle={onToggle}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PlanRow({
+  row,
+  checked,
+  locked,
+  onToggle,
+}: {
+  row: PlanRowData;
+  checked: boolean;
+  locked: boolean;
+  onToggle: (key: string) => void;
+}) {
+  const muted = row.rowState === "noop" || row.rowState === "info";
+  const writable = row.rowState === "writable";
+  let rowCls = "transfer-plan-row";
+  if (muted) rowCls += " is-noop";
+  else if (row.rowState === "blocked") rowCls += " is-blocked";
+  return (
+    <div className={rowCls}>
+      <span className="plan-check">
+        {/* Uniform column (TD-10): every non-actionable row shows a disabled,
+            unchecked box; only New/Differs rows are live. */}
+        <input
+          type="checkbox"
+          checked={writable ? checked : false}
+          disabled={!writable || locked}
+          aria-label={`Import ${row.name}`}
+          onChange={() => row.selectKey && onToggle(row.selectKey)}
+        />
+      </span>
+      <span className="plan-type">
+        <i className={`codicon codicon-${row.icon}`} aria-hidden /> {row.typeWord}
+      </span>
+      <span className={`plan-status ${row.statusCls}`}>{row.statusText}</span>
+      <span className="plan-name">
+        {row.name}
+        {row.nameNote ? <span className="transfer-comp-detail"> {row.nameNote}</span> : null}
+      </span>
+    </div>
   );
 }
 
@@ -377,74 +724,6 @@ function ApplySection({ apply }: { apply: ApplyState }) {
     );
   }
   return null;
-}
-
-function ExecuteLog({ results, summary }: { results: readonly WriteResult[]; summary?: string }) {
-  const wroteEsv = results.some((r) => isEsvKind(r.kind) && r.status === "created");
-  return (
-    <div>
-      {results.length > 0 ? (
-        <ul className="transfer-compat">
-          {results.map((r) => {
-            const { label, cls } = resultBadge(r);
-            return (
-              <li key={`${r.kind}:${r.id}`} className={cls}>
-                {label}
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-      {summary ? <p className="transfer-hint">{summary}</p> : null}
-      {wroteEsv ? (
-        <p className="transfer-note">
-          ESV changes aren't live until applied — the Apply step lands in a later slice.
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function resultBadge(r: WriteResult): { label: string; cls: string } {
-  const name = r.displayName;
-  // ESV writes land pending until a separate Apply (restart) — say so.
-  const pending = isEsvKind(r.kind) ? " — pending apply" : "";
-  switch (r.status) {
-    case "created":
-      return { label: `✓ ${name} — created${pending}`, cls: "transfer-v-ok" };
-    case "overwritten":
-      return { label: `✓ ${name} — overwritten`, cls: "transfer-v-ok" };
-    case "skipped":
-      return { label: `– ${name} — skipped (${r.message ?? ""})`, cls: "transfer-v-muted" };
-    case "failed":
-      return { label: `✗ ${name} — failed: ${r.message ?? "error"}`, cls: "transfer-v-bad" };
-  }
-}
-
-function VerdictRow({ verdict }: { verdict: ComponentVerdict }) {
-  const { label, cls } = badgeFor(verdict);
-  return <li className={cls}>{label}</li>;
-}
-
-function badgeFor(v: ComponentVerdict): { label: string; cls: string } {
-  const name = v.displayName;
-  switch (v.status) {
-    case "unsupported":
-      return {
-        label: `✗ ${name} (${v.kind}) — not supported on on-prem AM`,
-        cls: "transfer-v-bad",
-      };
-    case "new":
-      return { label: `✚ ${name} — New (not on target)`, cls: "transfer-v-new" };
-    case "identical":
-      return { label: `= ${name} — Identical`, cls: "transfer-v-ok" };
-    case "differs":
-      return { label: `● ${name} — Differs`, cls: "transfer-v-diff" };
-    case "exists":
-      return { label: `• ${name} — Present (not value-compared)`, cls: "transfer-v-muted" };
-    case "error":
-      return { label: `⚠ ${name} — ${v.message ?? "error"}`, cls: "transfer-v-bad" };
-  }
 }
 
 // ─── Source preview (Slice A) ────────────────────────────────────────────────

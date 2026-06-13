@@ -85,3 +85,31 @@ export function toSecretWrite(
     valueBase64: Buffer.from(plaintext, "utf8").toString("base64"),
   };
 }
+
+/** Inverse of `serialize.ts:scriptBodyToExport` — the bundle carries the script
+ * body as JSON-stringified decoded source (`JSON.stringify(decodedSource)`),
+ * but the AM scripts endpoint wants base64. Parse back to plain source, then
+ * base64-encode. Must change in lockstep with `scriptBodyToExport`. */
+export function scriptBodyToWire(bundleBody: string): string {
+  return Buffer.from(JSON.parse(bundleBody) as string, "utf8").toString("base64");
+}
+
+/** Script / library-script write body. Keeps `_id` (the URL UUID, preserved on
+ * import — `PUT …/scripts/<uuid>`), `name`, `language`, `context` ("LIBRARY"
+ * round-trips for library scripts), plus the writable `description`/`default`.
+ * Drops server-managed audit fields, and re-encodes the body to base64. A
+ * non-string `script` is left untouched — the API surfaces the error rather
+ * than this pure transform throwing. */
+export function toScriptWrite(raw: Record<string, unknown>): Record<string, unknown> {
+  const out = drop(
+    raw,
+    "_rev",
+    "createdBy",
+    "creationDate",
+    "lastModifiedBy",
+    "lastModifiedDate",
+    "evaluatorVersion",
+  );
+  if (typeof out.script === "string") out.script = scriptBodyToWire(out.script);
+  return out;
+}
