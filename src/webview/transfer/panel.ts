@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import { runEsvApply } from "../../import/apply";
 import type { ComponentVerdict } from "../../import/compare";
+import { canonScriptBody } from "../../import/compare";
 import { discoverScriptDeps } from "../../import/discover";
 import { runExecute, type WritePlanItem, type WriteResult } from "../../import/execute";
 import { WRITABLE_KINDS } from "../../import/kinds";
@@ -9,8 +10,11 @@ import type { ImportComponent } from "../../import/parse";
 import { parseBundle } from "../../import/parse";
 import { discoverDeps, missingDepsNote, runPreflight } from "../../import/preflight";
 import { idpNeedsSecret } from "../../import/write";
+import type { PaicBundleContentProvider } from "../../providers/bundle-content-provider";
+import { makeScriptUri } from "../../providers/script-fs-provider";
 import type { ClientCache } from "../../tenants/client-cache";
 import type { Logger } from "../../util/logger";
+import type { SearchPrefill } from "../search/messages";
 import { COMBOBOX_CSS } from "../shared/combobox-css";
 import {
   type ConnectionInfo,
@@ -22,6 +26,12 @@ import {
 
 /** Connections read fresh on every spawn so the payload reflects the current
  * registry state (used by the Slice-B target dropdown). */
+/** The slice of `SearchFactory` the Transfer page needs (TD-11 Find-usages) —
+ * structural to avoid a hard cross-webview import. */
+export interface SearchSpawner {
+  spawn(opts: { selectedHost?: string; selectedRealm?: string; prefill?: SearchPrefill }): unknown;
+}
+
 export interface TransferFactoryDeps {
   context: vscode.ExtensionContext;
   listConnections: () => readonly ConnectionInfo[];
@@ -29,6 +39,10 @@ export interface TransferFactoryDeps {
   cache: ClientCache;
   /** Connection kind for a host — drives the realm-list root filter. */
   connectionKindOf: (host: string) => "paic" | "onprem" | undefined;
+  /** Opens the Search page pre-filled for find-usages (TD-11). */
+  searchFactory: SearchSpawner;
+  /** Serves the bundle component's source as the Diff right side (TD-11). */
+  bundleContent: PaicBundleContentProvider;
   log: Logger;
 }
 
@@ -59,6 +73,8 @@ export class TransferFactory implements vscode.Disposable {
         context: this.deps.context,
         cache: this.deps.cache,
         connectionKindOf: this.deps.connectionKindOf,
+        searchFactory: this.deps.searchFactory,
+        bundleContent: this.deps.bundleContent,
         log: this.deps.log,
         onClosed: () => {
           this.tab = null;
@@ -80,6 +96,8 @@ interface TransferTabDeps {
   context: vscode.ExtensionContext;
   cache: ClientCache;
   connectionKindOf: (host: string) => "paic" | "onprem" | undefined;
+  searchFactory: SearchSpawner;
+  bundleContent: PaicBundleContentProvider;
   log: Logger;
   onClosed: (tab: TransferTab) => void;
 }
@@ -167,6 +185,24 @@ export class TransferTab implements vscode.Disposable {
     }
     if (raw.type === "applyEsv") {
       await this.handleApplyEsv(raw.host);
+      return;
+    }
+    if (raw.type === "openDiff") {
+      await this.handleOpenDiff(
+        raw.host,
+        raw.realm,
+        raw.bundleKey,
+        raw.targetScriptId,
+        raw.language,
+      );
+      return;
+    }
+    if (raw.type === "openFindUsages") {
+      this.deps.searchFactory.spawn({
+        selectedHost: raw.host,
+        selectedRealm: raw.realm,
+        prefill: { mode: "findUsages", targetKey: raw.targetKey, targetKind: raw.targetKind },
+      });
       return;
     }
     if (raw.type === "pickBundle") {
@@ -405,6 +441,39 @@ export class TransferTab implements vscode.Disposable {
         );
       }
     }
+  }
+
+  /** Open VS Code's native diff for a script overwrite row (TD-11): LEFT = the
+   * live target script we'd overwrite (at `targetScriptId`, i.e. the verdict's
+   * resolvedTargetId — TD-9), RIGHT = the uploaded bundle script's source. Both
+   * as `.js` via the existing `paic-script://` provider + the `paic-bundle://`
+   * content provider. Scripts only in v1. */
+  private async handleOpenDiff(
+    host: string,
+    realm: string,
+    bundleKey: string,
+    targetScriptId: string,
+    language?: string,
+  ): Promise<void> {
+    if (!this.loaded) return;
+    const component = this.loaded.rawComponents.find((c) => `${c.kind}:${c.id}` === bundleKey);
+    if (!component) {
+      this.childLog.warn(
+        { event: "tab.openDiff.noComponent", bundleKey },
+        "Diff: no such component",
+      );
+      return;
+    }
+    const bodyRaw = typeof component.raw.script === "string" ? component.raw.script : "";
+    const source = canonScriptBody(bodyRaw);
+    const right = this.deps.bundleContent.set(bundleKey, source);
+    const left = makeScriptUri(host, realm, targetScriptId, language);
+    const title = `${component.displayName}: target ↔ bundle`;
+    await vscode.commands.executeCommand("vscode.diff", left, right, title);
+    this.childLog.info(
+      { event: "tab.openDiff", host, realm, bundle_key: bundleKey },
+      "Opened import diff",
+    );
   }
 
   /** List a target connection's realms for the Target dropdown. Mirrors the
@@ -700,7 +769,7 @@ const TRANSFER_CSS = `
      join the parent grid (no nested grids). Columns: ☑ · Action · Type · Status · Name. */
   .transfer-plan {
     display: grid;
-    grid-template-columns: 28px minmax(120px, max-content) 110px 1fr;
+    grid-template-columns: 28px minmax(120px, max-content) 110px 1fr max-content;
     align-items: center;
     column-gap: 12px;
     margin-top: 12px;
@@ -751,6 +820,30 @@ const TRANSFER_CSS = `
   }
   .plan-name {
     word-break: break-word;
+  }
+  .plan-review {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+    white-space: nowrap;
+  }
+  .plan-review-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px;
+    font-size: 0.85em;
+    background: transparent;
+    color: var(--vscode-textLink-foreground);
+    border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .plan-review-btn:hover {
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  }
+  .plan-review-btn .codicon {
+    font-size: 1em;
   }
   ${COMBOBOX_CSS}
 `;

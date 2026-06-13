@@ -78,7 +78,7 @@ function eq(
  * the target read carries it as base64 — reduce both to the same source string
  * so encoding/padding differences never read as `differs`. JSON-parse first
  * (the bundle form always starts as a JSON-stringified string), else base64. */
-function canonScriptBody(s: string): string {
+export function canonScriptBody(s: string): string {
   try {
     const parsed = JSON.parse(s);
     if (typeof parsed === "string") return parsed;

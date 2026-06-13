@@ -14,6 +14,7 @@
  * types from `../messages` / `../../domain`.
  */
 
+import type { EntityKind } from "../../domain/realm-index";
 import type { ComponentVerdict } from "../../import/compare";
 import type { WriteResult } from "../../import/execute";
 import type { ParsedBundle } from "../../import/parse";
@@ -21,6 +22,7 @@ import type { RequiredDepVerdict } from "../../import/preflight";
 
 // Pure import-layer types re-exported so the React sandbox (`ui/*`) imports
 // only from this module (mirrors how the Search UI imports its shared types).
+export type { EntityKind } from "../../domain/realm-index";
 export type { ComponentStatus, ComponentVerdict } from "../../import/compare";
 export type { WriteResult, WriteStatus } from "../../import/execute";
 // The writable-kinds set is the single source of truth for both the panel's
@@ -49,7 +51,24 @@ export type W2E =
   | { type: "runPreflight"; host: string; realm: string }
   | { type: "execute"; host: string; realm: string; selected: string[] }
   // ESV apply is tenant-wide → host-scoped, not realm-scoped.
-  | { type: "applyEsv"; host: string };
+  | { type: "applyEsv"; host: string }
+  // Review affordances (TD-11) — read-only inspection of an overwrite row.
+  | {
+      type: "openDiff";
+      host: string;
+      realm: string;
+      bundleKey: string;
+      /** The target entity's `_id` we'd overwrite (verdict.resolvedTargetId, TD-9). */
+      targetScriptId: string;
+      language?: string;
+    }
+  | {
+      type: "openFindUsages";
+      host: string;
+      realm: string;
+      targetKey: string;
+      targetKind: EntityKind;
+    };
 
 export type E2W =
   | { type: "bundleLoaded"; fileName: string; bundle: ParsedBundle }
@@ -84,7 +103,9 @@ export function isW2E(m: unknown): m is W2E {
     t === "listRealms" ||
     t === "runPreflight" ||
     t === "execute" ||
-    t === "applyEsv"
+    t === "applyEsv" ||
+    t === "openDiff" ||
+    t === "openFindUsages"
   );
 }
 

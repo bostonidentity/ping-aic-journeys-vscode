@@ -15,6 +15,7 @@ import type {
   Theme,
 } from "@/domain/types";
 import { type BuildProgress, buildRealmIndex } from "@/realm-index/build";
+import { findUnused, findUsagePaths } from "@/realm-index/queries";
 import { makeFakeLogger, makeFakePaicClient } from "../views/fakes";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -124,7 +125,7 @@ describe("buildRealmIndex", () => {
         [`${REALM}:ScriptedDecisionNode:n1`]: sd1,
         [`${REALM}:ScriptedDecisionNode:n2`]: sd2,
       },
-      scriptsByKey: { [`${REALM}:shared-script-uuid`]: s },
+      scriptsInRealm: { [REALM]: [s] },
     });
     const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
 
@@ -183,7 +184,7 @@ describe("buildRealmIndex", () => {
       journeysByRealm: { [REALM]: [j] },
       journeyById: { Login: j },
       nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sd },
-      scriptsByKey: { [`${REALM}:lib-uuid`]: s },
+      scriptsInRealm: { [REALM]: [s] },
     });
     const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
 
@@ -200,15 +201,7 @@ describe("buildRealmIndex", () => {
       journeysByRealm: { [REALM]: [j] },
       journeyById: { Login: j },
       nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sd },
-      scriptsByKey: {
-        [`${REALM}:uuid-A`]: scriptA,
-        [`${REALM}:uuid-B`]: scriptB,
-        [`${REALM}:uuid-C`]: scriptC,
-      },
-      scriptsByName: {
-        [`${REALM}:byName:B`]: scriptB,
-        [`${REALM}:byName:C`]: scriptC,
-      },
+      scriptsInRealm: { [REALM]: [scriptA, scriptB, scriptC] },
     });
     const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
 
@@ -235,7 +228,7 @@ describe("buildRealmIndex", () => {
       journeysByRealm: { [REALM]: [j] },
       journeyById: { Login: j },
       nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sd },
-      scriptsByKey: { [`${REALM}:uuid-A`]: scriptA },
+      scriptsInRealm: { [REALM]: [scriptA] },
       variables: [variable("esv.my.var")],
       secrets: [secret("esv.my.secret")],
     });
@@ -263,7 +256,7 @@ describe("buildRealmIndex", () => {
       journeysByRealm: { [REALM]: [j] },
       journeyById: { Login: j },
       nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sd },
-      scriptsByKey: { [`${REALM}:uuid-A`]: scriptA },
+      scriptsInRealm: { [REALM]: [scriptA] },
       variables: [],
       secrets: [],
     });
@@ -487,5 +480,111 @@ describe("buildRealmIndex", () => {
     const journeyEvents = events.filter((e) => e.phase === "journeys");
     expect(journeyEvents[0]).toMatchObject({ done: 0, total: 2 });
     expect(journeyEvents[journeyEvents.length - 1]).toMatchObject({ done: 2, total: 2 });
+  });
+
+  // ─── D36 full-component enumeration ─────────────────────────────────────────
+
+  it("indexes ALL scripts incl. orphans (not just journey-referenced), with require() edges", async () => {
+    // Journey references s-used; s-orphan + s-lib are referenced by NO journey.
+    // s-orphan require()s s-lib (resolved in-memory from the listScripts set).
+    const j = journey("Login", { n1: nodeRef("ScriptedDecisionNode") });
+    const sUsed = script("s-used", "used", "// nothing");
+    const sOrphan = script("s-orphan", "orphan", 'var x = require("lib");');
+    const sLib = script("s-lib", "lib", "// lib body", "LIBRARY");
+    const client = makeFakePaicClient({
+      journeysByRealm: { [REALM]: [j] },
+      journeyById: { Login: j },
+      nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sdNode("n1", "s-used") },
+      scriptsByKey: { [`${REALM}:s-used`]: sUsed },
+      scriptsByName: { [`${REALM}:byName:lib`]: sLib },
+      scriptsInRealm: { [REALM]: [sUsed, sOrphan, sLib] },
+    });
+    const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
+
+    expect(entry.counts.script).toBe(3); // all three, not just s-used
+    expect(entry.entities[entityKeyOf("script", "s-orphan")]).toMatchObject({
+      displayName: "orphan",
+    });
+    expect(entry.entities[entityKeyOf("script", "s-lib")]).toMatchObject({ isLibrary: true });
+    // orphan → lib require() edge resolved in-memory
+    const libRefs = entry.inboundRefs[entityKeyOf("script", "s-lib")] ?? [];
+    expect(libRefs.some((r) => r.fromKey === entityKeyOf("script", "s-orphan"))).toBe(true);
+  });
+
+  it("Unused surfaces an orphan script (no inbound refs); the referenced one is excluded", async () => {
+    const j = journey("Login", { n1: nodeRef("ScriptedDecisionNode") });
+    const sUsed = script("s-used", "used", "// x");
+    const sOrphan = script("s-orphan", "orphan", "// nothing references me");
+    const client = makeFakePaicClient({
+      journeysByRealm: { [REALM]: [j] },
+      journeyById: { Login: j },
+      nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sdNode("n1", "s-used") },
+      scriptsByKey: { [`${REALM}:s-used`]: sUsed },
+      scriptsInRealm: { [REALM]: [sUsed, sOrphan] },
+    });
+    const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
+
+    const unused = findUnused(entry).map((e) => e.id);
+    expect(unused).toContain("s-orphan");
+    expect(unused).not.toContain("s-used");
+  });
+
+  it("an orphan script that uses an esv shows as an orphanRoot in find-usages (count unaffected)", async () => {
+    // Journey → s-used → esv.x  (a real usage). s-orphan also → esv.x (orphan).
+    const j = journey("Login", { n1: nodeRef("ScriptedDecisionNode") });
+    const sUsed = script("s-used", "used", 'var e = "esv.x";');
+    const sOrphan = script("s-orphan", "orphan", 'var e = "esv.x";');
+    const client = makeFakePaicClient({
+      journeysByRealm: { [REALM]: [j] },
+      journeyById: { Login: j },
+      nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sdNode("n1", "s-used") },
+      scriptsByKey: { [`${REALM}:s-used`]: sUsed },
+      scriptsInRealm: { [REALM]: [sUsed, sOrphan] },
+      variables: [variable("esv.x")],
+    });
+    const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
+
+    const paths = findUsagePaths(entry, entityKeyOf("esv", "esv.x"));
+    const orphanRoot = paths.roots.find((r) => r.entity.id === "s-orphan");
+    expect(orphanRoot?.orphanRoot).toBe(true);
+    // usageCount counts journey-rooted usages only — the orphan path adds 0.
+    expect(paths.usageCount).toBe(1);
+  });
+
+  it("indexes ALL email templates incl. unreferenced ones", async () => {
+    const j = journey("Login", { n1: nodeRef("EmailSuspendNode") });
+    const client = makeFakePaicClient({
+      journeysByRealm: { [REALM]: [j] },
+      journeyById: { Login: j },
+      nodesByKey: { [`${REALM}:EmailSuspendNode:n1`]: emailNode("n1", "welcome") },
+      emailTemplatesByName: {
+        welcome: { name: "welcome", enabled: true },
+        orphanTemplate: { name: "orphanTemplate", enabled: false },
+      },
+    });
+    const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
+
+    expect(entry.entities[entityKeyOf("emailTemplate", "welcome")]).toBeTruthy();
+    expect(entry.entities[entityKeyOf("emailTemplate", "orphanTemplate")]).toBeTruthy();
+    expect(findUnused(entry).map((e) => e.id)).toContain("orphanTemplate");
+  });
+
+  it("best-effort: a throwing listScripts leaves the journey-referenced index intact", async () => {
+    const j = journey("Login", { n1: nodeRef("ScriptedDecisionNode") });
+    const sUsed = script("s-used", "used", "// x");
+    const client = makeFakePaicClient({
+      journeysByRealm: { [REALM]: [j] },
+      journeyById: { Login: j },
+      nodesByKey: { [`${REALM}:ScriptedDecisionNode:n1`]: sdNode("n1", "s-used") },
+      scriptsByKey: { [`${REALM}:s-used`]: sUsed },
+    });
+    // Make listScripts throw.
+    (client.listScripts as unknown as { mockRejectedValue: (e: Error) => void }).mockRejectedValue(
+      new Error("boom"),
+    );
+    const entry = await buildRealmIndex({ client, log: makeFakeLogger() }, HOST, REALM);
+    // The journey-referenced script still indexed; build didn't abort.
+    expect(entry.entities[entityKeyOf("script", "s-used")]).toBeTruthy();
+    expect(entry.counts.script).toBe(1);
   });
 });

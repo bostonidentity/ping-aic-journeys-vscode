@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { classifyCompare, normalizeForCompare, stableStringify } from "./compare";
+import { canonScriptBody, classifyCompare, normalizeForCompare, stableStringify } from "./compare";
+
+describe("canonScriptBody", () => {
+  const SRC = "// hi\nlogger.message('x');";
+  it("parses the bundle's JSON-stringified source to plain source", () => {
+    expect(canonScriptBody(JSON.stringify(SRC))).toBe(SRC);
+  });
+  it("decodes a base64 (target wire) body to plain source", () => {
+    expect(canonScriptBody(Buffer.from(SRC, "utf8").toString("base64"))).toBe(SRC);
+  });
+});
 
 describe("classifyCompare", () => {
   it("new when the target is absent", () => {

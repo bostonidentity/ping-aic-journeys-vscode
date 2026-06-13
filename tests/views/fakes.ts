@@ -33,6 +33,8 @@ export interface FakePaicClientData {
   emailTemplatesByName?: Record<string, EmailTemplate>;
   /** Key = realm. Full list returned by `listSocialIdps(realm)`. */
   socialIdpsByRealm?: Record<string, SocialIdp[]>;
+  /** Key = realm. Full list returned by `listScripts(realm)` (D36 full index). */
+  scriptsInRealm?: Record<string, Script[]>;
   /** Key = ESV name. */
   esvsByName?: Record<string, Esv>;
   /** Full tenant ESV-variable list returned by `listVariables()`. */
@@ -96,6 +98,10 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
     getEmailTemplate: vi.fn((name: string) => {
       return Promise.resolve(data.emailTemplatesByName?.[name] ?? null);
     }),
+    listEmailTemplates: vi.fn(() =>
+      Promise.resolve(Object.values(data.emailTemplatesByName ?? {})),
+    ),
+    listScripts: vi.fn((realm: string) => Promise.resolve(data.scriptsInRealm?.[realm] ?? [])),
     listSocialIdps: vi.fn((realm: string) => {
       return Promise.resolve(data.socialIdpsByRealm?.[realm] ?? []);
     }),

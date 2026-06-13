@@ -337,6 +337,42 @@ describe("PaicClient", () => {
     expect(await client.getRawScriptByName("alpha", "nope")).toBeNull();
   });
 
+  it("listScripts lists ALL scripts (_queryFilter=true) + maps body/context (D36)", async () => {
+    fake.enqueueGet({
+      result: [
+        {
+          _id: "s1",
+          name: "Decision",
+          script: "eA==",
+          context: "AUTHENTICATION_TREE_DECISION_NODE",
+        },
+        { _id: "s2", name: "lib", script: "eQ==", context: "LIBRARY" },
+      ],
+      pagedResultsCookie: null,
+    });
+    const scripts = await client.listScripts("alpha");
+    expect(fake.calls[0].url).toBe("/am/json/realms/root/realms/alpha/scripts?_queryFilter=true");
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.0,resource=1.0");
+    expect(scripts.map((s) => s.id)).toEqual(["s1", "s2"]);
+    expect(scripts[0].body).toBe("x"); // base64 "eA==" → "x"
+    expect(scripts[1].context).toBe("LIBRARY");
+  });
+
+  it("listEmailTemplates enumerates IDM config + keeps only emailTemplate/* (prefix stripped)", async () => {
+    fake.enqueueGet({
+      result: [
+        { _id: "access" },
+        { _id: "emailTemplate/welcome", enabled: true, subject: { en: "Hi" } },
+        { _id: "ui/themerealm" },
+        { _id: "emailTemplate/reset", enabled: false },
+      ],
+      pagedResultsCookie: null,
+    });
+    const templates = await client.listEmailTemplates();
+    expect(fake.calls[0].url).toBe("/openidm/config?_queryFilter=true");
+    expect(templates.map((t) => t.name)).toEqual(["welcome", "reset"]); // prefix stripped, non-email filtered
+  });
+
   it("findRawScriptsByName returns ALL same-named hits (dup-name count, TD-9)", async () => {
     fake.enqueueGet({
       result: [

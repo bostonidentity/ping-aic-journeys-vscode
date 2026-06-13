@@ -6,6 +6,7 @@ import type {
   ComponentVerdict,
   ConnectionInfo,
   E2W,
+  EntityKind,
   ParsedBundle,
   RequiredDepVerdict,
   TransferPayload,
@@ -263,8 +264,11 @@ export function App({ vscode, payload }: Props) {
           apply={apply}
           onApplyEsv={onApplyEsv}
           selectedKeys={selectedKeys}
+          host={selectedHost}
+          realm={selectedRealm}
           onToggle={toggleKey}
           onToggleAll={toggleAll}
+          onReview={(msg) => vscode.postMessage(msg)}
         />
       ) : null}
     </main>
@@ -356,8 +360,11 @@ function PlanSection({
   apply,
   onApplyEsv,
   selectedKeys,
+  host,
+  realm,
   onToggle,
   onToggleAll,
+  onReview,
 }: {
   preflight: PreflightState;
   bundleKind: BundleKind;
@@ -366,8 +373,11 @@ function PlanSection({
   apply: ApplyState;
   onApplyEsv: () => void;
   selectedKeys: ReadonlySet<string>;
+  host: string;
+  realm: string;
   onToggle: (key: string) => void;
   onToggleAll: (keys: string[], selectAll: boolean) => void;
+  onReview: (msg: W2E) => void;
 }) {
   const isWritable = WRITABLE_KINDS.has(bundleKind);
   const verdicts = preflight.status === "ok" ? preflight.verdicts : [];
@@ -402,8 +412,11 @@ function PlanSection({
           results={results}
           selectedKeys={selectedKeys}
           locked={locked}
+          host={host}
+          realm={realm}
           onToggle={onToggle}
           onToggleAll={(selectAll) => onToggleAll(allActionableKeys, selectAll)}
+          onReview={onReview}
         />
       ) : null}
       {preflight.status === "ok" && !isWritable ? (
@@ -512,6 +525,63 @@ interface PlanRowData {
   statusCls: string;
   name: string;
   nameNote?: string;
+  /** Review affordances on a `differs` row (TD-11): Diff (scripts only) +
+   * Find-usages (any kind with an EntityKind). Absent on non-differs rows. */
+  review?: ReviewActions;
+}
+
+interface ReviewActions {
+  diff?: W2E & { type: "openDiff" };
+  usages?: W2E & { type: "openFindUsages" };
+}
+
+/** Map a transfer BundleKind to a RealmIndex EntityKind (for find-usages).
+ * variable/secret → "esv"; journey is not writable here. Returns null when no
+ * usage search applies. */
+function toEntityKind(kind: BundleKind): EntityKind | null {
+  switch (kind) {
+    case "script":
+    case "theme":
+    case "emailTemplate":
+    case "socialIdp":
+    case "journey":
+      return kind;
+    case "variable":
+    case "secret":
+      return "esv";
+  }
+}
+
+/** Build the Review affordances for a `differs` verdict (TD-11). Diff is
+ * scripts-only (JS source); Find-usages applies to any kind with an EntityKind. */
+function reviewFor(v: ComponentVerdict, host: string, realm: string): ReviewActions | undefined {
+  if (v.status !== "differs") return undefined;
+  const actions: ReviewActions = {};
+  if (v.kind === "script") {
+    actions.diff = {
+      type: "openDiff",
+      host,
+      realm,
+      bundleKey: verdictKey(v),
+      // The entity we'd actually overwrite (TD-9) — falls back to the bundle id.
+      targetScriptId: v.resolvedTargetId ?? v.id,
+    };
+  }
+  const entityKind = toEntityKind(v.kind);
+  if (entityKind) {
+    // Key by the TARGET's id so it matches the RealmIndex (which is keyed by
+    // the target tenant's ids). For scripts the name-match may resolve a
+    // different target UUID than the bundle's (TD-9) — use it; other kinds are
+    // id/name-identified (name == id) so `v.id` already is the target id.
+    actions.usages = {
+      type: "openFindUsages",
+      host,
+      realm,
+      targetKey: `${entityKind}:${v.resolvedTargetId ?? v.id}`,
+      targetKind: entityKind,
+    };
+  }
+  return actions.diff || actions.usages ? actions : undefined;
 }
 
 /** Resolve the three-phase Status for a verdict row. */
@@ -526,7 +596,13 @@ function pickStatus(
   return beforeStatus(v); // phase 1
 }
 
-function verdictRowData(v: ComponentVerdict, checked: boolean, result?: WriteResult): PlanRowData {
+function verdictRowData(
+  v: ComponentVerdict,
+  checked: boolean,
+  host: string,
+  realm: string,
+  result?: WriteResult,
+): PlanRowData {
   const state = rowStateOf(v);
   const { icon, word } = kindMeta(v.kind);
   // Three-phase Status: after-result wins; else the pending verb when checked;
@@ -542,6 +618,7 @@ function verdictRowData(v: ComponentVerdict, checked: boolean, result?: WriteRes
     statusCls: status.cls,
     name: v.displayName,
     nameNote: collisionNote(v) ?? matchCountNote(v),
+    review: reviewFor(v, host, realm),
   };
 }
 
@@ -581,8 +658,11 @@ function PlanTable({
   results,
   selectedKeys,
   locked,
+  host,
+  realm,
   onToggle,
   onToggleAll,
+  onReview,
 }: {
   verdicts: readonly ComponentVerdict[];
   requires: readonly RequiredDepVerdict[];
@@ -591,15 +671,24 @@ function PlanTable({
   selectedKeys: ReadonlySet<string>;
   /** True once an import has completed — table is read-only until re-armed. */
   locked: boolean;
+  host: string;
+  realm: string;
   onToggle: (key: string) => void;
   onToggleAll: (selectAll: boolean) => void;
+  onReview: (msg: W2E) => void;
 }) {
   const resultByKey = new Map((results ?? []).map((r) => [`${r.kind}:${r.id}`, r]));
   // Writable + no-op + blocked components first (type-sorted), then the
   // info-only dependency rows (TD-9) — all in one aligned grid.
   const rows: PlanRowData[] = [
     ...sortByKindThenName(verdicts).map((v) =>
-      verdictRowData(v, selectedKeys.has(verdictKey(v)), resultByKey.get(verdictKey(v))),
+      verdictRowData(
+        v,
+        selectedKeys.has(verdictKey(v)),
+        host,
+        realm,
+        resultByKey.get(verdictKey(v)),
+      ),
     ),
     ...requires.map(depRowData),
   ];
@@ -614,6 +703,7 @@ function PlanTable({
       selectedKeys={selectedKeys}
       locked={locked}
       onToggle={onToggle}
+      onReview={onReview}
       headerCheckbox={{
         hasActionable: actionable.length > 0,
         allChecked,
@@ -629,11 +719,13 @@ function PlanGrid({
   selectedKeys,
   locked,
   onToggle,
+  onReview,
   headerCheckbox,
 }: {
   rows: readonly PlanRowData[];
   selectedKeys: ReadonlySet<string>;
   onToggle: (key: string) => void;
+  onReview: (msg: W2E) => void;
   locked: boolean;
   headerCheckbox: {
     hasActionable: boolean;
@@ -662,6 +754,7 @@ function PlanGrid({
         <span className="plan-col-head">Type</span>
         <span className="plan-col-head">Status</span>
         <span className="plan-col-head">Name</span>
+        <span className="plan-col-head">Review</span>
       </div>
       {rows.map((row) => (
         <PlanRow
@@ -670,6 +763,7 @@ function PlanGrid({
           checked={row.selectKey !== null && selectedKeys.has(row.selectKey)}
           locked={locked}
           onToggle={onToggle}
+          onReview={onReview}
         />
       ))}
     </div>
@@ -681,11 +775,13 @@ function PlanRow({
   checked,
   locked,
   onToggle,
+  onReview,
 }: {
   row: PlanRowData;
   checked: boolean;
   locked: boolean;
   onToggle: (key: string) => void;
+  onReview: (msg: W2E) => void;
 }) {
   const muted = row.rowState === "noop" || row.rowState === "info";
   const writable = row.rowState === "writable";
@@ -712,6 +808,27 @@ function PlanRow({
       <span className="plan-name">
         {row.name}
         {row.nameNote ? <span className="transfer-comp-detail"> {row.nameNote}</span> : null}
+      </span>
+      <span className="plan-review">
+        {/* TD-11: read-only inspection — live even when the table is locked. */}
+        {row.review?.diff ? (
+          <button
+            type="button"
+            className="plan-review-btn"
+            onClick={() => onReview(row.review?.diff as W2E)}
+          >
+            <i className="codicon codicon-git-compare" aria-hidden /> Diff
+          </button>
+        ) : null}
+        {row.review?.usages ? (
+          <button
+            type="button"
+            className="plan-review-btn"
+            onClick={() => onReview(row.review?.usages as W2E)}
+          >
+            <i className="codicon codicon-search" aria-hidden /> Find usages
+          </button>
+        ) : null}
       </span>
     </div>
   );

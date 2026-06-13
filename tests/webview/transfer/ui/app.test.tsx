@@ -344,14 +344,14 @@ describe("Transfer App", () => {
 
   // ─── TD-8 Plan table ───────────────────────────────────────────────────────
 
-  it("renders the grid table with the three column headers (no Action column)", () => {
+  it("renders the grid table headers (no Action column; Review added per TD-11)", () => {
     const { container } = render(
       <App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />,
     );
     postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
     selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
     const headers = [...container.querySelectorAll(".plan-col-head")].map((h) => h.textContent);
-    expect(headers).toEqual(["Type", "Status", "Name"]);
+    expect(headers).toEqual(["Type", "Status", "Name", "Review"]);
   });
 
   it("TD-10: three-phase Status — New → Create (checked) → reverts on uncheck", () => {
@@ -455,6 +455,91 @@ describe("Transfer App", () => {
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: "execute", selected: ["theme:b"] }),
     );
+  });
+
+  // ─── TD-11 Review column ─────────────────────────────────────────────────
+
+  it("a script differs row shows BOTH Diff + Find usages; clicks post the right messages", () => {
+    const post = vi.fn();
+    render(<App vscode={{ postMessage: post }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "s.script.json", bundle: scriptBundle() });
+    selectTargetAndPreflight([
+      {
+        kind: "script",
+        id: "bundle-uuid",
+        displayName: "RiskDecision",
+        status: "differs",
+        resolvedTargetId: "target-uuid",
+      },
+    ]);
+    fireEvent.click(screen.getByText("Diff"));
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "openDiff",
+        bundleKey: "script:bundle-uuid",
+        targetScriptId: "target-uuid", // TD-9: the entity we'd overwrite, not the bundle id
+      }),
+    );
+    fireEvent.click(screen.getByText("Find usages"));
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "openFindUsages",
+        // Keyed by the TARGET's id (resolvedTargetId), not the bundle id — so it
+        // matches the RealmIndex the Search page seeds its dropdown from.
+        targetKey: "script:target-uuid",
+        targetKind: "script",
+      }),
+    );
+  });
+
+  it("a theme differs row shows ONLY Find usages (Diff is scripts-only, v1)", () => {
+    const post = vi.fn();
+    render(<App vscode={{ postMessage: post }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([
+      { kind: "theme", id: "t", displayName: "my-theme", status: "differs" },
+    ]);
+    expect(screen.getByText("Find usages")).toBeTruthy();
+    expect(screen.queryByText("Diff")).toBeNull();
+    // No resolvedTargetId → key falls back to v.id (themes are id-identified).
+    fireEvent.click(screen.getByText("Find usages"));
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "openFindUsages",
+        targetKey: "theme:t",
+        targetKind: "theme",
+      }),
+    );
+  });
+
+  it("non-differs rows (new / identical) have no Review buttons", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "s.script.json", bundle: scriptBundle() });
+    selectTargetAndPreflight([
+      { kind: "script", id: "a", displayName: "NewOne", status: "new" },
+      { kind: "script", id: "b", displayName: "SameOne", status: "identical" },
+    ]);
+    expect(screen.queryByText("Diff")).toBeNull();
+    expect(screen.queryByText("Find usages")).toBeNull();
+  });
+
+  it("Review buttons stay live after import locks the table", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "s.script.json", bundle: scriptBundle() });
+    selectTargetAndPreflight([
+      { kind: "script", id: "s", displayName: "RiskDecision", status: "differs" },
+    ]);
+    postToWebview({
+      type: "executeResult",
+      host: "paic.example",
+      realm: "alpha",
+      results: [{ kind: "script", id: "s", displayName: "RiskDecision", status: "overwritten" }],
+      summary: "0 created · 1 overwritten · 0 skipped · 0 failed",
+    });
+    // Table is locked (checkbox disabled) but inspection buttons remain.
+    expect((screen.getByLabelText("Import RiskDecision") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText("Diff")).toBeTruthy();
+    expect(screen.getByText("Find usages")).toBeTruthy();
   });
 
   it("sorts rows by kind then name (script → theme → variable)", () => {

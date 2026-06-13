@@ -327,6 +327,22 @@ export function App({ vscode, payload }: Props) {
   // [🔍 Find usages] button, the prefill carries mode=findUsages +
   // targetKey. Auto-fire once the scope is set + the index is built.
   const autoRanPrefillRef = useRef(false);
+
+  // Re-apply the prefill to the form whenever it changes. `useState`
+  // initializers only run on first mount, so a re-spawn into an ALREADY-OPEN
+  // tab (SearchFactory.spawn → refresh with a new payload) would otherwise keep
+  // the stale Kind/Target. Mirrors how host/realm re-seed via effects. Also
+  // re-arms the one-shot auto-run so the new target fires.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-seed only when the prefill object changes
+  useEffect(() => {
+    const p = payload.prefill;
+    if (!p) return;
+    if (p.mode) setMode(p.mode);
+    if (p.targetKind) setUsagesKind(p.targetKind);
+    if (p.targetKey !== undefined) setUsagesTargetKey(p.targetKey);
+    if (p.namePattern !== undefined) setByNamePattern(p.namePattern);
+    autoRanPrefillRef.current = false;
+  }, [payload.prefill]);
   useEffect(() => {
     if (autoRanPrefillRef.current) return;
     if (!payload.prefill || payload.prefill.mode !== "findUsages") return;
@@ -605,14 +621,14 @@ function RealmIndexCounts({ cache }: { cache: CacheStatus }) {
     if (!n) continue;
     parts.push(`${n} ${KIND_LABEL[k].toLowerCase()}${n === 1 ? "" : "s"}`);
   }
-  const builtAgo =
+  const builtAt =
     cache.builtAt === null
       ? ""
-      : new Date(cache.builtAt).toLocaleTimeString(undefined, { hour12: false });
+      : new Date(cache.builtAt).toLocaleString(undefined, { hour12: false });
   return (
     <span className="search-counts">
       Realm index: <span className="count">{parts.join(" · ")}</span>{" "}
-      <span className="meta">· built at {builtAgo}</span>
+      <span className="meta">· built at {builtAt}</span>
     </span>
   );
 }

@@ -10,6 +10,14 @@ describe("transfer message guards", () => {
       { type: "runPreflight", host: "h", realm: "r" },
       { type: "execute", host: "h", realm: "r", selected: ["theme:t"] },
       { type: "applyEsv", host: "h" },
+      { type: "openDiff", host: "h", realm: "r", bundleKey: "script:s", targetScriptId: "u" },
+      {
+        type: "openFindUsages",
+        host: "h",
+        realm: "r",
+        targetKey: "script:s",
+        targetKind: "script",
+      },
     ]) {
       expect(isW2E(m)).toBe(true);
     }

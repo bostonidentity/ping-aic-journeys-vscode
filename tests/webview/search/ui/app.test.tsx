@@ -339,6 +339,62 @@ describe("Search App — query flow once scope is set", () => {
       targetKey: "script:s-helpers",
     });
   });
+
+  it("seeds Kind + Target from a findUsages prefill (transfer Find-usages entry)", () => {
+    const made = makeVscode();
+    render(
+      <App
+        vscode={made.vscode}
+        payload={payload({
+          selectedHost: HOST,
+          selectedRealm: REALM,
+          prefill: { mode: "findUsages", targetKey: "script:s-helpers", targetKind: "script" },
+        })}
+      />,
+    );
+    dispatch({ type: "peekResult", host: HOST, realm: REALM, status: populatedCache() });
+    dispatch(listEntitiesResult());
+    // Kind seeded to script; Target seeded to the prefilled entity's name.
+    expect((screen.getByRole("combobox", { name: "Kind" }) as HTMLInputElement).value).toBe(
+      "Script",
+    );
+    expect((screen.getByRole("combobox", { name: "Target" }) as HTMLInputElement).value).toBe(
+      "helpers",
+    );
+  });
+
+  it("re-seeds Kind + Target when re-spawned into an already-open tab (new prefill)", () => {
+    const made = makeVscode();
+    const { rerender } = render(
+      <App
+        vscode={made.vscode}
+        payload={payload({
+          selectedHost: HOST,
+          selectedRealm: REALM,
+          prefill: { mode: "findUsages", targetKey: "script:s-validator", targetKind: "script" },
+        })}
+      />,
+    );
+    dispatch({ type: "peekResult", host: HOST, realm: REALM, status: populatedCache() });
+    dispatch(listEntitiesResult());
+    expect((screen.getByRole("combobox", { name: "Target" }) as HTMLInputElement).value).toBe(
+      "alpha-login-validator",
+    );
+    // Re-spawn (refresh) with a DIFFERENT prefill target — must re-seed.
+    rerender(
+      <App
+        vscode={made.vscode}
+        payload={payload({
+          selectedHost: HOST,
+          selectedRealm: REALM,
+          prefill: { mode: "findUsages", targetKey: "script:s-helpers", targetKind: "script" },
+        })}
+      />,
+    );
+    expect((screen.getByRole("combobox", { name: "Target" }) as HTMLInputElement).value).toBe(
+      "helpers",
+    );
+  });
 });
 
 /** A `listEntitiesResult` populating the Target combobox with two scripts. */

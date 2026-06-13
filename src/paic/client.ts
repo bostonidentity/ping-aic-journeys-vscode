@@ -86,6 +86,10 @@ export interface PaicClient {
    * references (`require('<name>')`) discovered during script-body parsing.
    * Returns `null` if no script in the realm has that name. */
   getScriptByName(realm: string, name: string): Promise<Script | null>;
+  /** List EVERY script in a realm (`_queryFilter=true`) — including ones not
+   * referenced by any journey. The response carries each script's body, so the
+   * realm-index closure walk needs no per-script fetch. */
+  listScripts(realm: string): Promise<Script[]>;
 
   // M3 Slice 3 — journey-level resource lookups.
 
@@ -97,6 +101,9 @@ export interface PaicClient {
   listThemes(realm: string): Promise<Theme[]>;
   /** Fetch a single IDM email template by name. Returns null on 404. */
   getEmailTemplate(name: string): Promise<EmailTemplate | null>;
+  /** List EVERY IDM email template (tenant-wide). Enumerates `/openidm/config`
+   * and filters to `emailTemplate/<name>` config ids. Empty on a no-IDM backend. */
+  listEmailTemplates(): Promise<EmailTemplate[]>;
   /** List all social IdPs in a realm (one POST via `_action=nextdescendents`). */
   listSocialIdps(realm: string): Promise<SocialIdp[]>;
   /** Fetch a single social IdP in a realm by its name. AIC's REST API requires
@@ -299,6 +306,21 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
       return mapScript(raw);
     },
 
+    async listScripts(realm: string): Promise<Script[]> {
+      const realmPath = getRealmPath(realm);
+      const all = await listAllPaged<RawScript>(async (cookie) => {
+        const params = new URLSearchParams({ _queryFilter: "true" });
+        if (cookie) params.set("_pagedResultsCookie", cookie);
+        const resp = await http.get<PagedResponse<RawScript>>(
+          `${amPath}/json${realmPath}/scripts?${params.toString()}`,
+          { apiVersion: SCRIPT_API_VERSION },
+        );
+        return resp.data;
+      });
+      log.debug({ event: "client.listScripts.done", realm, count: all.length }, "Listed scripts");
+      return all.map(mapScript);
+    },
+
     async getRawTheme(realm: string, themeId: string): Promise<RawTheme | null> {
       if (!caps.themes) return null; // no IDM on this backend (e.g. on-prem AM)
       // AIC stores all themes for all realms in one IDM config doc. The
@@ -344,6 +366,26 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
     async getEmailTemplate(name: string): Promise<EmailTemplate | null> {
       const raw = await this.getRawEmailTemplate(name);
       return raw ? mapEmailTemplate(name, raw) : null;
+    },
+
+    async listEmailTemplates(): Promise<EmailTemplate[]> {
+      if (!caps.emailTemplates) return []; // no IDM on this backend (e.g. on-prem AM)
+      // No per-type list endpoint — enumerate all IDM config and keep the
+      // `emailTemplate/<name>` entries (verified against sb3: 81 of ~338 config objects).
+      const resp = await http.get<PagedResponse<RawEmailTemplate>>(
+        "/openidm/config?_queryFilter=true",
+      );
+      const out: EmailTemplate[] = [];
+      for (const raw of resp.data.result) {
+        const id = typeof raw._id === "string" ? raw._id : "";
+        if (!id.startsWith("emailTemplate/")) continue;
+        out.push(mapEmailTemplate(id.slice("emailTemplate/".length), raw));
+      }
+      log.debug(
+        { event: "client.listEmailTemplates.done", count: out.length },
+        "Listed email templates",
+      );
+      return out;
     },
 
     async listSocialIdps(realm: string): Promise<SocialIdp[]> {

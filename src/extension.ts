@@ -4,6 +4,7 @@ import { exportComponent } from "./commands/export-component";
 import { exportJourney } from "./commands/export-journey";
 import { type EntityKind, entityKeyOf } from "./domain/realm-index";
 import type { Connection } from "./domain/types";
+import { BUNDLE_URI_SCHEME, PaicBundleContentProvider } from "./providers/bundle-content-provider";
 import {
   EMAIL_TEMPLATE_URI_SCHEME,
   makeEmailTemplateUri,
@@ -133,12 +134,21 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(searchFactory);
 
+  // Serves uploaded-bundle component source as the RIGHT side of the import
+  // Diff (TD-11); the transfer panel `.set()`s content keyed by bundle key.
+  const bundleContent = new PaicBundleContentProvider();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(BUNDLE_URI_SCHEME, bundleContent),
+  );
+
   const transferFactory = new TransferFactory({
     context,
     listConnections: () =>
       registry.list().map((c) => ({ host: c.host, name: c.name, kind: c.kind })),
     cache: clientCache,
     connectionKindOf: (host) => registry.list().find((c) => c.host === host)?.kind,
+    searchFactory,
+    bundleContent,
     log,
   });
   context.subscriptions.push(transferFactory);

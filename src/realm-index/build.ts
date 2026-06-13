@@ -31,7 +31,7 @@ import {
   type RealmIndexEntry,
   type ReverseRef,
 } from "../domain/realm-index";
-import type { Journey, NodePayload, Script } from "../domain/types";
+import type { EmailTemplate, Journey, NodePayload, Script } from "../domain/types";
 import type { PaicClient } from "../paic/client";
 import { type Limiter, makeLimiter } from "../paic/concurrency";
 import { getScriptIdIfRef } from "../paic/script-ref-predicates";
@@ -142,33 +142,34 @@ export async function buildRealmIndex(
     });
   }
 
-  // Discovered-during-walk script IDs that need BFS for `require()` chains.
-  const discoveredScriptIds = new Set<string>();
-
   // 2) Scan every journey in parallel — the determinate progress phase.
   //    The shared limiter (not the loop shape) bounds total in-flight, so
   //    a plain `Promise.all` is correct. Progress is reported per
-  //    completed journey.
+  //    completed journey. Builds the journey→component edges (journey→script
+  //    etc.); the script→lib/esv edges are built by `scanAllScripts` below.
   let scanned = 0;
   emit({ phase: "journeys", done: 0, total: journeys.length });
   await Promise.all(
     journeys.map((journey) =>
-      scanJourney(state, journey, discoveredScriptIds).then(() => {
+      scanJourney(state, journey).then(() => {
         scanned++;
         emit({ phase: "journeys", done: scanned, total: journeys.length });
       }),
     ),
   );
 
-  // 3) Script-body BFS + theme / IdP listing run concurrently. They
-  //    touch disjoint slices of the shared `BuildState` maps and the
-  //    synchronous `materializeEntity` / `addEdge` writes never tear
-  //    (JS is single-threaded; awaits are the only yield points).
+  // 3) Full-realm component enumeration runs concurrently. `scanAllScripts`
+  //    lists EVERY script (bodies included) and builds all script→lib/esv edges
+  //    in-memory — superseding the old journey-closure BFS (no per-script fetch,
+  //    no per-lib `getScriptByName`). The phases touch disjoint slices of the
+  //    shared `BuildState` maps; the synchronous `materializeEntity`/`addEdge`
+  //    writes never tear (JS is single-threaded; awaits are the only yields).
   emit({ phase: "scripts" });
   await Promise.all([
-    scanScripts(state, discoveredScriptIds),
+    scanAllScripts(state),
     scanThemes(state, journeyByName),
     scanSocialIdps(state),
+    scanAllEmailTemplates(state),
   ]);
   emit({ phase: "finishing" });
 
@@ -237,11 +238,7 @@ async function loadEsvIndex(state: BuildState): Promise<void> {
   }
 }
 
-async function scanJourney(
-  state: BuildState,
-  journey: Journey,
-  discoveredScriptIds: Set<string>,
-): Promise<void> {
+async function scanJourney(state: BuildState, journey: Journey): Promise<void> {
   const fromKey = entityKeyOf("journey", journey.id);
 
   // Layer 1: every direct node payload. Each fetch routes through the
@@ -327,8 +324,8 @@ async function scanJourney(
     if (scriptId) {
       const targetKey = entityKeyOf("script", scriptId);
       const via = fromContainer ? `PageNode → ${payload.nodeType}` : payload.nodeType;
-      // Materialize the script entity with id-only displayName; the body
-      // scan replaces displayName with `script.name` once fetched.
+      // Materialize the script entity with id-only displayName; `scanAllScripts`
+      // enriches displayName with `script.name` (every script is listed there).
       materializeEntity(state, {
         key: targetKey,
         kind: "script",
@@ -336,7 +333,6 @@ async function scanJourney(
         displayName: scriptId,
       });
       addEdge(state, fromKey, targetKey, via, nodeId);
-      discoveredScriptIds.add(scriptId);
     }
 
     if (payload.nodeType === "InnerTreeEvaluatorNode" && payload.tree) {
@@ -402,158 +398,6 @@ async function scanJourney(
         addEdge(state, fromKey, targetKey, idpVia, nodeId);
       }
     }
-  }
-}
-
-/** Fetch one script body (cached). Returns null on fetch failure. */
-async function fetchScript(state: BuildState, id: string): Promise<Script | null> {
-  const cached = state.scriptsById.get(id);
-  if (cached) return cached;
-  try {
-    const s = await state.limit.run(() => state.client.getScript(state.realm, id));
-    state.scriptsById.set(id, s);
-    return s;
-  } catch (err) {
-    state.log.warn(
-      {
-        event: "realm-index.build.scriptFetchFailed",
-        script_id: id,
-        message: err instanceof Error ? err.message : String(err),
-      },
-      "Script body fetch failed — treating as leaf with id-only displayName",
-    );
-    return null;
-  }
-}
-
-async function scanScripts(state: BuildState, frontier: Set<string>): Promise<void> {
-  // BFS over `require()` edges. Each layer fetches its scripts in parallel,
-  // parses bodies, then resolves EVERY library-name across the whole layer
-  // in one batched lookup (a per-script serial loop previously collapsed
-  // effective concurrency — see `docs/lessons.md` 2026-05-19).
-  //
-  // Progress: `enqueued` is every distinct script the BFS knows about —
-  // it seeds with the journey-referenced frontier and grows as library
-  // scripts surface in deeper layers. `done` (scanned) chases `total`
-  // (`enqueued.size`); both grow, `done` never exceeds `total`, and the
-  // phase ends at `done === total` — a real `X / Y` like the journey scan.
-  const enqueued = new Set<string>(frontier);
-  let scriptsScanned = 0;
-  const visited = new Set<string>();
-  let current = [...frontier];
-  while (current.length > 0) {
-    const layer = current.filter((id) => !visited.has(id));
-    for (const id of layer) visited.add(id);
-    if (layer.length === 0) break;
-
-    const scripts = await Promise.all(
-      layer.map((id) =>
-        fetchScript(state, id).then((s) => {
-          scriptsScanned++;
-          state.onProgress?.({ phase: "scripts", done: scriptsScanned, total: enqueued.size });
-          return s;
-        }),
-      ),
-    );
-
-    // First pass: enrich script entities, collect parsed refs + the union
-    // of every library name referenced anywhere in this layer.
-    interface ParsedScript {
-      scriptId: string;
-      fromKey: string;
-      libraryScripts: readonly string[];
-      esvs: readonly string[];
-    }
-    const parsed: ParsedScript[] = [];
-    const allLibraryNames = new Set<string>();
-    for (let i = 0; i < layer.length; i++) {
-      const scriptId = layer[i];
-      const script = scripts[i];
-      const fromKey = entityKeyOf("script", scriptId);
-      if (script) enrichScriptEntity(state, fromKey, scriptId, script);
-      if (!script) continue;
-      const refs = extractScriptBodyRefs(script.body);
-      parsed.push({
-        scriptId,
-        fromKey,
-        libraryScripts: refs.libraryScripts,
-        esvs: refs.esvs,
-      });
-      for (const name of refs.libraryScripts) allLibraryNames.add(name);
-    }
-
-    // Batched layer-wide library-name → script lookup.
-    const libByName = new Map<string, Script | null>();
-    await Promise.all(
-      [...allLibraryNames].map((name) =>
-        state.limit
-          .run(async () => {
-            try {
-              return await state.client.getScriptByName(state.realm, name);
-            } catch (err) {
-              state.log.warn(
-                {
-                  event: "realm-index.build.libraryLookupFailed",
-                  library_name: name,
-                  message: err instanceof Error ? err.message : String(err),
-                },
-                "Library script lookup failed — skipping",
-              );
-              return null;
-            }
-          })
-          .then((found) => {
-            libByName.set(name, found);
-          }),
-      ),
-    );
-
-    // Second pass: emit require() + ESV edges from the resolved maps.
-    const nextFrontier: string[] = [];
-    for (const { scriptId, fromKey, libraryScripts, esvs } of parsed) {
-      for (const name of libraryScripts) {
-        const found = libByName.get(name) ?? null;
-        if (!found) {
-          state.log.debug(
-            { event: "realm-index.build.missingLibrary", script_id: scriptId, library_name: name },
-            "Library script not found in tenant — edge dropped",
-          );
-          continue;
-        }
-        const targetKey = entityKeyOf("script", found.id);
-        const isLibrary = found.context === LIBRARY_CONTEXT || !found.context ? true : undefined;
-        materializeEntity(state, {
-          key: targetKey,
-          kind: "script",
-          id: found.id,
-          displayName: found.name,
-          ...(isLibrary === undefined ? {} : { isLibrary: true }),
-        });
-        addEdge(state, fromKey, targetKey, "require()");
-        if (!state.scriptsById.has(found.id)) state.scriptsById.set(found.id, found);
-        // Enqueue each newly-discovered library script exactly once — this
-        // grows the progress `total` and feeds the next BFS layer.
-        if (!enqueued.has(found.id)) {
-          enqueued.add(found.id);
-          nextFrontier.push(found.id);
-        }
-      }
-
-      for (const name of esvs) {
-        const esvKind = state.esvByName.get(name);
-        if (!esvKind) continue; // not in tenant — D36 says "no entity"
-        const targetKey = entityKeyOf("esv", name);
-        materializeEntity(state, {
-          key: targetKey,
-          kind: "esv",
-          id: name,
-          displayName: name,
-          esvKind,
-        });
-        addEdge(state, fromKey, targetKey, "string literal");
-      }
-    }
-    current = nextFrontier;
   }
 }
 
@@ -653,6 +497,106 @@ async function scanSocialIdps(state: BuildState): Promise<void> {
       kind: "socialIdp",
       id: idp.name,
       displayName: idp.name,
+    });
+  }
+}
+
+/**
+ * Enumerate EVERY script in the realm — including ones referenced by no journey
+ * — so Search/by-name/Unused cover the whole realm, not just the journey
+ * closure (D36 full-index upgrade). `listScripts` returns each body, so the
+ * `require()`/esv edge walk runs **in-memory** with no extra HTTP. Best-effort:
+ * a failure leaves the journey-referenced index intact.
+ */
+async function scanAllScripts(state: BuildState): Promise<void> {
+  let scripts: Script[];
+  try {
+    scripts = await state.limit.run(() => state.client.listScripts(state.realm));
+  } catch (err) {
+    state.log.warn(
+      {
+        event: "realm-index.build.listScriptsFailed",
+        message: err instanceof Error ? err.message : String(err),
+      },
+      "listScripts failed — index keeps only journey-referenced scripts",
+    );
+    return;
+  }
+
+  // Name → script, for resolving require() against the full set (no HTTP).
+  const byName = new Map<string, Script>();
+  for (const s of scripts) if (!byName.has(s.name)) byName.set(s.name, s);
+
+  // Determinate progress — the total is known up front (one list call), so the
+  // "scripts" phase is a true X / Y like the journey scan.
+  let done = 0;
+  state.onProgress?.({ phase: "scripts", done: 0, total: scripts.length });
+  for (const script of scripts) {
+    const fromKey = entityKeyOf("script", script.id);
+    // Materialize (or enrich an id-only entity left by the journey scan).
+    enrichScriptEntity(state, fromKey, script.id, script);
+    if (!state.scriptsById.has(script.id)) state.scriptsById.set(script.id, script);
+
+    // Outbound edges from this script's body. require() resolves against the
+    // in-memory set; esv against the tenant ESV index. Edges/entities dedupe,
+    // so re-touching a script the journey BFS already walked is harmless.
+    const refs = extractScriptBodyRefs(script.body);
+    for (const name of refs.libraryScripts) {
+      const found = byName.get(name);
+      if (!found) continue; // not in the realm — no entity (D36)
+      const targetKey = entityKeyOf("script", found.id);
+      const isLibrary = found.context === LIBRARY_CONTEXT || !found.context;
+      materializeEntity(state, {
+        key: targetKey,
+        kind: "script",
+        id: found.id,
+        displayName: found.name,
+        ...(isLibrary ? { isLibrary: true } : {}),
+      });
+      addEdge(state, fromKey, targetKey, "require()");
+    }
+    for (const name of refs.esvs) {
+      const esvKind = state.esvByName.get(name);
+      if (!esvKind) continue;
+      const targetKey = entityKeyOf("esv", name);
+      materializeEntity(state, {
+        key: targetKey,
+        kind: "esv",
+        id: name,
+        displayName: name,
+        esvKind,
+      });
+      addEdge(state, fromKey, targetKey, "string literal");
+    }
+    done++;
+    state.onProgress?.({ phase: "scripts", done, total: scripts.length });
+  }
+}
+
+/**
+ * Enumerate EVERY IDM email template (tenant-wide) so unreferenced ones show in
+ * Search/Unused. Leaf entities (no outbound refs). Best-effort.
+ */
+async function scanAllEmailTemplates(state: BuildState): Promise<void> {
+  let templates: EmailTemplate[];
+  try {
+    templates = await state.limit.run(() => state.client.listEmailTemplates());
+  } catch (err) {
+    state.log.warn(
+      {
+        event: "realm-index.build.listEmailTemplatesFailed",
+        message: err instanceof Error ? err.message : String(err),
+      },
+      "listEmailTemplates failed — index keeps only journey-referenced templates",
+    );
+    return;
+  }
+  for (const t of templates) {
+    materializeEntity(state, {
+      key: entityKeyOf("emailTemplate", t.name),
+      kind: "emailTemplate",
+      id: t.name,
+      displayName: t.displayName ?? t.name,
     });
   }
 }
