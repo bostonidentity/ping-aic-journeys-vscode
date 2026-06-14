@@ -13,6 +13,7 @@ import { idpNeedsSecret } from "../../import/write";
 import type { PaicBundleContentProvider } from "../../providers/bundle-content-provider";
 import { makeScriptUri } from "../../providers/script-fs-provider";
 import type { ClientCache } from "../../tenants/client-cache";
+import { confirm } from "../../util/dialogs";
 import type { Logger } from "../../util/logger";
 import type { SearchPrefill } from "../search/messages";
 import { COMBOBOX_CSS } from "../shared/combobox-css";
@@ -216,18 +217,14 @@ export class TransferTab implements vscode.Disposable {
   private async handleApplyEsv(host: string): Promise<void> {
     try {
       const client = await this.deps.cache.get(host);
-      const pick = await vscode.window.showWarningMessage(
+      const ok = await confirm(
         "Apply pending ESV changes?",
-        {
-          modal: true,
-          detail:
-            `This restarts the ${host} runtime (~3–10 minutes) and applies ALL pending ESV ` +
-            "changes tenant-wide — not just the ones you imported. No further ESV updates are " +
-            "possible until it finishes, and this can't be undone.",
-        },
+        `This restarts the ${host} runtime (~3–10 minutes) and applies ALL pending ESV ` +
+          "changes tenant-wide — not just the ones you imported. No further ESV updates are " +
+          "possible until it finishes, and this can't be undone.",
         "Apply",
       );
-      if (pick !== "Apply") {
+      if (!ok) {
         this.post({ type: "applyResult", host, ok: false, elapsedS: 0, message: "Cancelled." });
         return;
       }
@@ -360,12 +357,8 @@ export class TransferTab implements vscode.Disposable {
         (errorN > 0 ? ` ${errorN} component(s) couldn't be checked and will be skipped.` : "") +
         (hasEsv ? " ESV changes require a separate Apply step before they take effect." : "") +
         missingNote;
-      const pick = await vscode.window.showWarningMessage(
-        "Write these components to the tenant?",
-        { modal: true, detail },
-        "Import",
-      );
-      if (pick !== "Import") {
+      const ok = await confirm("Write these components to the tenant?", detail, "Import");
+      if (!ok) {
         this.post({ type: "executeResult", host, realm, results: [], summary: "Cancelled." });
         return;
       }

@@ -23,6 +23,7 @@
     "tests/webview/search/ui/**",
     "src/webview/transfer/ui/**",
     "tests/webview/transfer/ui/**",
-    "src/webview/shared/**"
+    "src/webview/shared/**",
+    "tests/webview/shared/**"
   ]
 }

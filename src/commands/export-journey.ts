@@ -9,6 +9,7 @@ import * as vscode from "vscode";
 import { buildJourneyBundle, type DepthMode } from "../export/journey-bundle";
 import type { ClientCache } from "../tenants/client-cache";
 import type { TenantsRegistry } from "../tenants/registry";
+import { chooseModal } from "../util/dialogs";
 import type { Logger } from "../util/logger";
 
 export interface ExportJourneyDeps {
@@ -50,24 +51,18 @@ function sanitizeFilename(name: string): string {
 }
 
 async function pickDepth(label: string): Promise<DepthMode | undefined> {
-  const items: Array<vscode.QuickPickItem & { mode: DepthMode }> = [
-    {
-      label: "Level 1 only",
-      detail:
-        "This journey only. Inner journeys are referenced and must already exist in the target.",
-      mode: "level1",
-    },
-    {
-      label: "All levels",
-      detail:
-        "Include every nested inner journey (self-contained). Larger file; on import it would also create/overwrite those journeys.",
-      mode: "allLevels",
-    },
-  ];
-  const pick = await vscode.window.showQuickPick(items, {
-    placeHolder: `Export "${label}" — include nested inner journeys?`,
-  });
-  return pick?.mode;
+  // One modal, two option buttons (D44). A modal has a single detail paragraph,
+  // so both options are explained there.
+  const pick = await chooseModal(
+    `Export "${label}" — include nested inner journeys?`,
+    "Level 1 only — this journey only; inner journeys are referenced and must already exist in the target.\n\n" +
+      "All levels — include every nested inner journey (self-contained). Larger file; on import it would also create/overwrite those journeys.",
+    "Level 1 only",
+    "All levels",
+  );
+  if (pick === "Level 1 only") return "level1";
+  if (pick === "All levels") return "allLevels";
+  return undefined; // dismissed
 }
 
 export async function exportJourney(deps: ExportJourneyDeps, arg: unknown): Promise<void> {

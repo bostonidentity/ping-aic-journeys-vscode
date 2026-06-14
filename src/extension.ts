@@ -20,6 +20,7 @@ import { makeResolverCache, type ResolverCache } from "./resolver/cache";
 import { type ClientCache, makeClientCache } from "./tenants/client-cache";
 import { makeConnectionStatusStore } from "./tenants/connection-status";
 import { makeProductionDeps, makeTenantsRegistry, type TenantsRegistry } from "./tenants/registry";
+import { confirm } from "./util/dialogs";
 import { type Logger, makeLogger } from "./util/logger";
 import { MessageNode, type PaicNode } from "./views/nodes/base";
 import { CategoryHeaderNode } from "./views/nodes/category-header";
@@ -410,10 +411,12 @@ export function activate(context: vscode.ExtensionContext): void {
           { event: "connection.remove.confirm", host: conn.host },
           "Confirming connection removal",
         );
-        const choice = await vscode.window.showQuickPick(["YES", "NO"], {
-          placeHolder: `Are you sure you want to remove connection "${conn.name || conn.host}"?`,
-        });
-        if (choice !== "YES") {
+        const ok = await confirm(
+          `Remove connection "${conn.name || conn.host}"?`,
+          "This deletes its stored credentials from this machine. You can re-add it later.",
+          "Remove",
+        );
+        if (!ok) {
           log.debug({ event: "connection.remove.cancelled" }, "Remove Connection cancelled");
           return;
         }

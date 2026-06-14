@@ -40,6 +40,12 @@ export function Combobox({
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  // `showAll` means "the popup just opened — list every option regardless of
+  // what's in the box". The input holds the committed selection's label, so
+  // without this flag reopening would filter by that label and collapse the
+  // list to the single selected item. Cleared the moment the user types (they
+  // are now genuinely filtering).
+  const [showAll, setShowAll] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Keep the input text in sync when the selection changes from outside
@@ -51,33 +57,55 @@ export function Combobox({
 
   const matches = useMemo(() => {
     const needle = text.trim().toLocaleLowerCase();
-    if (needle.length === 0) return options;
+    if (showAll || needle.length === 0) return options;
     return options.filter((o) => o.label.toLocaleLowerCase().includes(needle));
-  }, [options, text]);
+  }, [options, text, showAll]);
 
-  // Close the popup on an outside click.
+  // Open the popup showing the FULL list (the reopen case): the user wants to
+  // pick something else, so don't treat the committed value as a filter.
+  const openAll = () => {
+    setOpen(true);
+    setShowAll(true);
+    setActive(0);
+  };
+
+  // Close the popup, reverting any unselected typing back to the committed
+  // selection — abandoning a search shouldn't leave a phantom string that
+  // doesn't match what's actually selected.
+  const closeAndRevert = () => {
+    setOpen(false);
+    setShowAll(false);
+    setText(selectedLabel);
+  };
+
+  // Close the popup on an outside click (reverting unselected typing).
   useEffect(() => {
     if (!open) return;
     const onDown = (ev: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(ev.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(ev.target as Node)) {
+        setOpen(false);
+        setShowAll(false);
+        setText(selectedLabel);
+      }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  }, [open, selectedLabel]);
 
   const choose = (o: ComboboxOption) => {
     onSelect(o.value);
     setText(o.label);
     setOpen(false);
+    setShowAll(false);
   };
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
     if (ev.key === "Escape") {
-      setOpen(false);
+      closeAndRevert();
       return;
     }
     if (!open && (ev.key === "ArrowDown" || ev.key === "ArrowUp")) {
-      setOpen(true);
+      openAll();
       return;
     }
     if (ev.key === "ArrowDown") {
@@ -118,10 +146,14 @@ export function Combobox({
           onChange={(e) => {
             setText(e.target.value);
             setOpen(true);
+            setShowAll(false); // the user is now filtering by what they typed
             setActive(0);
             if (e.target.value.trim() === "") onSelect("");
           }}
-          onFocus={() => setOpen(true)}
+          onFocus={(e) => {
+            openAll();
+            e.currentTarget.select(); // highlight the current value so a keystroke replaces it
+          }}
           onKeyDown={onKeyDown}
         />
         <i

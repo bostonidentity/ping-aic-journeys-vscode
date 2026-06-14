@@ -62,7 +62,7 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 
 ## Import conventions
 
-- `vscode` imports allowed only in: `src/extension.ts`, `src/commands/*`, `src/views/*`, `src/webview/panel.ts`, `src/tenants/*`, `src/providers/*`, `src/util/logger.ts`. **Never** in `src/paic/*` or `src/resolver/*` — those must be pure TypeScript with no editor dependency.
+- `vscode` imports allowed only in: `src/extension.ts`, `src/commands/*`, `src/views/*`, `src/webview/panel.ts`, `src/tenants/*`, `src/providers/*`, `src/util/logger.ts`, `src/util/dialogs.ts`. **Never** in `src/paic/*` or `src/resolver/*` — those must be pure TypeScript with no editor dependency.
 - `axios` allowed only in `src/paic/*`. Other layers go through `PaicClient`.
 - `jose` allowed only in `src/paic/auth.ts`.
 - React + ReactFlow imports allowed only in `src/webview/ui/*`. Never in extension code.
@@ -94,6 +94,17 @@ Logging the host (`openam-tenant.example.forgeblocks.com`) or `saId` is fine.
 - Webviews are created lazily on first user action, not at activation.
 - `activationEvents: []` is correct for view-contributed extensions — VS Code activates us automatically when our view becomes visible.
 - Hot reload: `Cmd+R` in the Extension Development Host window after rebuild. F5-based debugging instructions get told off on Mac (lesson 2026-05-15).
+
+## User prompts (D44)
+
+One prompt surface: a **native modal** for every "the tool needs a decision from you" moment.
+
+- **Any confirmation or choice** (confirm a write/import, an ESV apply, a connection removal; pick export depth; acknowledge something critical) → route through `confirm(title, detail, verb)` or `chooseModal(title, detail, ...verbs)` in `src/util/dialogs.ts` (both wrap `showWarningMessage({ modal: true })`). Don't call `showWarningMessage({modal:true})` ad hoc — go through the helper so every confirm looks identical.
+- **Non-blocking status** (error / occasional success) → `showErrorMessage` / `showInformationMessage` **without** `modal`.
+- **Do NOT use `showQuickPick`** — it's retired (wrong weight for confirms; no documented confirmation pattern). A multi-option pick is a `chooseModal` with one button per option.
+- The only prompts that bypass the modal, because a modal physically can't express them: **`withProgress`** (a running progress bar) and **`showInputBox`** (typed free-text, e.g. a secret value).
+- A **webview is the app surface, never a confirm dialog** — don't build webview modals; confirmation is always the native modal.
+- Irreversible tenant writes (import / ESV apply) get **no "don't ask again"** — per-action friction is intentional (deliberate deviation from the VS Code guideline; see D44).
 
 ## PAIC REST patterns
 

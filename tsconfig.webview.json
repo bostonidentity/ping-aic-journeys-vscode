@@ -19,6 +19,7 @@
     "tests/webview/inspector/ui/**/*",
     "tests/webview/connection-form/ui/**/*",
     "tests/webview/search/ui/**/*",
-    "tests/webview/transfer/ui/**/*"
+    "tests/webview/transfer/ui/**/*",
+    "tests/webview/shared/**/*"
   ]
 }

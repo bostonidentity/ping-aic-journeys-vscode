@@ -248,7 +248,8 @@ export function makeVscodeMock(): Record<string, unknown> {
       })),
       showErrorMessage: vi.fn(),
       showInformationMessage: vi.fn(),
-      showQuickPick: vi.fn(),
+      showWarningMessage: vi.fn(),
+      showInputBox: vi.fn(),
       showSaveDialog: vi.fn(),
       withProgress: vi.fn((_opts: unknown, task: (p: unknown, t: unknown) => unknown) =>
         task({ report: () => undefined }, {}),

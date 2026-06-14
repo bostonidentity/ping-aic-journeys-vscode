@@ -38,8 +38,7 @@ describe("exportJourney", () => {
   });
 
   it("picks depth, walks at the chosen depth, and writes the bundle", async () => {
-    // biome-ignore lint/suspicious/noExplicitAny: quickpick item carries `mode`
-    vi.mocked(vscode.window.showQuickPick).mockResolvedValue({ mode: "allLevels" } as any);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("All levels" as never);
 
     await exportJourney(makeDeps(), ARG);
 
@@ -61,7 +60,7 @@ describe("exportJourney", () => {
   });
 
   it("does not walk or write when the depth pick is dismissed", async () => {
-    vi.mocked(vscode.window.showQuickPick).mockResolvedValue(undefined);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValue(undefined);
 
     await exportJourney(makeDeps(), ARG);
 
@@ -70,8 +69,7 @@ describe("exportJourney", () => {
   });
 
   it("does not write when the save dialog is cancelled", async () => {
-    // biome-ignore lint/suspicious/noExplicitAny: quickpick item carries `mode`
-    vi.mocked(vscode.window.showQuickPick).mockResolvedValue({ mode: "level1" } as any);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Level 1 only" as never);
     vi.mocked(vscode.window.showSaveDialog).mockResolvedValue(undefined);
 
     await exportJourney(makeDeps(), ARG);
