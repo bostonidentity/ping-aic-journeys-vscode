@@ -24,9 +24,10 @@ Probed live on PAIC sandbox **and** on-prem AM (`poc/transfer-endpoints/inner-jo
 - **A missing inner journey is a HARD constraint, AM-enforced.** `PUT InnerTreeEvaluatorNode {tree:"<absent>"}`
   → `400 "Data validation failed for the attribute, Tree Name"` on both deployments. You cannot create
   the node until its target tree exists.
-- **A missing node *type* is a HARD constraint** (`404` — type not in deployment). Our exporter records
-  only node-type **names** (`meta.requires.nodeTypes`), not definitions, so we cannot supply a missing
-  type → it's a deployment prerequisite. *(Not yet live-probed — see Open research.)*
+- **A missing node *type* is a HARD constraint** (`404` — type not in deployment; live catalog confirmed
+  TD-14). The bundle carries node references by `_type._id`, not type *definitions*, so we cannot supply a
+  missing type → deployment prerequisite. The preflight derives the required types **from the bundle's nodes**
+  (`_type._id`) and diffs them against the live `getAllTypes` catalog — never from a meta manifest (PD-18).
 - **The dividing line that explains the soft/hard split:**
   - **Structural attribute refs** (a node's `script` UUID, an `InnerTreeEvaluatorNode`'s `tree` name,
     the node *type*) → AM validates them at write time → **HARD**.
@@ -287,6 +288,19 @@ Genuinely new: **`severity`** on the requires rows, **`Keep`** as an inner-journ
   captured at freeze time from the PD-11 snapshot, for success AND partial/stopped-where. Doubles as the
   **rollback baseline**. JSON download is in scope now; **quick rollback is planned future** (time-bounded,
   reverse-precheck-gated — see Apply phase). ✔ in scope (download) · 🔮 future (rollback)
+- **PD-18** **Meta is non-load-bearing provenance — the import derives 100% from tree structure (the source
+  of truth) and would work with NO meta at all.** No import decision reads `meta`:
+  - **subject** journey = the `innerTreeOnly:false` tree (not `treesSelectedForExport`);
+  - **required node types** = each node's `_type._id` (not `meta.requires.nodeTypes`);
+  - **referenced inner journeys** = `InnerTreeEvaluatorNode.tree` (not `meta.requires.innerJourneys`);
+  - **esvs / libs** = script bodies (not `meta.requires.esvs`);
+  - **bundled-vs-referenced** (the level1/allLevels distinction) is derived **per inner journey** from
+    "is that tree present in `trees`?" — so even `meta.depthMode` is informational.
+
+  Corollary: the journey export **drops the derived meta fields** (`requires`, `treesSelectedForExport`,
+  `innerTreesIncluded`); `meta` = pure provenance (origin/dates/who/tool/version/connectionType/realm
+  [/depthMode]). This is a small export-side cleanup (and the parse preview must derive its lines from
+  content) — sequenced in the dev plan, since journey import is still on paper. ✔ agreed
 
 ## Prior-art validation & upgrades (2026-06-14)
 
@@ -331,8 +345,9 @@ silent skips that drift (Keep/Identical/⚠ stay visible in the result) · out-o
 - **P1** — PD-11 freeze-the-plan · PD-12 no-source-UUID assertion.
 - **P2** — count header + concrete per-row reasons · re-plan-after-failure · cross-import blast-radius.
 - **P3** — auto-include in-bundle prereqs as Create rows · self-suppressing secret step (skip when present on
-  target; never re-blank) · closure manifest (extend `meta.requires` to script/inner-journey/ESV names) ·
-  filter-to-rows-needing-a-decision.
+  target; never re-blank) · filter-to-rows-needing-a-decision.
+  *(Dropped the earlier "closure manifest in `meta`" idea — superseded by PD-18: the import derives the closure
+  from tree content, never from a meta manifest.)*
 - **P4 (consider, not default)** — two-phase Stage→Apply for the most destructive deep-nesting overwrite.
 
 ## Apply phase: confirm → progress → report → (future) rollback
@@ -438,12 +453,14 @@ each can return more than a clean 200/201. Review of our path (`src/paic/http.ts
 
 ## Open research (before build)
 
-1. **Node-type catalog POC** — confirm read-only `GET nodes?_action=getAllTypes` returns a usable catalog
-   on PAIC + on-prem; diff to see which types bare AM actually lacks. *(cheap, not yet run)*
-2. **Export → import round-trip POC** — the real de-risk: feed our *exporter's* bundle (not a hand-built
-   seed) through the ordered write into a clean target; discover which fields must be stripped
-   (`_rev`, `_type`, `_outcomes`, coordinates), exercise the **name-reconcile + UUID remap** (TD-13/§6),
-   and confirm a runnable journey. Doubles as the Batch 3 integration test.
+1. ~~Node-type catalog POC~~ ✅ **TD-14** — `nodes?_action=getAllTypes` works (200 both); **PAIC 234 · on-prem
+   116 · 108 shared** (126 PAIC-only cloud nodes, 8 legacy on-prem-only). Gate real & load-bearing; the read =
+   the `getNodeTypes` client method (folds into S1).
+2. ~~Export → import round-trip POC~~ ✅ **TD-15** — wrote our own allLevels export back into a clean
+   sb2x/alpha → a **fully wired journey with ZERO field-stripping** (AM accepts the raw export node/tree shape;
+   only `_rev` dropped). Ordering confirmed end-to-end. ⇒ executor needs **no routine strip pass**; G2
+   strip-and-retry stays a deferred SAFETY NET (S6). Create-path only — overwrite + name-collision remap
+   exercised in S5/S6.
 3. **Shared-leaf reachability** — exact computation of "needed by an active journey" when some journeys
    are Keep'd (so a Keep doesn't drop a leaf another active journey needs).
 4. **Node UUID collision across journeys** — the `id-collision` edge when a bundle node UUID already

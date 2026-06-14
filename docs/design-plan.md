@@ -925,7 +925,7 @@ The resolver already treats Tier-B/C lookups as best-effort (miss → `null`, lo
 - **Depth axis: inner-journey depth is a deliberate TOGGLE** (`Level 1 only` default / `All levels` closure). Always-deep is an *integrity hazard* (importing the full closure overwrites shared sub-journeys; ~21× blast radius), not a win.
 - **Unbundled deps → a `requires` manifest** (inner journeys when shallow + ESVs + custom node types) for import pre-flight.
 
-**Metadata block** (`meta`, on by default, opt-out): provenance + version-skew + self-describing depth. **The comparison engine never diffs `meta`** (timestamps churn). Strip server-managed diff-mask fields at export (`_rev`, `createdBy`/`creationDate`, `lastModifiedBy`/`lastModifiedDate`, `evaluatorVersion`, per-leaf `loaded`/`lastChange*`/`_type`) — but **keep `_id`** (UUIDs are preserved on import → real transferable identity). Fields: `bundleSchemaVersion`, `origin`, `originAmVersion`, `connectionType`, `realm`, `exportedBy`, `exportDate`, `exportTool` (`"paic-journeys-vscode"`), `exportToolVersion`, + journey-only `treesSelectedForExport` / `innerTreesIncluded` / `depthMode` / `requires`. (Future: a scrub-provenance option for external sharing.)
+**Metadata block** (`meta`, on by default, opt-out): provenance + version-skew + self-describing depth. **The comparison engine never diffs `meta`** (timestamps churn). Strip server-managed diff-mask fields at export (`_rev`, `createdBy`/`creationDate`, `lastModifiedBy`/`lastModifiedDate`, `evaluatorVersion`, per-leaf `loaded`/`lastChange*`/`_type`) — but **keep `_id`** (UUIDs are preserved on import → real transferable identity). Fields: `bundleSchemaVersion`, `origin`, `originAmVersion`, `connectionType`, `realm`, `exportedBy`, `exportDate`, `exportTool` (`"paic-journeys-vscode"`), `exportToolVersion`, + journey-only `depthMode` (informational). **Refined by D45/PD-18 — the derived fields (`requires`, `treesSelectedForExport`, `innerTreesIncluded`) are NOT emitted: `meta` is non-load-bearing provenance; the import derives everything from tree content.** (Future: a scrub-provenance option for external sharing.)
 
 **Per-leaf transfer surface (POC-confirmed — endpoints, masks, gotchas; full reference in [transfer-endpoints.md](transfer-endpoints.md)).** All 7 leaves round-trip full CRUD on PAIC; the 3 AM-native leaves are **identical** on bare AM (no per-leaf deployment branch — only auth + base path differ); the 4 IDM/platform leaves are N/A on on-prem.
 
@@ -949,7 +949,7 @@ The resolver already treats Tier-B/C lookups as best-effort (miss → `null`, lo
 - **Comparison depth:** value-compare the **entity you select to transfer**; **existence-check its dependency closure** (libs + ESVs = the `requires` pre-flight). **ESV values are never value-compared** (env-specific by design; secrets unreadable). **Library scripts** are existence-checked **+ an optional non-blocking "lib body differs" note** (libs are code — "exists but different" silently changes behavior, and we already have the bodies). **Secret values / custom node types** are existence-only (unreadable).
 
 **Journey / sub-journey export — depth representation + UI (TD-5).**
-- **One envelope, no structural fork.** Level-1 and All-levels are both `{ meta, trees }` (proven by the PAIC-UI captures). The depth is carried by **content**: Level-1 → only the selected journey is in `trees` (inner journeys referenced by name); All-levels → the selected journey **+ the full transitive inner-journey closure** as sibling trees. The JSON is self-describing from content, **and** `meta` records it explicitly — `depthMode` (`level1`/`allLevels`), `innerTreesIncluded` (bundled), `requires.innerJourneys` (referenced-but-not-bundled, = import pre-flight). Do **not** invent a second JSON shape.
+- **One envelope, no structural fork.** Level-1 and All-levels are both `{ meta, trees }` (proven by the PAIC-UI captures). The depth is carried by **content**: Level-1 → only the selected journey is in `trees` (inner journeys referenced by name); All-levels → the selected journey **+ the full transitive inner-journey closure** as sibling trees. The JSON is self-describing **from content alone** (D45/PD-18): per inner journey, *bundled* = its tree is present in `trees`, *referenced-but-not-bundled* = it isn't — the import preflight reads this from content, never from `meta`. `meta.depthMode` is informational only. Do **not** invent a second JSON shape.
 - **UI:** the only choice is inner-journey depth (contents always bundled, TD-1) → an **Export… button on `JourneyCard` + `InnerJourneyCard`** → a 2-item **QuickPick** (`Level 1 only` *(default)* / `All levels`, each with a consequence `detail`) → `showSaveDialog`. All-levels runs the **D35 resolver** closure walk under `withProgress`. The "would touch N journeys" blast-radius count is deferred to **import** (read-only export only costs file size).
 - **Engine:** reuse the D35 resolver + Slice-2 leaf serializers + meta builder; the one new piece is a per-tree `SingleTreeExportInterface` assembler.
 
@@ -1068,6 +1068,14 @@ prerequisite skips its dependents with a clear reason; the batch never aborts; p
 **downloadable JSON result report** (per-item before/after from the frozen snapshot; success + partial). The
 report is shaped now to power a **future quick rollback** (time-bounded, reverse-precheck-gated — drift makes
 it meaningless after a few days; no union source, unlike git).
+
+**Source of truth (PD-18).** `meta` is **non-load-bearing provenance** — the import derives **100% from tree
+structure** and would work with no `meta` at all. No import decision reads `meta`: subject = the
+`innerTreeOnly:false` tree; required node types = each node's `_type._id`; referenced inner journeys =
+`InnerTreeEvaluatorNode.tree`; esvs/libs = script bodies; bundled-vs-referenced (level1/allLevels) is derived
+**per inner journey** from "is that tree present in `trees`?" (so even `depthMode` is informational).
+**Amends D42**: the journey export drops the derived meta fields (`requires`, `treesSelectedForExport`,
+`innerTreesIncluded`); `meta` = pure provenance.
 
 ### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
 

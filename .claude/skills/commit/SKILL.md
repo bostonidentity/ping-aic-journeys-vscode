@@ -20,7 +20,7 @@ Message must use conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `t
 Append to the commit body:
 
 ```
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 ```
 
 ## Never commit

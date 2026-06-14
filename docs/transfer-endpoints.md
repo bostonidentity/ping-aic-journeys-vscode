@@ -240,18 +240,29 @@ real one. The trailing DELETE leaves the tenant clean.
 
 ---
 
-## Structural / wiring — NOT yet POC-confirmed (later round)
+## Structural / wiring — POC-confirmed (TD-12 · TD-13 · TD-14 · TD-15)
 
-The leaf round is complete; the structural write (journey import, Batch 3) still needs its own POC
-before build. Endpoint shapes below are frodo's reference, to be double-confirmed live:
+The structural write (journey import, Batch 3) is now confirmed end-to-end — a full export→import round-trip
+rebuilt a wired journey on a clean tenant (TD-15). Probes live in the gitignored
+`poc/transfer-endpoints/TRACKER.md`; full design in [journey-import-model.md](journey-import-model.md).
 
-- **Node instance** — `PUT/DELETE …/authenticationtrees/nodes/<nodeType>/<nodeId>` (type in path;
-  404 if the type is absent).
-- **Node type** — OOTB / cloud `designer-*` (bundleable) / on-prem Java (pre-flight via
-  `nodes?_action=getAllTypes`, **not** exportable).
-- **Journey (tree)** — `PUT/DELETE …/authenticationtrees/trees/<treeId>` (`TreeApi` putTree/deleteTree);
-  written **last**; reference-remapping (reUuid) lives here.
-- **Inner journey** — shallow ref vs deep sibling-tree bundle (the depth toggle, TD-1 / TD-5).
+- **Node instance** — `PUT/DELETE …/authenticationtrees/nodes/<nodeType>/<nodeId>` (type in path; 404 if the
+  type is absent). **The raw export node shape PUTs as-is** — AM tolerates the server-managed echoes
+  (`_type`, `_outcomes`, `_id`); only `_rev` need be dropped (TD-15). A missing referenced **script** (UUID
+  attr) or **inner tree** (name attr) is rejected `400 "Data validation failed for the attribute, …"` (TD-12).
+- **Node type** — must pre-exist in the target deployment; not bundleable by us (the bundle carries node
+  references by `_type._id`, not type *definitions*). Preflight derives the required types from the bundle's
+  nodes (`_type._id`) and diffs them against the live `nodes?_action=getAllTypes` catalog (a read action;
+  never a meta manifest — PD-18). Live catalog:
+  **PAIC 234 types · bare on-prem 116 · 108 shared** (TD-14) — so a journey using a cloud-only type (e.g.
+  `PingOneVerifyNode`) HARD-fails into bare on-prem. A missing type is a hard preflight blocker.
+- **Journey (tree)** — `PUT/DELETE …/authenticationtrees/trees/<treeId>`; written **last**. The full export
+  tree object PUTs as-is (no strip beyond `_rev`) (TD-15). Write order: leaves → inner-nodes → nodes →
+  **inner trees → outer trees** (an `InnerTreeEvaluatorNode` can't be created before its target tree exists —
+  TD-12); the **node PUT is the success gate**, not the final tree PUT.
+- **Scripts** — name-unique per realm (`409` on dup name); UUID = identifier, name = cross-env match key →
+  reconcile by name + remap node→script UUID refs (TD-13).
+- **Inner journey** — shallow ref (level1) vs deep sibling-tree bundle (allLevels) — the depth toggle (TD-1 / TD-5).
 
 ### Out of scope (no resolver/client support today)
 

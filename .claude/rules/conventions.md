@@ -122,5 +122,5 @@ One prompt surface: a **native modal** for every "the tool needs a decision from
 
 - Stage specific files with `git add`, never `-A` — prevents accidentally committing secrets or captured tenant data.
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`.
-- Append to commit body: `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`
+- Append to commit body: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
 - Never commit: `.env` (except `.env.example`), the gitignored `poc/` and `ref/` directories, any captured tenant data (HARs, exports, response JSON).
