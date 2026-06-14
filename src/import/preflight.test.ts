@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { PaicError } from "../paic/errors";
 import type { DiscoveredRef } from "./discover";
 import type { ImportComponent } from "./parse";
 import {
@@ -26,6 +27,8 @@ function client(over: Record<string, () => Promise<unknown>> = {}): PreflightCli
     listSecrets: async () => [],
     getNodeTypes: async () => [],
     listTrees: async () => [],
+    // getRawJourney throws a 404 (tree absent → "new") by default.
+    getRawJourney: () => Promise.reject(new PaicError("not found", { status: 404 })),
     ...over,
   } as unknown as PreflightClient;
 }
@@ -71,6 +74,25 @@ describe("runPreflight", () => {
       [comp({ kind: "theme", raw: { backgroundColor: "#1" } })],
     );
     expect(diff[0].status).toBe("differs");
+  });
+
+  it("journey exists when the target tree is present (existence-only)", async () => {
+    const getRawJourney = vi.fn(async () => ({ _id: "Login", entryNodeId: "a" }));
+    const v = await runPreflight(client({ getRawJourney }), "alpha", "paic", [
+      comp({ kind: "journey", id: "Login", displayName: "Login", raw: { tree: {}, nodes: {} } }),
+    ]);
+    expect(v[0].status).toBe("exists");
+    expect(getRawJourney).toHaveBeenCalledWith("alpha", "Login");
+  });
+
+  it("journey new when getRawJourney 404s (caught, not surfaced as error)", async () => {
+    const v = await runPreflight(
+      client({ getRawJourney: () => Promise.reject(new PaicError("nope", { status: 404 })) }),
+      "alpha",
+      "paic",
+      [comp({ kind: "journey", id: "Missing", displayName: "Missing", raw: { tree: {} } })],
+    );
+    expect(v[0].status).toBe("new");
   });
 
   it("library script existence via findRawScriptsByName → exists; carries resolved id", async () => {

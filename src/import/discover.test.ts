@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoverJourneyRefs, discoverScriptDeps } from "./discover";
+import { discoverJourneyRefs, discoverScriptDeps, innerTreeRefs } from "./discover";
 import type { ImportComponent } from "./parse";
 
 /** Bundle body form: JSON-stringified decoded source (serialize.ts). */
@@ -90,6 +90,8 @@ describe("discoverJourneyRefs", () => {
       journeyComp("MFA", {}),
     ]);
     expect(refs.innerJourneys).toEqual(["Risk"]);
+    // referencedInnerTrees is the superset — bundled (MFA) + unbundled (Risk).
+    expect(refs.referencedInnerTrees).toEqual(["MFA", "Risk"]);
     expect(refs.nodeTypes).toEqual(["InnerTreeEvaluatorNode"]);
   });
 
@@ -97,6 +99,28 @@ describe("discoverJourneyRefs", () => {
     const comps: ImportComponent[] = [
       { kind: "script", id: "s", displayName: "s", raw: { _id: "s" } },
     ];
-    expect(discoverJourneyRefs(comps)).toEqual({ nodeTypes: [], innerJourneys: [] });
+    expect(discoverJourneyRefs(comps)).toEqual({
+      nodeTypes: [],
+      innerJourneys: [],
+      referencedInnerTrees: [],
+    });
+  });
+});
+
+describe("innerTreeRefs", () => {
+  it("returns one unit's deduped, sorted inner-tree refs (nodes + innerNodes)", () => {
+    const raw = {
+      nodes: {
+        a: { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "MFA" },
+        b: { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "Risk" },
+        c: { _type: { _id: "PageNode" } },
+      },
+      innerNodes: { d: { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "MFA" } }, // dup
+    };
+    expect(innerTreeRefs(raw)).toEqual(["MFA", "Risk"]);
+  });
+
+  it("returns [] for a unit with no inner-tree refs", () => {
+    expect(innerTreeRefs({ nodes: { a: { _type: { _id: "PageNode" } } } })).toEqual([]);
   });
 });

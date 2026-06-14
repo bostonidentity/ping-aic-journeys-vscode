@@ -55,8 +55,39 @@ function variableBundle(): ParsedBundle {
   };
 }
 
+/** A journey verdict (existence-only: new/exists). */
+const jv = (id: string, status: "new" | "exists") => ({
+  kind: "journey",
+  id,
+  displayName: id,
+  status,
+});
+
+/** A JourneyUnitPlan (S5 decision model). */
+const jp = (
+  id: string,
+  role: "subject" | "inner",
+  verdict: "new" | "exists",
+  defaultAction: "create" | "overwrite" | "keep",
+  allowedActions: Array<"create" | "overwrite" | "keep">,
+) => ({ id, displayName: id, role, verdict, defaultAction, allowedActions });
+
+/** Load a journey bundle, pick a target, and post a journey preflight. */
+function journeyPreflight(
+  verdicts: unknown[],
+  journeyPlans: unknown[],
+  requires: unknown[] = [],
+): void {
+  postToWebview({ type: "bundleLoaded", fileName: "j.journey.json", bundle: journeyBundle() });
+  selectTargetAndPreflight(verdicts, requires, journeyPlans);
+}
+
 /** Drive the App to a target-selected + preflight-loaded state with the given verdicts. */
-function selectTargetAndPreflight(verdicts: unknown[], requires: unknown[] = []): void {
+function selectTargetAndPreflight(
+  verdicts: unknown[],
+  requires: unknown[] = [],
+  journeyPlans: unknown[] = [],
+): void {
   pickCombo("target-connection", "paic", "paic.example");
   postToWebview({ type: "realmsResult", host: "paic.example", realms: ["alpha"] });
   pickCombo("target-realm", "alpha", "alpha");
@@ -66,6 +97,7 @@ function selectTargetAndPreflight(verdicts: unknown[], requires: unknown[] = [])
     realm: "alpha",
     verdicts,
     requires,
+    journeyPlans,
   });
 }
 
@@ -120,11 +152,11 @@ describe("Transfer App", () => {
     expect(screen.getByText("Connection")).toBeTruthy();
   });
 
-  it("shows a deferral note (and no Target) for a journey bundle", () => {
+  it("shows the Target section for a journey bundle (no longer deferred)", () => {
     render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
     postToWebview({ type: "bundleLoaded", fileName: "j.journey.json", bundle: journeyBundle() });
-    expect(screen.getByText(/Journey import — target selection/)).toBeTruthy();
-    expect(screen.queryByText("Target")).toBeNull();
+    expect(screen.getByText("Target")).toBeTruthy();
+    expect(screen.queryByText(/arrives in a later batch/)).toBeNull();
   });
 
   it("posts listRealms when a connection is chosen", () => {
@@ -169,8 +201,10 @@ describe("Transfer App", () => {
         },
       ],
       requires: [],
+      journeyPlans: [],
     });
-    expect(screen.getByText(/Differs/)).toBeTruthy();
+    // Smart-default (S9a): the Differs row arrives pre-checked → Overwrite.
+    expect(screen.getByText("Overwrite")).toBeTruthy();
   });
 
   it("renders an unsupported verdict for a theme on on-prem", () => {
@@ -187,6 +221,7 @@ describe("Transfer App", () => {
         { kind: "theme", id: "t", displayName: "zzz export test theme", status: "unsupported" },
       ],
       requires: [],
+      journeyPlans: [],
     });
     expect(screen.getByText("Unsupported")).toBeTruthy();
   });
@@ -197,7 +232,7 @@ describe("Transfer App", () => {
     selectTargetAndPreflight([
       { kind: "variable", id: "esv-x", displayName: "esv.x", status: "new" },
     ]);
-    fireEvent.click(screen.getByLabelText("Import esv.x")); // opt in
+    // Smart-default (S9a): the writable row is pre-checked.
     expect(screen.getByText(/Import 1 selected/)).toBeTruthy();
   });
 
@@ -281,8 +316,7 @@ describe("Transfer App", () => {
         status: "new",
       },
     ]);
-    fireEvent.click(screen.getByLabelText("Import zzz export test theme")); // opt in
-    fireEvent.click(screen.getByText(/Import 1 selected/));
+    fireEvent.click(screen.getByText(/Import 1 selected/)); // pre-checked (smart-default)
     expect(post).toHaveBeenCalledWith({
       type: "execute",
       host: "paic.example",
@@ -314,7 +348,7 @@ describe("Transfer App", () => {
     selectTargetAndPreflight([
       { kind: "script", id: "s", displayName: "RiskDecision", status: "new" },
     ]);
-    fireEvent.click(screen.getByLabelText("Import RiskDecision")); // opt in
+    // Smart-default (S9a): the writable row is pre-checked.
     expect(screen.getByText(/Import 1 selected/)).toBeTruthy();
     expect(screen.queryByText(/arrives in a later batch/)).toBeNull();
   });
@@ -335,9 +369,9 @@ describe("Transfer App", () => {
     expect(screen.queryByText(/Requires/)).toBeNull();
     const names = [...container.querySelectorAll(".plan-name")].map((n) => n.textContent);
     expect(names).toContain("RiskDecision");
-    expect(names).toContain("fraud-helpers");
+    expect(names.some((n) => n?.startsWith("fraud-helpers"))).toBe(true); // + reason note (S9a)
     expect(names.some((n) => n?.startsWith("esv.threshold"))).toBe(true);
-    expect(screen.getByText("Missing")).toBeTruthy(); // fraud-helpers
+    expect(screen.getByText("Missing ⚠")).toBeTruthy(); // fraud-helpers (advisory)
     // A dep row is info-only: disabled checkbox, Status carries the existence fact.
     expect((screen.getByLabelText("Import fraud-helpers") as HTMLInputElement).disabled).toBe(true);
   });
@@ -354,20 +388,20 @@ describe("Transfer App", () => {
     expect(headers).toEqual(["Type", "Status", "Name", "Review"]);
   });
 
-  it("TD-10: three-phase Status — New → Create (checked) → reverts on uncheck", () => {
+  it("TD-10/S9a: three-phase Status — Create (pre-checked) ⇄ New (unchecked)", () => {
     render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
     postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
     selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
     const cb = screen.getByLabelText("Import zzz theme") as HTMLInputElement;
-    expect(cb.checked).toBe(false); // opt-in
-    expect(screen.getByText("New")).toBeTruthy(); // phase 1
-    fireEvent.click(cb);
-    expect(screen.getByText("Create")).toBeTruthy(); // phase 2 (pending verb)
-    expect(screen.queryByText("New")).toBeNull();
+    expect(cb.checked).toBe(true); // smart-default: pre-checked
+    expect(screen.getByText("Create")).toBeTruthy(); // phase 2 by default
     expect(screen.getByText(/Import 1 selected · 1 create · 0 overwrite/)).toBeTruthy();
     fireEvent.click(cb); // uncheck → reverts to phase 1
     expect(screen.getByText("New")).toBeTruthy();
     expect(screen.queryByText("Create")).toBeNull();
+    fireEvent.click(cb); // re-check → phase 2
+    expect(screen.getByText("Create")).toBeTruthy();
+    expect(screen.queryByText("New")).toBeNull();
   });
 
   it("TD-10: a differs row shows Differs → Overwrite when checked", () => {
@@ -376,9 +410,9 @@ describe("Transfer App", () => {
     selectTargetAndPreflight([
       { kind: "theme", id: "t", displayName: "zzz theme", status: "differs" },
     ]);
+    expect(screen.getByText("Overwrite")).toBeTruthy(); // pre-checked (smart-default)
+    fireEvent.click(screen.getByLabelText("Import zzz theme")); // uncheck → comparison fact
     expect(screen.getByText("Differs")).toBeTruthy();
-    fireEvent.click(screen.getByLabelText("Import zzz theme"));
-    expect(screen.getByText("Overwrite")).toBeTruthy();
   });
 
   it("an identical (no-op) row has a disabled checkbox + Status=Identical", () => {
@@ -405,6 +439,7 @@ describe("Transfer App", () => {
       realm: "root",
       verdicts: [{ kind: "theme", id: "t", displayName: "zzz theme", status: "unsupported" }],
       requires: [],
+      journeyPlans: [],
     });
     // Uniform column: disabled (not absent) checkbox.
     expect((screen.getByLabelText("Import zzz theme") as HTMLInputElement).disabled).toBe(true);
@@ -436,8 +471,11 @@ describe("Transfer App", () => {
       { kind: "theme", id: "b", displayName: "bbb", status: "differs" },
       { kind: "theme", id: "c", displayName: "ccc", status: "identical" }, // no-op, not selected
     ]);
-    expect(screen.getByText("Nothing selected")).toBeTruthy(); // default off
-    fireEvent.click(screen.getByLabelText("Select all"));
+    // Smart-default: both writable rows pre-checked; ccc (identical) excluded.
+    expect(screen.getByText(/Import 2 selected · 1 create · 1 overwrite/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Select all")); // all-checked → toggle OFF
+    expect(screen.getByText("Nothing selected")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Select all")); // toggle back ON
     expect(screen.getByText(/Import 2 selected · 1 create · 1 overwrite/)).toBeTruthy();
   });
 
@@ -449,7 +487,8 @@ describe("Transfer App", () => {
       { kind: "theme", id: "a", displayName: "aaa", status: "new" },
       { kind: "theme", id: "b", displayName: "bbb", status: "differs" },
     ]);
-    fireEvent.click(screen.getByLabelText("Import bbb")); // pick only the differs
+    // Smart-default checks both; deselect the New, leaving only the Differs.
+    fireEvent.click(screen.getByLabelText("Import aaa"));
     expect(screen.getByText(/Import 1 selected · 0 create · 1 overwrite/)).toBeTruthy();
     fireEvent.click(screen.getByText(/Import 1 selected/));
     expect(post).toHaveBeenCalledWith(
@@ -555,5 +594,206 @@ describe("Transfer App", () => {
     ]);
     const names = [...container.querySelectorAll(".plan-name")].map((n) => n.textContent);
     expect(names).toEqual(["ess", "aaa", "bbb", "vee"]); // script, theme(a,b), variable
+  });
+});
+
+describe("Transfer App — journey import (S8b)", () => {
+  it("renders the subject header + an inner-journey row", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    journeyPreflight(
+      [jv("Login", "exists"), jv("MFA", "new")],
+      [
+        jp("Login", "subject", "exists", "overwrite", ["overwrite"]),
+        jp("MFA", "inner", "new", "create", ["create"]),
+      ],
+    );
+    expect(screen.getByText(/Import journey:/)).toBeTruthy(); // subject header
+    expect(screen.getByText("Login")).toBeTruthy(); // subject name (header, not a row)
+    expect(screen.getByText("Inner journey")).toBeTruthy(); // inner row type
+    expect(screen.getByLabelText("Import MFA")).toBeTruthy(); // inner row present
+  });
+
+  it("an exists inner defaults to Keep; checking it flips the Status to Overwrite", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    journeyPreflight(
+      [jv("Login", "exists"), jv("DeviceCheck", "exists")],
+      [
+        jp("Login", "subject", "exists", "overwrite", ["overwrite"]),
+        jp("DeviceCheck", "inner", "exists", "keep", ["overwrite", "keep"]),
+      ],
+    );
+    const cb = screen.getByLabelText("Import DeviceCheck") as HTMLInputElement;
+    expect(cb.checked).toBe(false); // default Keep
+    expect(screen.getByText("Keep")).toBeTruthy();
+    act(() => fireEvent.click(cb));
+    expect(screen.getByText("Overwrite")).toBeTruthy();
+  });
+
+  it("a new inner shows a forced Create (checkbox checked + disabled)", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    journeyPreflight(
+      [jv("Login", "exists"), jv("MFA", "new")],
+      [
+        jp("Login", "subject", "exists", "overwrite", ["overwrite"]),
+        jp("MFA", "inner", "new", "create", ["create"]),
+      ],
+    );
+    const cb = screen.getByLabelText("Import MFA") as HTMLInputElement;
+    expect(cb.checked).toBe(true);
+    expect(cb.disabled).toBe(true);
+    expect(screen.getByText("Create")).toBeTruthy();
+  });
+
+  it("a missing blocking gate shows the ⛔ banner and disables Import", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    journeyPreflight(
+      [jv("Login", "exists")],
+      [jp("Login", "subject", "exists", "overwrite", ["overwrite"])],
+      [{ kind: "nodeType", name: "PingOneVerifyNode", status: "missing", severity: "blocking" }],
+    );
+    expect(screen.getByText(/required prerequisite/)).toBeTruthy();
+    const btn = screen.getByRole("button", { name: /Import journey/ }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("Import posts journeyActions (checked exists-inner → overwrite) + seeded leaf keys", () => {
+    const post = vi.fn();
+    render(<App vscode={{ postMessage: post }} payload={{ connections: [PAIC_CONN] }} />);
+    journeyPreflight(
+      [
+        jv("Login", "exists"),
+        jv("DeviceCheck", "exists"),
+        { kind: "script", id: "s1", displayName: "helper", status: "new" },
+      ],
+      [
+        jp("Login", "subject", "exists", "overwrite", ["overwrite"]),
+        jp("DeviceCheck", "inner", "exists", "keep", ["overwrite", "keep"]),
+      ],
+    );
+    act(() => fireEvent.click(screen.getByLabelText("Import DeviceCheck"))); // Keep → Overwrite
+    act(() => fireEvent.click(screen.getByRole("button", { name: /Import journey/ })));
+    const call = post.mock.calls.map((c) => c[0]).find((m) => m.type === "execute");
+    expect(call.journeyActions).toEqual({ DeviceCheck: "overwrite" });
+    expect(call.selected).toContain("script:s1"); // bundled leaf seeded
+    expect(call.selected).toContain("journey:DeviceCheck"); // overwrite-inner key
+  });
+
+  it("driftDetected re-runs the pre-flight", () => {
+    const post = vi.fn();
+    render(<App vscode={{ postMessage: post }} payload={{ connections: [PAIC_CONN] }} />);
+    journeyPreflight(
+      [jv("Login", "exists")],
+      [jp("Login", "subject", "exists", "overwrite", ["overwrite"])],
+    );
+    post.mockClear();
+    postToWebview({
+      type: "driftDetected",
+      host: "paic.example",
+      realm: "alpha",
+      drifted: [{ key: "journey:Login", was: "exists", now: "new" }],
+    });
+    expect(post).toHaveBeenCalledWith({
+      type: "runPreflight",
+      host: "paic.example",
+      realm: "alpha",
+    });
+  });
+});
+
+describe("Transfer App — whole-plan polish (S9a)", () => {
+  it("smart-default pre-checks the writable rows of a leaf bundle", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
+    expect((screen.getByLabelText("Import zzz theme") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("shows the count-summary line pre-import, then the result summary after import", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([
+      { kind: "theme", id: "a", displayName: "aaa", status: "new" },
+      { kind: "theme", id: "b", displayName: "bbb", status: "identical" },
+    ]);
+    // Pre-import: plan counts (1 new pre-checked → create; 1 identical → unchanged).
+    expect(screen.getByText("Plan: 1 create · 1 unchanged")).toBeTruthy();
+    postToWebview({
+      type: "executeResult",
+      host: "paic.example",
+      realm: "alpha",
+      results: [{ kind: "theme", id: "a", displayName: "aaa", status: "created" }],
+      summary: "1 created · 0 overwritten · 0 skipped · 0 failed",
+    });
+    // Post-import: the slot becomes the result summary (previously never rendered).
+    expect(screen.getByText("1 created · 0 overwritten · 0 skipped · 0 failed")).toBeTruthy();
+  });
+
+  it("a missing blocking gate carries a reason note", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    journeyPreflight(
+      [jv("Login", "exists")],
+      [jp("Login", "subject", "exists", "overwrite", ["overwrite"])],
+      [{ kind: "nodeType", name: "PingOneVerifyNode", status: "missing", severity: "blocking" }],
+    );
+    expect(screen.getByText("Missing ⛔")).toBeTruthy();
+    expect(screen.getByText(/not installed on the target/)).toBeTruthy();
+  });
+
+  it("PD-17: a Download report button appears after a run and posts downloadReport", () => {
+    const post = vi.fn();
+    render(<App vscode={{ postMessage: post }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
+    expect(screen.queryByText("Download report")).toBeNull(); // not before a run
+    postToWebview({
+      type: "executeResult",
+      host: "paic.example",
+      realm: "alpha",
+      results: [{ kind: "theme", id: "t", displayName: "zzz theme", status: "created" }],
+      summary: "1 created · 0 overwritten · 0 skipped · 0 failed",
+    });
+    fireEvent.click(screen.getByText("Download report"));
+    expect(post).toHaveBeenCalledWith({ type: "downloadReport" });
+  });
+
+  it("G4: a Re-plan button appears after a run and re-runs pre-flight", () => {
+    const post = vi.fn();
+    render(<App vscode={{ postMessage: post }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
+    expect(screen.queryByText("Re-plan")).toBeNull(); // not before a run
+    postToWebview({
+      type: "executeResult",
+      host: "paic.example",
+      realm: "alpha",
+      results: [{ kind: "theme", id: "t", displayName: "zzz theme", status: "failed" }],
+      summary: "0 created · 0 overwritten · 0 skipped · 1 failed",
+    });
+    post.mockClear();
+    fireEvent.click(screen.getByText("Re-plan"));
+    expect(post).toHaveBeenCalledWith({
+      type: "runPreflight",
+      host: "paic.example",
+      realm: "alpha",
+    });
+    expect(screen.getByText("Checking target…")).toBeTruthy(); // back to checking, table unlocked
+  });
+
+  it("PD-16: executeProgress flips a row's Status live + shows the running count", () => {
+    render(<App vscode={{ postMessage: vi.fn() }} payload={{ connections: [PAIC_CONN] }} />);
+    postToWebview({ type: "bundleLoaded", fileName: "x", bundle: themeBundle() });
+    selectTargetAndPreflight([{ kind: "theme", id: "t", displayName: "zzz theme", status: "new" }]);
+    fireEvent.click(screen.getByText(/Import 1 selected/)); // pre-checked → start the run
+    postToWebview({
+      type: "executeProgress",
+      host: "paic.example",
+      realm: "alpha",
+      result: { kind: "theme", id: "t", displayName: "zzz theme", status: "created" },
+      done: 1,
+      total: 1,
+    });
+    expect(screen.getByText("Created")).toBeTruthy(); // row flipped before executeResult
+    expect(screen.getByText("Importing… 1/1")).toBeTruthy(); // running count in the summary slot
+    expect((screen.getByLabelText("Import zzz theme") as HTMLInputElement).disabled).toBe(true); // frozen
   });
 });

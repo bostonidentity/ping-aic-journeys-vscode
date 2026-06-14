@@ -18,6 +18,7 @@ import {
   toThemeWrite,
   toVariableWrite,
 } from "./write";
+import { putWithRetry } from "./write-retry";
 
 export type WriteStatus = "created" | "overwritten" | "skipped" | "failed";
 
@@ -63,13 +64,18 @@ async function writeOne(
   const base = { kind: component.kind, id: component.id, displayName: component.displayName };
   try {
     let outcome: WriteOutcome;
+    // Each write carries the G2 "Invalid attribute specified." strip-and-retry
+    // (a no-op for endpoints that never emit it; covers the AM-config socialIdp).
     switch (component.kind) {
       case "theme":
-        outcome = await client.writeTheme(realm, toThemeWrite(component.raw));
+        outcome = await putWithRetry(
+          (b) => client.writeTheme(realm, b),
+          toThemeWrite(component.raw),
+        );
         break;
       case "emailTemplate": {
         const { name, body } = toEmailWrite(component.raw);
-        outcome = await client.writeEmailTemplate(name, body);
+        outcome = await putWithRetry((b) => client.writeEmailTemplate(name, b), body);
         break;
       }
       case "socialIdp": {
@@ -78,21 +84,23 @@ async function writeOne(
           return { ...base, status: "skipped", message: "no client secret supplied" };
         }
         const { typeId, id, body } = toIdpWrite(component.raw, item.secret);
-        outcome = await client.writeSocialIdp(realm, typeId, id, body);
+        outcome = await putWithRetry((b) => client.writeSocialIdp(realm, typeId, id, b), body);
         break;
       }
       case "variable":
         // The variable's value is in the bundle (`valueBase64`) — written directly.
-        outcome = await client.writeEsvVariable(component.id, toVariableWrite(component.raw));
+        outcome = await putWithRetry(
+          (b) => client.writeEsvVariable(component.id, b),
+          toVariableWrite(component.raw),
+        );
         break;
       case "script":
         // Body is in the bundle (no secret prompt). Reconcile to the target's
         // own UUID when the name-match resolved one (TD-9) so a same-named/
         // different-UUID target is overwritten in place; fall back to the bundle
         // UUID only on a true create. Name is the cross-env identity.
-        outcome = await client.writeScript(
-          realm,
-          item.resolvedTargetId ?? component.id,
+        outcome = await putWithRetry(
+          (b) => client.writeScript(realm, item.resolvedTargetId ?? component.id, b),
           toScriptWrite(component.raw),
         );
         break;
@@ -101,8 +109,8 @@ async function writeOne(
           return { ...base, status: "skipped", message: "no value supplied" };
         }
         try {
-          outcome = await client.writeEsvSecret(
-            component.id,
+          outcome = await putWithRetry(
+            (b) => client.writeEsvSecret(component.id, b),
             toSecretWrite(component.raw, item.secret),
           );
         } catch (err) {
@@ -143,10 +151,15 @@ export async function runExecute(
   client: ExecuteClient,
   realm: string,
   items: readonly WritePlanItem[],
+  /** Invoked after each item's write lands (in order) — drives determinate
+   * progress + live row updates (PD-16). */
+  onResult?: (r: WriteResult) => void,
 ): Promise<WriteResult[]> {
   const results: WriteResult[] = [];
   for (const item of items) {
-    results.push(await writeOne(client, realm, item));
+    const r = await writeOne(client, realm, item);
+    onResult?.(r);
+    results.push(r);
   }
   return results;
 }

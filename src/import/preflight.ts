@@ -6,6 +6,7 @@
  */
 
 import type { PaicClient } from "../paic/client";
+import { PaicError } from "../paic/errors";
 import { type ComponentVerdict, classifyCompare } from "./compare";
 import { compatFor } from "./compat";
 import { type DiscoveredRef, discoverJourneyRefs } from "./discover";
@@ -25,6 +26,7 @@ export type PreflightClient = Pick<
   | "listSecrets"
   | "getNodeTypes"
   | "listTrees"
+  | "getRawJourney"
 >;
 
 /** Existence verdict for a discovered (info-only) dependency ref — TD-9. The
@@ -111,7 +113,15 @@ async function fetchTarget(
       return { raw: r && r.kind === comp.kind ? asRecord(r.raw) : null };
     }
     case "journey":
-      return { raw: null }; // journeys aren't compared in B2
+      // Existence-only (PD-5): the tree's presence on the target decides
+      // Create vs Overwrite/Keep. `getRawJourney` throws on 404, so catch it →
+      // null (= "new"); any other error propagates to `verdictFor`'s catch.
+      try {
+        return { raw: asRecord(await client.getRawJourney(realm, comp.id)) };
+      } catch (err) {
+        if (err instanceof PaicError && err.status === 404) return { raw: null };
+        throw err;
+      }
   }
 }
 

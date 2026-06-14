@@ -7,6 +7,8 @@ import type {
   ConnectionInfo,
   E2W,
   EntityKind,
+  JourneyAction,
+  JourneyUnitPlan,
   ParsedBundle,
   RequiredDepVerdict,
   TransferPayload,
@@ -29,6 +31,42 @@ function importButtonLabel(
   if (running) return "Importing…";
   if (selectedN === 0) return "Nothing selected";
   return `Import ${selectedN} selected · ${createN} create · ${overwriteN} overwrite`;
+}
+
+function journeyButtonLabel(
+  running: boolean,
+  createN: number,
+  overwriteN: number,
+  keepN: number,
+): string {
+  if (running) return "Importing…";
+  return `Import journey — ${createN} create · ${overwriteN} overwrite · ${keepN} keep`;
+}
+
+/** One-line plan summary above the table (S9a) — omits zero buckets. */
+function planSummaryLine(c: {
+  create: number;
+  overwrite: number;
+  keep: number;
+  unchanged: number;
+  blocked: number;
+}): string {
+  const parts: string[] = [];
+  if (c.create) parts.push(`${c.create} create`);
+  if (c.overwrite) parts.push(`${c.overwrite} overwrite`);
+  if (c.keep) parts.push(`${c.keep} keep`);
+  if (c.unchanged) parts.push(`${c.unchanged} unchanged`);
+  if (c.blocked) parts.push(`${c.blocked} blocked`);
+  return parts.length > 0 ? `Plan: ${parts.join(" · ")}` : "Plan: nothing to import";
+}
+
+/** The Create/Overwrite/Keep action a journey unit will take, given the user's
+ * checkbox selection: a New unit is Create; an existing subject is Overwrite; an
+ * existing inner is Overwrite when its row is checked, else Keep (the default). */
+function journeyActionFor(p: JourneyUnitPlan, selectedKeys: ReadonlySet<string>): JourneyAction {
+  if (p.verdict === "new") return "create";
+  if (p.role === "subject") return "overwrite";
+  return selectedKeys.has(`journey:${p.id}`) ? "overwrite" : "keep";
 }
 
 interface VsCodeApi {
@@ -58,15 +96,19 @@ type PreflightState =
   | {
       status: "ok";
       verdicts: readonly ComponentVerdict[];
-      /** Discovered info-only dependency refs (libs + ESVs) — TD-9. */
+      /** Discovered info-only dependency refs (libs + ESVs, TD-9) + blocking
+       * journey gates (node types / must-exist inner journeys, PD-7). */
       requires: readonly RequiredDepVerdict[];
+      /** Per-unit Create/Overwrite/Keep decisions (S5); empty for a leaf bundle. */
+      journeyPlans: readonly JourneyUnitPlan[];
     }
   | { status: "err"; message: string };
 
 /** Write (execute) state. */
 type ExecuteState =
   | { status: "idle" }
-  | { status: "running" }
+  // PD-16: `running` accumulates per-item results as they land (live rows).
+  | { status: "running"; results: readonly WriteResult[]; done: number; total: number }
   | { status: "done"; results: readonly WriteResult[]; summary?: string };
 
 /** ESV apply state — independent of `execute`, host-scoped (survives a realm
@@ -113,6 +155,16 @@ export function App({ vscode, payload }: Props) {
       return next;
     });
   }, []);
+  // Re-plan: recompute the plan against the (now-changed) target — drops the
+  // result log + re-runs pre-flight (G4 partial-failure recovery + PD-11 drift).
+  const replan = useCallback(
+    (host: string, realm: string) => {
+      setExecute({ status: "idle" });
+      setPreflight({ status: "running" });
+      vscode.postMessage({ type: "runPreflight", host, realm });
+    },
+    [vscode],
+  );
 
   // Announce readiness on mount (the panel re-hydrates the bundle on this).
   useEffect(() => {
@@ -137,13 +189,37 @@ export function App({ vscode, payload }: Props) {
         setRealmsByHost((prev) => ({ ...prev, [m.host]: { status: "err", message: m.message } }));
       } else if (m.type === "preflightResult") {
         if (m.host !== selectedHost || m.realm !== selectedRealm) return; // stale
-        setPreflight({ status: "ok", verdicts: m.verdicts, requires: m.requires });
-        // TD-10: selection is opt-in — nothing checked by default. The user
-        // accepts suggested actions row by row (or via the select-all header).
-        setSelectedKeys(new Set());
+        setPreflight({
+          status: "ok",
+          verdicts: m.verdicts,
+          requires: m.requires,
+          journeyPlans: m.journeyPlans,
+        });
+        // Smart-default selection (S9a, refines TD-10): pre-select the
+        // recommended action (New→Create, Differs→Overwrite) for the writable
+        // leaf rows of BOTH leaf and journey bundles — one consistent model;
+        // the user can deselect any row. (Inner journeys default to Keep =
+        // unchecked, decided separately.)
+        const leafKeys = m.verdicts
+          .filter((v) => v.kind !== "journey" && (v.status === "new" || v.status === "differs"))
+          .map((v) => `${v.kind}:${v.id}`);
+        setSelectedKeys(new Set(leafKeys));
       } else if (m.type === "preflightError") {
         if (m.host !== selectedHost || m.realm !== selectedRealm) return; // stale
         setPreflight({ status: "err", message: m.message });
+      } else if (m.type === "executeProgress") {
+        if (m.host !== selectedHost || m.realm !== selectedRealm) return; // stale
+        // PD-16: append the just-landed result so its row flips live.
+        setExecute((prev) =>
+          prev.status === "running"
+            ? {
+                status: "running",
+                results: [...prev.results, m.result],
+                done: m.done,
+                total: m.total,
+              }
+            : prev,
+        );
       } else if (m.type === "executeResult") {
         if (m.host !== selectedHost || m.realm !== selectedRealm) return; // stale
         setExecute({ status: "done", results: m.results, summary: m.summary });
@@ -164,11 +240,16 @@ export function App({ vscode, payload }: Props) {
           elapsedS: m.elapsedS,
           message: m.message,
         });
+      } else if (m.type === "driftDetected") {
+        if (m.host !== selectedHost || m.realm !== selectedRealm) return; // stale
+        // PD-11: the target changed since the previewed plan — re-plan. The
+        // fresh verdicts replace the stale ones automatically.
+        replan(m.host, m.realm);
       }
     }
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
-  }, [selectedHost, selectedRealm]);
+  }, [selectedHost, selectedRealm, vscode, replan]);
 
   // An apply belongs to a connection — reset it only when the connection
   // changes (NOT on a realm change, unlike the execute log). `selectedHost` is
@@ -188,19 +269,18 @@ export function App({ vscode, payload }: Props) {
     });
   }, [selectedHost, vscode]);
 
-  // Run the read-only pre-flight once a leaf bundle + target are both set.
-  // Re-runs when the bundle or target changes.
-  const isJourney = loaded?.bundle.kind === "journey";
+  // Run the read-only pre-flight once a bundle + target are both set (journeys
+  // included — Batch 3). Re-runs when the bundle or target changes.
   useEffect(() => {
     setExecute({ status: "idle" }); // a new target/bundle invalidates any prior write log
     setSelectedKeys(new Set()); // drop stale selection; re-seeded when the new preflight lands
-    if (!loaded || isJourney || selectedHost === null || selectedRealm === null) {
+    if (!loaded || selectedHost === null || selectedRealm === null) {
       setPreflight({ status: "idle" });
       return;
     }
     setPreflight({ status: "running" });
     vscode.postMessage({ type: "runPreflight", host: selectedHost, realm: selectedRealm });
-  }, [loaded, isJourney, selectedHost, selectedRealm, vscode]);
+  }, [loaded, selectedHost, selectedRealm, vscode]);
 
   const onChoose = () => vscode.postMessage({ type: "pickBundle" });
   const onConnectionChange = (host: string) => {
@@ -210,18 +290,30 @@ export function App({ vscode, payload }: Props) {
   const onRealmChange = (realm: string) => setSelectedRealm(realm === "" ? null : realm);
   const onExecute = () => {
     if (selectedHost === null || selectedRealm === null) return;
-    setExecute({ status: "running" });
+    // Journey decisions: an exists-inner is Overwrite when checked, else Keep.
+    // New inners (forced Create) + subjects use the engine's default action.
+    const journeyPlans = preflight.status === "ok" ? preflight.journeyPlans : [];
+    const journeyActions: Record<string, JourneyAction> = {};
+    for (const p of journeyPlans) {
+      if (p.role === "subject" || p.verdict === "new") continue;
+      journeyActions[p.id] = selectedKeys.has(`journey:${p.id}`) ? "overwrite" : "keep";
+    }
+    setExecute({ status: "running", results: [], done: 0, total: 0 });
     vscode.postMessage({
       type: "execute",
       host: selectedHost,
       realm: selectedRealm,
       selected: [...selectedKeys],
+      ...(Object.keys(journeyActions).length > 0 ? { journeyActions } : {}),
     });
   };
   const onApplyEsv = () => {
     if (selectedHost === null) return;
     setApply({ status: "running", host: selectedHost, restartStatus: "restarting", elapsedS: 0 });
     vscode.postMessage({ type: "applyEsv", host: selectedHost });
+  };
+  const onReplan = () => {
+    if (selectedHost !== null && selectedRealm !== null) replan(selectedHost, selectedRealm);
   };
 
   return (
@@ -240,12 +332,7 @@ export function App({ vscode, payload }: Props) {
       {error ? <div className="transfer-error">{error}</div> : null}
       {loaded ? <SourcePreview bundle={loaded.bundle} /> : null}
       {!loaded && !error ? <p className="transfer-hint">No bundle loaded yet.</p> : null}
-      {loaded && isJourney ? (
-        <p className="transfer-note">
-          Journey import — target selection &amp; compare arrive in a later batch.
-        </p>
-      ) : null}
-      {loaded && !isJourney ? (
+      {loaded ? (
         <TargetSection
           connections={payload.connections}
           selectedHost={selectedHost}
@@ -255,7 +342,7 @@ export function App({ vscode, payload }: Props) {
           onRealmChange={onRealmChange}
         />
       ) : null}
-      {loaded && !isJourney && selectedHost !== null && selectedRealm !== null ? (
+      {loaded && selectedHost !== null && selectedRealm !== null ? (
         <PlanSection
           preflight={preflight}
           bundleKind={loaded.bundle.kind}
@@ -269,6 +356,8 @@ export function App({ vscode, payload }: Props) {
           onToggle={toggleKey}
           onToggleAll={toggleAll}
           onReview={(msg) => vscode.postMessage(msg)}
+          onDownloadReport={() => vscode.postMessage({ type: "downloadReport" })}
+          onReplan={onReplan}
         />
       ) : null}
     </main>
@@ -365,6 +454,8 @@ function PlanSection({
   onToggle,
   onToggleAll,
   onReview,
+  onDownloadReport,
+  onReplan,
 }: {
   preflight: PreflightState;
   bundleKind: BundleKind;
@@ -378,22 +469,62 @@ function PlanSection({
   onToggle: (key: string) => void;
   onToggleAll: (keys: string[], selectAll: boolean) => void;
   onReview: (msg: W2E) => void;
+  onDownloadReport: () => void;
+  onReplan: () => void;
 }) {
   const isWritable = WRITABLE_KINDS.has(bundleKind);
   const verdicts = preflight.status === "ok" ? preflight.verdicts : [];
   const requires = preflight.status === "ok" ? preflight.requires : [];
-  const hasAnyWritable = verdicts.some(isWritableVerdict);
-  const results = execute.status === "done" ? execute.results : undefined;
+  const journeyPlans = preflight.status === "ok" ? preflight.journeyPlans : [];
+  const isLeafBundle = journeyPlans.length === 0;
+  const running = execute.status === "running";
+  // Per-row outcomes drive the Status column live (running) + final (done).
+  const results =
+    execute.status === "running" || execute.status === "done" ? execute.results : undefined;
   // TD-10: once an import completes the table locks read-only (the result
   // report) until re-armed by a fresh pre-flight (re-select target / new bundle).
   const locked = execute.status === "done";
-  // Button counts come from the SELECTED actionable verdicts (TD-10 — selection
-  // is opt-in, default none). Live preview of the confirm-modal summary.
-  const selected = verdicts.filter((v) => isWritableVerdict(v) && selectedKeys.has(verdictKey(v)));
-  const createN = selected.filter((v) => v.status === "new").length;
-  const overwriteN = selected.filter((v) => v.status === "differs").length;
-  const selectedN = selected.length;
-  const allActionableKeys = verdicts.filter(isWritableVerdict).map(verdictKey);
+  // Checkboxes are frozen DURING a write as well as after (PD-16 live rows).
+  const frozen = locked || running;
+  // Leaf checkboxes only (journey rows are decided via the journey path). Counts
+  // are a live preview of the confirm-modal summary.
+  const leafVerdicts = verdicts.filter((v) => v.kind !== "journey");
+  const selectedLeaves = leafVerdicts.filter(
+    (v) => isWritableVerdict(v) && selectedKeys.has(verdictKey(v)),
+  );
+  const allActionableKeys = leafVerdicts.filter(isWritableVerdict).map(verdictKey);
+  const hasAnyWritable = leafVerdicts.some(isWritableVerdict);
+  // Journey action counts (subject always written; new inner = Create; exists
+  // inner = Overwrite when checked, else Keep).
+  let jCreate = 0;
+  let jOverwrite = 0;
+  let jKeep = 0;
+  for (const p of journeyPlans) {
+    const a = journeyActionFor(p, selectedKeys);
+    if (a === "create") jCreate += 1;
+    else if (a === "overwrite") jOverwrite += 1;
+    else jKeep += 1;
+  }
+  const createN = selectedLeaves.filter((v) => v.status === "new").length + jCreate;
+  const overwriteN = selectedLeaves.filter((v) => v.status === "differs").length + jOverwrite;
+  // A blocking prerequisite (node type / must-exist inner) missing on the target
+  // hard-disables Import (PD-7).
+  const blockingMissing = requires.filter(
+    (d) => d.severity === "blocking" && d.status === "missing",
+  );
+  // Count-summary buckets (S9a): facts, not selection-driven.
+  const unchanged = leafVerdicts.filter(
+    (v) => v.status === "identical" || v.status === "exists",
+  ).length;
+  const blocked =
+    leafVerdicts.filter((v) => rowStateOf(v) === "blocked").length + blockingMissing.length;
+  // A journey always writes its subject → no leaf selection required; a leaf
+  // bundle needs ≥1 checked row.
+  const hasWork = isLeafBundle ? selectedLeaves.length > 0 : true;
+  const showImport =
+    preflight.status === "ok" && isWritable && !locked && (hasAnyWritable || !isLeafBundle);
+  const importDisabled = execute.status === "running" || blockingMissing.length > 0 || !hasWork;
+  const subjects = journeyPlans.filter((p) => p.role === "subject");
   // After an ESV import, offer the separate tenant-wide apply (restart).
   const wroteEsv =
     execute.status === "done" &&
@@ -401,6 +532,27 @@ function PlanSection({
   return (
     <section>
       <div className="transfer-section-title">Plan</div>
+      {subjects.map((s) => (
+        <p key={s.id} className="transfer-subject">
+          Import journey: <strong>{s.displayName}</strong> → {host} / {realm} (
+          {s.verdict === "new" ? "new → Create" : "⚠ exists → Overwrite"})
+        </p>
+      ))}
+      {preflight.status === "ok" ? (
+        <p className="transfer-plan-summary">
+          {execute.status === "running"
+            ? `Importing… ${execute.done}/${execute.total}`
+            : execute.status === "done" && execute.summary
+              ? execute.summary
+              : planSummaryLine({
+                  create: createN,
+                  overwrite: overwriteN,
+                  keep: jKeep,
+                  unchanged,
+                  blocked,
+                })}
+        </p>
+      ) : null}
       {preflight.status === "running" ? <p className="transfer-hint">Checking target…</p> : null}
       {preflight.status === "err" ? (
         <div className="transfer-error">{preflight.message}</div>
@@ -409,9 +561,10 @@ function PlanSection({
         <PlanTable
           verdicts={verdicts}
           requires={requires}
+          journeyPlans={journeyPlans}
           results={results}
           selectedKeys={selectedKeys}
-          locked={locked}
+          locked={frozen}
           host={host}
           realm={realm}
           onToggle={onToggle}
@@ -422,20 +575,39 @@ function PlanSection({
       {preflight.status === "ok" && !isWritable ? (
         <p className="transfer-note">Import for {bundleKind} arrives in a later batch.</p>
       ) : null}
-      {locked ? (
-        <p className="transfer-hint">
-          Import complete — this plan is now read-only. Re-select the target or choose another
-          bundle to run again.
+      {blockingMissing.length > 0 && !locked ? (
+        <p className="transfer-v-bad">
+          ⛔ {blockingMissing.length} required prerequisite(s) missing on the target:{" "}
+          {blockingMissing.map((d) => d.name).join(", ")} — resolve before importing.
         </p>
       ) : null}
-      {preflight.status === "ok" && isWritable && hasAnyWritable && !locked ? (
+      {locked ? (
+        <p className="transfer-hint">
+          Import complete — this plan is now read-only. Re-plan to recompute against the target:
+          succeeded items show as Identical; any failures reappear ready to retry.
+        </p>
+      ) : null}
+      {locked ? (
         <div className="transfer-actions">
-          <button
-            type="button"
-            onClick={onExecute}
-            disabled={execute.status === "running" || selectedN === 0}
-          >
-            {importButtonLabel(execute.status === "running", selectedN, createN, overwriteN)}
+          <button type="button" onClick={onReplan}>
+            Re-plan
+          </button>
+          <button type="button" onClick={onDownloadReport}>
+            Download report
+          </button>
+        </div>
+      ) : null}
+      {showImport ? (
+        <div className="transfer-actions">
+          <button type="button" onClick={onExecute} disabled={importDisabled}>
+            {isLeafBundle
+              ? importButtonLabel(
+                  execute.status === "running",
+                  selectedLeaves.length,
+                  createN,
+                  overwriteN,
+                )
+              : journeyButtonLabel(execute.status === "running", createN, overwriteN, jKeep)}
           </button>
         </div>
       ) : null}
@@ -460,7 +632,9 @@ function PlanSection({
 
 // No Action column. A single Status column tells the whole story across three
 // phases: before (comparison) → selected (checked, pre-import) → after (result).
-type RowState = "writable" | "noop" | "blocked";
+// "forced" = a checkbox shown checked + disabled (a required new inner journey —
+// the subject needs it, so it's always Created).
+type RowState = "writable" | "noop" | "blocked" | "forced";
 
 function rowStateOf(v: ComponentVerdict): RowState {
   if (v.status === "new" || v.status === "differs") return "writable";
@@ -634,27 +808,76 @@ function collisionNote(v: ComponentVerdict): string | undefined {
     : undefined;
 }
 
+/** A row for one INNER journey unit (subjects are the header, not rows). New →
+ * forced Create; exists → a checkbox that toggles Overwrite (checked) / Keep
+ * (unchecked, the default). Three-phase Status mirrors the leaf rows. */
+function journeyRowData(p: JourneyUnitPlan, checked: boolean, result?: WriteResult): PlanRowData {
+  const { icon } = kindMeta("journey");
+  const isNew = p.verdict === "new";
+  const status = result
+    ? afterStatus(result)
+    : isNew
+      ? { text: "Create", cls: "transfer-v-ok" }
+      : checked
+        ? { text: "Overwrite", cls: "transfer-v-diff" }
+        : { text: "Keep", cls: "transfer-v-muted" };
+  return {
+    key: `journey:${p.id}`,
+    selectKey: isNew ? null : `journey:${p.id}`, // new inner is forced; exists toggles
+    rowState: isNew ? "forced" : "writable",
+    icon,
+    typeWord: "Inner journey",
+    statusText: status.text,
+    statusCls: status.cls,
+    name: p.displayName,
+  };
+}
+
+const DEP_META: Record<RequiredDepVerdict["kind"], { icon: string; word: string }> = {
+  script: { icon: kindMeta("script").icon, word: "Library" },
+  esv: { icon: kindMeta("variable").icon, word: "ESV" },
+  nodeType: { icon: kindMeta("journey").icon, word: "Node type" },
+  innerJourney: { icon: kindMeta("journey").icon, word: "Inner journey" },
+};
+
+/** A one-line reason for a dependency/gate row (S9a): present → the existing
+ * detail note; missing → why it's here + what to do. */
+function depReason(d: RequiredDepVerdict): string | undefined {
+  if (d.status === "present") return d.detail ? `(${d.detail})` : undefined;
+  switch (d.kind) {
+    case "nodeType":
+      return "not installed on the target — install before importing";
+    case "innerJourney":
+      return "not on the target and not in this bundle — import it first";
+    default: // library script / ESV — advisory
+      return "referenced by a bundled script; add it or imports may fail at runtime";
+  }
+}
+
 function depRowData(d: RequiredDepVerdict): PlanRowData {
-  // A library ref shows the Script icon/word; an ESV ref the variable icon.
-  const meta = d.kind === "script" ? kindMeta("script") : kindMeta("variable");
-  const typeWord = d.kind === "script" ? "Library" : "ESV";
+  const meta = DEP_META[d.kind];
   const present = d.status === "present";
+  // A missing BLOCKING prerequisite (node type / must-exist inner) hard-disables
+  // Import (PD-7) → ⛔; advisory misses (lib/ESV) only warn → ⚠.
+  const blocking = d.severity === "blocking";
+  const missingText = blocking ? "Missing ⛔" : "Missing ⚠";
   return {
     key: `dep:${d.kind}:${d.name}`,
     selectKey: null, // info-only — never importable
     rowState: "info",
     icon: meta.icon,
-    typeWord,
-    statusText: present ? "Present" : "Missing",
+    typeWord: meta.word,
+    statusText: present ? "Present" : missingText,
     statusCls: present ? "transfer-v-muted" : "transfer-v-bad",
     name: d.name,
-    nameNote: present && d.detail ? `(${d.detail})` : undefined,
+    nameNote: depReason(d),
   };
 }
 
 function PlanTable({
   verdicts,
   requires,
+  journeyPlans,
   results,
   selectedKeys,
   locked,
@@ -666,6 +889,7 @@ function PlanTable({
 }: {
   verdicts: readonly ComponentVerdict[];
   requires: readonly RequiredDepVerdict[];
+  journeyPlans: readonly JourneyUnitPlan[];
   /** Per-row write outcomes after a run (drives Phase-3 Status + lock). */
   results?: readonly WriteResult[];
   selectedKeys: ReadonlySet<string>;
@@ -678,10 +902,16 @@ function PlanTable({
   onReview: (msg: W2E) => void;
 }) {
   const resultByKey = new Map((results ?? []).map((r) => [`${r.kind}:${r.id}`, r]));
-  // Writable + no-op + blocked components first (type-sorted), then the
-  // info-only dependency rows (TD-9) — all in one aligned grid.
+  // Inner-journey rows (subjects are the header) first, then leaf components
+  // (journey verdicts excluded — they're decided via journeyPlans), then the
+  // info-only dependency / gate rows — all in one aligned grid.
   const rows: PlanRowData[] = [
-    ...sortByKindThenName(verdicts).map((v) =>
+    ...journeyPlans
+      .filter((p) => p.role === "inner")
+      .map((p) =>
+        journeyRowData(p, selectedKeys.has(`journey:${p.id}`), resultByKey.get(`journey:${p.id}`)),
+      ),
+    ...sortByKindThenName(verdicts.filter((v) => v.kind !== "journey")).map((v) =>
       verdictRowData(
         v,
         selectedKeys.has(verdictKey(v)),
@@ -692,8 +922,9 @@ function PlanTable({
     ),
     ...requires.map(depRowData),
   ];
-  // Tri-state select-all over the actionable (writable) rows only.
-  const actionable = rows.filter((r) => r.rowState === "writable");
+  // Tri-state select-all over actionable LEAF rows only — the import checkboxes.
+  // Inner-journey Overwrite/Keep is a deliberate per-row choice, not bulk-toggled.
+  const actionable = rows.filter((r) => r.rowState === "writable" && !r.key.startsWith("journey:"));
   const checkedCount = actionable.filter((r) => selectedKeys.has(r.selectKey ?? "")).length;
   const allChecked = actionable.length > 0 && checkedCount === actionable.length;
   const someChecked = checkedCount > 0 && !allChecked;
@@ -785,17 +1016,20 @@ function PlanRow({
 }) {
   const muted = row.rowState === "noop" || row.rowState === "info";
   const writable = row.rowState === "writable";
+  // A "forced" row (a required new inner journey) is shown checked + disabled.
+  const forced = row.rowState === "forced";
   let rowCls = "transfer-plan-row";
   if (muted) rowCls += " is-noop";
   else if (row.rowState === "blocked") rowCls += " is-blocked";
   return (
     <div className={rowCls}>
       <span className="plan-check">
-        {/* Uniform column (TD-10): every non-actionable row shows a disabled,
-            unchecked box; only New/Differs rows are live. */}
+        {/* Uniform column (TD-10): every non-actionable row shows a disabled
+            box; only New/Differs (and exists-inner) rows are live. A forced row
+            shows checked+disabled. */}
         <input
           type="checkbox"
-          checked={writable ? checked : false}
+          checked={writable ? checked : forced}
           disabled={!writable || locked}
           aria-label={`Import ${row.name}`}
           onChange={() => row.selectKey && onToggle(row.selectKey)}

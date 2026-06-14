@@ -62,6 +62,14 @@ describe("classifyCompare", () => {
       expect(classifyCompare(k, { a: 1 }, { a: 2 })).toBe("exists");
     }
   });
+
+  it("journey is existence-only: new when absent, exists when present (never value-diffed)", () => {
+    expect(classifyCompare("journey", { tree: { entryNodeId: "a" } }, null)).toBe("new");
+    // present target with a totally different tree → still just "exists" (PD-5).
+    expect(
+      classifyCompare("journey", { tree: { entryNodeId: "a" } }, { tree: { entryNodeId: "z" } }),
+    ).toBe("exists");
+  });
 });
 
 describe("classifyCompare — scripts", () => {

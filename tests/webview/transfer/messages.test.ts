@@ -10,6 +10,7 @@ describe("transfer message guards", () => {
       { type: "runPreflight", host: "h", realm: "r" },
       { type: "execute", host: "h", realm: "r", selected: ["theme:t"] },
       { type: "applyEsv", host: "h" },
+      { type: "downloadReport" },
       { type: "openDiff", host: "h", realm: "r", bundleKey: "script:s", targetScriptId: "u" },
       {
         type: "openFindUsages",
@@ -23,11 +24,22 @@ describe("transfer message guards", () => {
     }
   });
 
-  it("isE2W accepts applyProgress + applyResult", () => {
+  it("isE2W accepts applyProgress + applyResult + driftDetected", () => {
     expect(isE2W({ type: "applyProgress", host: "h", status: "restarting", elapsedS: 1 })).toBe(
       true,
     );
     expect(isE2W({ type: "applyResult", host: "h", ok: true, elapsedS: 1 })).toBe(true);
+    expect(isE2W({ type: "driftDetected", host: "h", realm: "r", drifted: [] })).toBe(true);
+    expect(
+      isE2W({
+        type: "executeProgress",
+        host: "h",
+        realm: "r",
+        result: { kind: "theme", id: "t", displayName: "t", status: "created" },
+        done: 1,
+        total: 2,
+      }),
+    ).toBe(true);
   });
 
   it("rejects unknown / malformed messages", () => {

@@ -3,12 +3,23 @@ import * as vscode from "vscode";
 import { runEsvApply } from "../../import/apply";
 import type { ComponentVerdict } from "../../import/compare";
 import { canonScriptBody } from "../../import/compare";
+import { buildImportConfirmDetail } from "../../import/confirm";
 import { discoverScriptDeps } from "../../import/discover";
 import { runExecute, type WritePlanItem, type WriteResult } from "../../import/execute";
+import { diffSnapshots, snapshotState } from "../../import/freeze";
+import { assembleJourneyImport } from "../../import/journey-assemble";
+import { runJourneyExecute } from "../../import/journey-execute";
+import { type JourneyAction, planJourneyUnits } from "../../import/journey-plan";
 import { WRITABLE_KINDS } from "../../import/kinds";
 import type { ImportComponent } from "../../import/parse";
 import { parseBundle } from "../../import/parse";
-import { discoverDeps, missingDepsNote, runPreflight } from "../../import/preflight";
+import {
+  checkJourneyGates,
+  discoverDeps,
+  missingDepsNote,
+  runPreflight,
+} from "../../import/preflight";
+import { buildImportReport, type ImportReport } from "../../import/report";
 import { idpNeedsSecret } from "../../import/write";
 import type { PaicBundleContentProvider } from "../../providers/bundle-content-provider";
 import { makeScriptUri } from "../../providers/script-fs-provider";
@@ -116,6 +127,17 @@ export class TransferTab implements vscode.Disposable {
     rawComponents: ImportComponent[];
   } | null = null;
 
+  /** PD-11 freeze baseline: the target snapshot captured at the last successful
+   * pre-flight. `executeJourneyImport` re-reads at commit and refuses to write if
+   * the target drifted. Reset when a new bundle loads (a stale baseline). */
+  private preview: { host: string; realm: string; snapshot: ReadonlyMap<string, string> } | null =
+    null;
+
+  /** PD-17: the last completed run's report, built at execute time so the
+   * "Download report" download reflects that run (not a later re-preview).
+   * Reset when a new bundle loads. */
+  private lastReport: ImportReport | null = null;
+
   constructor(
     private readonly deps: TransferTabDeps,
     payload: TransferPayload,
@@ -181,11 +203,15 @@ export class TransferTab implements vscode.Disposable {
       return;
     }
     if (raw.type === "execute") {
-      await this.handleExecute(raw.host, raw.realm, raw.selected);
+      await this.handleExecute(raw.host, raw.realm, raw.selected, raw.journeyActions);
       return;
     }
     if (raw.type === "applyEsv") {
       await this.handleApplyEsv(raw.host);
+      return;
+    }
+    if (raw.type === "downloadReport") {
+      await this.handleDownloadReport();
       return;
     }
     if (raw.type === "openDiff") {
@@ -268,8 +294,22 @@ export class TransferTab implements vscode.Disposable {
       // TD-9: discover the script's direct dep refs (bundle-only, pure) and
       // existence-check them on the target — info-only "Requires" rows.
       const refs = discoverScriptDeps(this.loaded.rawComponents);
-      const requires = await discoverDeps(client, realm, refs);
-      this.post({ type: "preflightResult", host, realm, verdicts, requires });
+      // PD-7: blocking journey gates (node types / must-exist inner journeys) —
+      // empty for a leaf bundle. Merged into `requires` (advisory + blocking).
+      const [advisory, gates] = await Promise.all([
+        discoverDeps(client, realm, refs),
+        checkJourneyGates(client, realm, this.loaded.rawComponents),
+      ]);
+      const requires = [...advisory, ...gates];
+      // S5: per-unit Create/Overwrite/Keep decisions (empty for a leaf bundle).
+      const verdictById = new Map<string, "new" | "exists">();
+      for (const v of verdicts) {
+        if (v.kind === "journey") verdictById.set(v.id, v.status === "new" ? "new" : "exists");
+      }
+      const journeyPlans = planJourneyUnits(this.loaded.rawComponents, verdictById);
+      // PD-11: freeze the target snapshot for the commit-time drift check.
+      this.preview = { host, realm, snapshot: snapshotState(verdicts, gates) };
+      this.post({ type: "preflightResult", host, realm, verdicts, requires, journeyPlans });
       this.childLog.info(
         {
           event: "tab.runPreflight",
@@ -277,6 +317,7 @@ export class TransferTab implements vscode.Disposable {
           realm,
           verdict_count: verdicts.length,
           requires_count: requires.length,
+          journey_plans: journeyPlans.length,
         },
         "Ran import pre-flight",
       );
@@ -293,13 +334,28 @@ export class TransferTab implements vscode.Disposable {
   /** Execute the import (D43) — the ONLY method that mutates a tenant.
    * Re-validates fresh, confirms, collects idp secrets, writes sequentially,
    * reports per-component, then refreshes the Plan. */
-  private async handleExecute(host: string, realm: string, selected: string[]): Promise<void> {
+  private async handleExecute(
+    host: string,
+    realm: string,
+    selected: string[],
+    journeyActions?: Record<string, JourneyAction>,
+  ): Promise<void> {
     if (!this.loaded) return;
+    // Journey bundles take the dependency-ordered path (freeze + drift + ordered
+    // node/tree writes); leaf bundles keep the original flat-write path.
+    if (this.loaded.bundle.kind === "journey") {
+      return this.executeJourneyImport(host, realm, selected, journeyActions);
+    }
     const targetKind = this.deps.connectionKindOf(host) ?? "paic";
     try {
       const client = await this.deps.cache.get(host);
       // Validate-before-first-write: a FRESH pre-flight, not the shown Plan.
-      const verdicts = await runPreflight(client, realm, targetKind, this.loaded.rawComponents);
+      const [verdicts, gates] = await Promise.all([
+        runPreflight(client, realm, targetKind, this.loaded.rawComponents),
+        checkJourneyGates(client, realm, this.loaded.rawComponents), // [] for a leaf bundle
+      ]);
+      // PD-11 freeze-the-plan parity (S10b): refuse on drift since preview, like journeys.
+      if (this.driftStops(host, realm, snapshotState(verdicts, gates))) return;
       const rawByKey = new Map(this.loaded.rawComponents.map((c) => [`${c.kind}:${c.id}`, c]));
       const selectedSet = new Set(selected); // TD-8: honor per-row checkbox selection
 
@@ -351,12 +407,15 @@ export class TransferTab implements vscode.Disposable {
       const hasEsv = items.some(
         (i) => i.component.kind === "variable" || i.component.kind === "secret",
       );
-      const detail =
-        `Import to ${host} / realm ${realm} — create ${createN}, overwrite ${overwriteN}. ` +
-        "Overwrite replaces the target's current version entirely; this cannot be undone." +
-        (errorN > 0 ? ` ${errorN} component(s) couldn't be checked and will be skipped.` : "") +
-        (hasEsv ? " ESV changes require a separate Apply step before they take effect." : "") +
-        missingNote;
+      const detail = buildImportConfirmDetail({
+        host,
+        realm,
+        create: createN,
+        overwrite: overwriteN,
+        errorN,
+        hasEsv,
+        missingNote,
+      });
       const ok = await confirm("Write these components to the tenant?", detail, "Import");
       if (!ok) {
         this.post({ type: "executeResult", host, realm, results: [], summary: "Cancelled." });
@@ -364,33 +423,29 @@ export class TransferTab implements vscode.Disposable {
       }
 
       // Collect re-supplied secrets AFTER the confirm. A cancelled box → that
-      // component is skipped by runExecute (never a blank write).
-      for (const item of items) {
-        if (item.component.kind === "socialIdp" && idpNeedsSecret(item.component.raw)) {
-          item.secret = await vscode.window.showInputBox({
-            password: true,
-            ignoreFocusOut: true,
-            title: "Re-supply social-IdP client secret",
-            prompt: `clientSecret for "${item.component.displayName}" (redacted in the bundle)`,
-          });
-        } else if (item.component.kind === "secret") {
-          item.secret = await vscode.window.showInputBox({
-            password: true,
-            ignoreFocusOut: true,
-            title: "Supply ESV secret value",
-            prompt: `Value for ESV secret "${item.component.displayName}" (not in the bundle)`,
-          });
-        }
-      }
+      // component is skipped by the executor (never a blank write).
+      await this.collectSecrets(items);
 
       this.childLog.info(
         { event: "tab.execute.start", host, realm, create: createN, overwrite: overwriteN },
         "Importing components",
       );
+      const total = items.length;
+      let done = 0;
+      const startedAt = new Date().toISOString();
       const results = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "Importing components…" },
-        () => runExecute(client, realm, items),
+        (progress) =>
+          runExecute(client, realm, items, (r) => {
+            done += 1;
+            progress.report({
+              increment: 100 / total,
+              message: `${r.kind} ${r.displayName} (${done}/${total})`,
+            });
+            this.post({ type: "executeProgress", host, realm, result: r, done, total });
+          }),
       );
+      this.captureReport(host, realm, startedAt, results);
       const count = (s: WriteResult["status"]) => results.filter((r) => r.status === s).length;
       const summary = `${count("created")} created · ${count("overwritten")} overwritten · ${count("skipped")} skipped · ${count("failed")} failed`;
       this.post({ type: "executeResult", host, realm, results, summary });
@@ -415,6 +470,223 @@ export class TransferTab implements vscode.Disposable {
         results: [],
         summary: `Import failed: ${message}`,
       });
+    }
+  }
+
+  /** Prompt for each write item's re-supplied secret (idp clientSecret / ESV
+   * secret value) AFTER the confirm. A cancelled box leaves `secret` unset → the
+   * executor skips that component (never a blank write). Shared by both paths. */
+  private async collectSecrets(items: readonly WritePlanItem[]): Promise<void> {
+    for (const item of items) {
+      if (item.component.kind === "socialIdp" && idpNeedsSecret(item.component.raw)) {
+        item.secret = await vscode.window.showInputBox({
+          password: true,
+          ignoreFocusOut: true,
+          title: "Re-supply social-IdP client secret",
+          prompt: `clientSecret for "${item.component.displayName}" (redacted in the bundle)`,
+        });
+      } else if (item.component.kind === "secret") {
+        item.secret = await vscode.window.showInputBox({
+          password: true,
+          ignoreFocusOut: true,
+          title: "Supply ESV secret value",
+          prompt: `Value for ESV secret "${item.component.displayName}" (not in the bundle)`,
+        });
+      }
+    }
+  }
+
+  /** Execute a JOURNEY import (D43 / PD-11/13/15) — the dependency-ordered path.
+   * Re-validates fresh, refuses on drift (freeze) or a missing blocking
+   * prerequisite, confirms, collects leaf secrets, then writes leaves + journeys
+   * inner-before-outer via the engine. */
+  private async executeJourneyImport(
+    host: string,
+    realm: string,
+    selected: string[],
+    journeyActions: Record<string, JourneyAction> | undefined,
+  ): Promise<void> {
+    const loaded = this.loaded;
+    if (!loaded) return;
+    const targetKind = this.deps.connectionKindOf(host) ?? "paic";
+    try {
+      const client = await this.deps.cache.get(host);
+      // Fresh re-read at commit: verdicts + blocking gates + advisory deps.
+      const [verdicts, gates, advisory] = await Promise.all([
+        runPreflight(client, realm, targetKind, loaded.rawComponents),
+        checkJourneyGates(client, realm, loaded.rawComponents),
+        discoverDeps(client, realm, discoverScriptDeps(loaded.rawComponents)),
+      ]);
+
+      // PD-11 freeze-the-plan: if the target drifted since the previewed plan,
+      // refuse to write and make the UI re-plan.
+      if (this.driftStops(host, realm, snapshotState(verdicts, gates))) return;
+
+      const verdictById = new Map<string, "new" | "exists">();
+      for (const v of verdicts) {
+        if (v.kind === "journey") verdictById.set(v.id, v.status === "new" ? "new" : "exists");
+      }
+      const journeyPlans = planJourneyUnits(loaded.rawComponents, verdictById);
+      const { plan, blockingMissing, counts } = assembleJourneyImport({
+        rawComponents: loaded.rawComponents,
+        verdicts,
+        gates,
+        journeyPlans,
+        journeyActions,
+        selectedLeafKeys: new Set(selected),
+      });
+
+      // Defense-in-depth: a missing hard prerequisite (node type / inner journey)
+      // would hard-fail the write — refuse cleanly. The UI also disables Import.
+      if (blockingMissing.length > 0) {
+        this.post({
+          type: "executeResult",
+          host,
+          realm,
+          results: [],
+          summary: `Blocked — missing prerequisites on the target: ${blockingMissing.join(", ")}.`,
+        });
+        return;
+      }
+
+      if (plan.leaves.length === 0 && plan.journeys.length === 0) {
+        this.post({
+          type: "executeResult",
+          host,
+          realm,
+          results: [],
+          summary: "Nothing to import — every component is Keep or already present.",
+        });
+        return;
+      }
+
+      const hasEsv = plan.leaves.some(
+        (i) => i.component.kind === "variable" || i.component.kind === "secret",
+      );
+      const detail = buildImportConfirmDetail({
+        host,
+        realm,
+        create: counts.create,
+        overwrite: counts.overwrite,
+        keep: counts.keep,
+        hasEsv,
+        missingNote: missingDepsNote(advisory),
+      });
+      const ok = await confirm("Import this journey to the tenant?", detail, "Import");
+      if (!ok) {
+        this.post({ type: "executeResult", host, realm, results: [], summary: "Cancelled." });
+        return;
+      }
+
+      await this.collectSecrets(plan.leaves);
+
+      this.childLog.info(
+        { event: "tab.executeJourney.start", host, realm, ...counts },
+        "Importing journey",
+      );
+      const total = plan.leaves.length + plan.journeys.length;
+      let done = 0;
+      const startedAt = new Date().toISOString();
+      const results = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Importing journey…" },
+        (progress) =>
+          runJourneyExecute(client, realm, plan, (r) => {
+            done += 1;
+            progress.report({
+              increment: 100 / total,
+              message: `${r.kind} ${r.displayName} (${done}/${total})`,
+            });
+            this.post({ type: "executeProgress", host, realm, result: r, done, total });
+          }),
+      );
+      this.captureReport(host, realm, startedAt, results);
+      const count = (s: WriteResult["status"]) => results.filter((r) => r.status === s).length;
+      const summary = `${count("created")} created · ${count("overwritten")} overwritten · ${count("skipped")} skipped · ${count("failed")} failed`;
+      this.post({ type: "executeResult", host, realm, results, summary });
+      this.childLog.info(
+        { event: "tab.executeJourney.done", host, realm, failed: count("failed") },
+        "Journey import complete",
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.childLog.error(
+        { event: "tab.executeJourney.failed", host, realm, message },
+        "Journey import failed",
+      );
+      this.post({
+        type: "executeResult",
+        host,
+        realm,
+        results: [],
+        summary: `Import failed: ${message}`,
+      });
+    }
+  }
+
+  /** PD-11 freeze-the-plan: compare the commit-time `freshSnapshot` to the
+   * snapshot frozen at pre-flight; if the target drifted, post `driftDetected`
+   * (the UI re-plans) and return true so the caller refuses to write. Shared by
+   * the leaf and journey execute paths. */
+  private driftStops(
+    host: string,
+    realm: string,
+    freshSnapshot: ReadonlyMap<string, string>,
+  ): boolean {
+    if (!this.preview || this.preview.host !== host || this.preview.realm !== realm) return false;
+    const drifted = diffSnapshots(this.preview.snapshot, freshSnapshot);
+    if (drifted.length === 0) return false;
+    this.childLog.warn(
+      { event: "tab.execute.drift", host, realm, drift_count: drifted.length },
+      "Target drifted since preview — forcing re-plan",
+    );
+    this.post({ type: "driftDetected", host, realm, drifted });
+    return true;
+  }
+
+  /** PD-17: build + store the run's report at execute time (so a later
+   * re-preview can't make the download stale). `before` is the frozen pre-flight
+   * snapshot. */
+  private captureReport(
+    host: string,
+    realm: string,
+    startedAt: string,
+    results: readonly WriteResult[],
+  ): void {
+    this.lastReport = buildImportReport({
+      host,
+      realm,
+      bundle: this.loaded?.fileName ?? "(unknown)",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      results,
+      beforeSnapshot: this.preview?.snapshot ?? new Map(),
+    });
+  }
+
+  /** PD-17: write the last run's report to a user-chosen file (native dialog). */
+  private async handleDownloadReport(): Promise<void> {
+    if (!this.lastReport) {
+      vscode.window.showInformationMessage(
+        "Run an import first — there's no report to download yet.",
+      );
+      return;
+    }
+    try {
+      const base = (this.loaded?.fileName ?? "import").replace(/\.json$/i, "");
+      const uri = await vscode.window.showSaveDialog({
+        saveLabel: "Save report",
+        filters: { JSON: ["json"] },
+        defaultUri: vscode.Uri.file(`${base}.import-report.json`),
+      });
+      if (!uri) return; // cancelled
+      const json = JSON.stringify(this.lastReport, null, 2);
+      await vscode.workspace.fs.writeFile(uri, Buffer.from(json, "utf8"));
+      vscode.window.showInformationMessage("Import report saved.");
+      this.childLog.info({ event: "tab.downloadReport", path: uri.fsPath }, "Saved import report");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.childLog.error({ event: "tab.downloadReport.failed", message }, "Report save failed");
+      vscode.window.showErrorMessage(`Couldn't save the report: ${message}`);
     }
   }
 
@@ -526,6 +798,8 @@ export class TransferTab implements vscode.Disposable {
         bundle: result.bundle,
         rawComponents: result.rawComponents,
       };
+      this.preview = null; // new bundle ⇒ any prior freeze baseline is stale
+      this.lastReport = null; // and the prior run's report no longer applies
       this.childLog.info(
         { event: "tab.pickBundle", file: fileName, kind: result.bundle.kind },
         "Loaded bundle for preview",
@@ -719,6 +993,17 @@ const TRANSFER_CSS = `
     color: var(--vscode-descriptionForeground);
     font-style: italic;
     padding: 12px 0;
+  }
+  .transfer-subject {
+    margin: 4px 0 8px;
+    padding: 6px 10px;
+    border-left: 3px solid var(--vscode-focusBorder);
+    background: var(--vscode-textBlockQuote-background);
+  }
+  .transfer-plan-summary {
+    margin: 4px 0 8px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
   }
   .transfer-scope {
     display: grid;

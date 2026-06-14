@@ -17,6 +17,8 @@
 import type { EntityKind } from "../../domain/realm-index";
 import type { ComponentVerdict } from "../../import/compare";
 import type { WriteResult } from "../../import/execute";
+import type { DriftItem } from "../../import/freeze";
+import type { JourneyAction, JourneyUnitPlan } from "../../import/journey-plan";
 import type { ParsedBundle } from "../../import/parse";
 import type { RequiredDepVerdict } from "../../import/preflight";
 
@@ -25,6 +27,9 @@ import type { RequiredDepVerdict } from "../../import/preflight";
 export type { EntityKind } from "../../domain/realm-index";
 export type { ComponentStatus, ComponentVerdict } from "../../import/compare";
 export type { WriteResult, WriteStatus } from "../../import/execute";
+export type { DriftItem } from "../../import/freeze";
+// Journey decision model (S5) — the UI renders Create/Overwrite/Keep rows from these.
+export type { JourneyAction, JourneyRole, JourneyUnitPlan } from "../../import/journey-plan";
 // The writable-kinds set is the single source of truth for both the panel's
 // write gate and the UI's Import button (re-exported here for the sandbox).
 export { WRITABLE_KINDS } from "../../import/kinds";
@@ -49,9 +54,20 @@ export type W2E =
   | { type: "pickBundle" }
   | { type: "listRealms"; host: string }
   | { type: "runPreflight"; host: string; realm: string }
-  | { type: "execute"; host: string; realm: string; selected: string[] }
+  | {
+      type: "execute";
+      host: string;
+      realm: string;
+      /** Selected leaf row keys (`${kind}:${id}`). */
+      selected: string[];
+      /** Journey-bundle only — per-journey Create/Overwrite/Keep overrides
+       * (`id → action`); absent journeys use their `JourneyUnitPlan.defaultAction`. */
+      journeyActions?: Record<string, JourneyAction>;
+    }
   // ESV apply is tenant-wide → host-scoped, not realm-scoped.
   | { type: "applyEsv"; host: string }
+  // PD-17: download the last run's structured JSON report (native save dialog).
+  | { type: "downloadReport" }
   // Review affordances (TD-11) — read-only inspection of an overwrite row.
   | {
       type: "openDiff";
@@ -80,8 +96,12 @@ export type E2W =
       host: string;
       realm: string;
       verdicts: ComponentVerdict[];
-      /** Discovered info-only dependency refs (libs + ESVs) — TD-9. */
+      /** Discovered info-only dependency refs (libs + ESVs, TD-9) + the blocking
+       * journey gates (node types / must-exist inner journeys, PD-7). */
       requires: RequiredDepVerdict[];
+      /** Journey-bundle only — per-unit Create/Overwrite/Keep decisions (S5);
+       * empty for leaf bundles. */
+      journeyPlans: JourneyUnitPlan[];
     }
   | { type: "preflightError"; host: string; realm: string; message: string }
   | {
@@ -91,8 +111,21 @@ export type E2W =
       results: WriteResult[];
       summary?: string;
     }
+  // PD-16 determinate progress: one per item as each write lands (write order),
+  // so the table rows flip to their outcome live, before the final result.
+  | {
+      type: "executeProgress";
+      host: string;
+      realm: string;
+      result: WriteResult;
+      done: number;
+      total: number;
+    }
   | { type: "applyProgress"; host: string; status: string; elapsedS: number }
-  | { type: "applyResult"; host: string; ok: boolean; elapsedS: number; message?: string };
+  | { type: "applyResult"; host: string; ok: boolean; elapsedS: number; message?: string }
+  // PD-11 freeze-the-plan: the target drifted between preview and Import — the
+  // write is refused and the UI must re-plan (re-run pre-flight).
+  | { type: "driftDetected"; host: string; realm: string; drifted: DriftItem[] };
 
 export function isW2E(m: unknown): m is W2E {
   if (!m || typeof m !== "object") return false;
@@ -104,6 +137,7 @@ export function isW2E(m: unknown): m is W2E {
     t === "runPreflight" ||
     t === "execute" ||
     t === "applyEsv" ||
+    t === "downloadReport" ||
     t === "openDiff" ||
     t === "openFindUsages"
   );
@@ -120,7 +154,9 @@ export function isE2W(m: unknown): m is E2W {
     t === "preflightResult" ||
     t === "preflightError" ||
     t === "executeResult" ||
+    t === "executeProgress" ||
     t === "applyProgress" ||
-    t === "applyResult"
+    t === "applyResult" ||
+    t === "driftDetected"
   );
 }

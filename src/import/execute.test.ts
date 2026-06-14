@@ -39,6 +39,45 @@ describe("runExecute", () => {
     expect(r[1].status).toBe("overwritten");
   });
 
+  it("invokes onResult once per item, in write order (PD-16)", async () => {
+    const order: string[] = [];
+    await runExecute(
+      client(),
+      "alpha",
+      [
+        item(comp({ kind: "theme", id: "t1", raw: { _id: "t1" } })),
+        item(comp({ kind: "theme", id: "t2", raw: { _id: "t2" } })),
+      ],
+      (r) => order.push(`${r.kind}:${r.id}:${r.status}`),
+    );
+    expect(order).toEqual(["theme:t1:created", "theme:t2:created"]);
+  });
+
+  it("G2: a leaf socialIdp write strips invalid attrs + retries once (S10b)", async () => {
+    const writeSocialIdp = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new PaicError("Invalid attribute specified.", {
+          status: 400,
+          description: "Invalid attribute specified.",
+          detail: { validAttributes: ["_id", "_type", "clientId"] },
+        }),
+      )
+      .mockResolvedValue("created");
+    const r = await runExecute(client({ writeSocialIdp }), "alpha", [
+      item(
+        comp({
+          kind: "socialIdp",
+          id: "g",
+          raw: { _id: "g", _type: { _id: "oidcConfig" }, clientId: "c", clientSecret: "x" },
+        }),
+        { secret: "sek" },
+      ),
+    ]);
+    expect(r[0].status).toBe("created");
+    expect(writeSocialIdp).toHaveBeenCalledTimes(2); // first 400 → strip → retry
+  });
+
   it("skips an idp that needs a secret when none was supplied (no write call)", async () => {
     const writeSocialIdp = vi.fn(() => Promise.resolve("created" as const));
     const r = await runExecute(client({ writeSocialIdp }), "alpha", [

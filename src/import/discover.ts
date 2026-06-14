@@ -71,6 +71,10 @@ export interface JourneyRefs {
   /** `InnerTreeEvaluatorNode.tree` refs NOT present as a bundled journey unit
    * (deduped, sorted) — these must already exist on the target (TD-12). */
   innerJourneys: string[];
+  /** EVERY `InnerTreeEvaluatorNode.tree` ref, bundled or not (deduped, sorted).
+   * Superset of `innerJourneys`; a bundled tree that appears here is an inner
+   * journey (not a subject) — the structural subject/inner split (PD-5/PD-18). */
+  referencedInnerTrees: string[];
 }
 
 /**
@@ -82,7 +86,7 @@ export interface JourneyRefs {
 export function discoverJourneyRefs(rawComponents: readonly ImportComponent[]): JourneyRefs {
   const bundled = new Set(rawComponents.filter((c) => c.kind === "journey").map((c) => c.id));
   const nodeTypes = new Set<string>();
-  const innerJourneys = new Set<string>();
+  const referenced = new Set<string>();
   for (const comp of rawComponents) {
     if (comp.kind !== "journey") continue;
     const nodes = isRecord(comp.raw.nodes) ? comp.raw.nodes : {};
@@ -93,9 +97,37 @@ export function discoverJourneyRefs(rawComponents: readonly ImportComponent[]): 
       if (type) nodeTypes.add(type);
       if (type === "InnerTreeEvaluatorNode") {
         const ref = str(node.tree);
-        if (ref && !bundled.has(ref)) innerJourneys.add(ref);
+        if (ref) referenced.add(ref);
       }
     }
   }
-  return { nodeTypes: [...nodeTypes].sort(), innerJourneys: [...innerJourneys].sort() };
+  // innerJourneys = referenced but NOT bundled (the gate); referencedInnerTrees =
+  // all refs (the subject/inner split — a bundled tree referenced here is an inner).
+  const innerJourneys = [...referenced].filter((r) => !bundled.has(r)).sort();
+  return {
+    nodeTypes: [...nodeTypes].sort(),
+    innerJourneys,
+    referencedInnerTrees: [...referenced].sort(),
+  };
+}
+
+/**
+ * The `InnerTreeEvaluatorNode.tree` references in ONE journey unit's `raw`
+ * (`nodes` + `innerNodes`), deduped + sorted. The per-unit counterpart to
+ * `discoverJourneyRefs` (which aggregates across the bundle) — used by the S6b
+ * executor to order journeys (inner before outer) and skip dependents.
+ */
+export function innerTreeRefs(raw: Record<string, unknown>): string[] {
+  const nodes = isRecord(raw.nodes) ? raw.nodes : {};
+  const innerNodes = isRecord(raw.innerNodes) ? raw.innerNodes : {};
+  const refs = new Set<string>();
+  for (const node of [...Object.values(nodes), ...Object.values(innerNodes)]) {
+    if (!isRecord(node)) continue;
+    const type = isRecord(node._type) ? str(node._type._id) : undefined;
+    if (type === "InnerTreeEvaluatorNode") {
+      const ref = str(node.tree);
+      if (ref) refs.add(ref);
+    }
+  }
+  return [...refs].sort();
 }

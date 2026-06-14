@@ -49,6 +49,11 @@ export function classifyCompare(
   targetRaw: Record<string, unknown> | null,
 ): CompareVerdict {
   if (targetRaw === null) return "new";
+  // Journeys are existence-only (PD-5): cross-env script UUIDs make a raw node
+  // diff always "differs", and the decision is driven by existence + role
+  // (Create/Overwrite/Keep), never a value-diff. Explicit so a future
+  // `VALUE_COMPARED` edit can't silently flip journeys into value-compare.
+  if (kind === "journey") return "exists";
   // Scripts share `kind: "script"` but split by policy (TD-4): a DECISION
   // script value-compares (its body is the artifact); a LIBRARY script is
   // existence-only (existence-checked as part of a closure, not diffed). The
