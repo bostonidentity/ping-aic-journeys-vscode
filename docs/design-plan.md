@@ -1008,6 +1008,67 @@ Checkbox column is uniform: **every non-actionable row shows a disabled, uncheck
 - **ESV import + apply (Batch 2 ESV half):** ESVs (variable + secret) are **existence-only compare** (values are env-specific by design — dev `API_KEY` ≠ prod — and secrets are unreadable), so the verdict is only ever `new` or `exists`, never `differs` → ESV import is **create-only** (creates the absent, skips the present, never clobbers an env-specific value). **Value supply is asymmetric:** a variable bundle carries `valueBase64` verbatim (the exact raw PAIC field), so the variable write uses it **directly** — no prompt — and the Source preview decodes + shows it for transparency (never logged); a secret's value is **never on the wire** → the one `showInputBox({password:true})` prompt at write time (same pattern as the idp `clientSecret`). **Apply is a SEPARATE step, not auto-chained:** ESV writes land `loaded:false` (pending) and don't take effect until a **tenant-wide environment restart** (~3 min observed, ≤10 min). A distinct **"Apply ESV changes" button** → confirm modal (warns the restart applies *all* pending ESVs and blocks further ESV updates) → `POST /environment/startup?_action=restart` → poll `GET /environment/startup` until `ready`, with **durable host-keyed in-UI progress** that survives a realm change. The restart POST is **not retried** (non-idempotent) — on throw, re-GET status: `restarting` means it started anyway (continue), `ready` means it genuinely failed (rethrow); token re-mints during the restart are tolerated as ≤N consecutive poll errors. Apply mechanism + per-leaf ESV endpoints: [transfer-endpoints.md §2/§7/§8](transfer-endpoints.md).
 - **Architecture:** `src/paic/http.ts` gains `put`; `src/paic/client.ts` gains `writeTheme`/`writeEmailTemplate`/`writeSocialIdp` + `writeEsvVariable`/`writeEsvSecret` + `getStartupStatus`/`applyEsvUpdates`; pure transforms in `src/import/write.ts`; client-injected orchestration in `src/import/execute.ts` (sequential writes) and `src/import/apply.ts` (`runEsvApply`, injectable sleep/now/onProgress) — both mirror `preflight.ts`. Full form: the Slice C + ESV slice plans + TD-6 / TD-7.
 
+### D44 — One prompt surface: native modal for every decision; minimal physically-necessary exceptions
+
+**Problem.** As the tool grew, user-decision prompts drifted across mechanisms: import + ESV-apply confirm via a **native modal** (`showWarningMessage({modal:true})`), but remove-connection confirms via a **YES/NO QuickPick** and export-depth picks via a **QuickPick** — two different idioms (and visual weights) for the same "the tool needs a decision" job. A QuickPick (the Command-Palette dropdown from the top, no dimming) reads far lighter than a modal (centered, dims the editor, blocks) — wrong for a tool whose defining actions are irreversible tenant writes.
+
+**Decision — one prompt surface.** Use the **`window.show{Information,Warning,Error}Message` API for every prompt**, with the `{modal:true}` flag as the only dial:
+
+- **Needs a decision/choice** (confirm a write/import, confirm ESV apply, confirm remove-connection, pick export depth, acknowledge something critical) → **native modal** `showWarningMessage({modal:true, detail}, "<Verb>"…)`. Buttons carry the choices; `detail` carries the explanation. Every decision looks and behaves identically.
+- **Just informing** (non-blocking error / optional success) → the **same API without `modal`** → a toast.
+
+**Why modal as the default (not QuickPick).** The most consequential category — confirming irreversible cross-environment writes — *must* be right, and the centered, blocking modal is VS Code's official confirmation idiom (the "Save changes before closing?" / "Are you sure you want to delete?" dialog). It also absorbs small N-way choices (export depth = two buttons + a `detail`) and acknowledgments. QuickPick is the natural alternative but is the wrong *weight* for destructive confirms and has **no documented confirmation pattern** in the VS Code UX guidelines. Verified against the official [Notifications](https://code.visualstudio.com/api/ux-guidelines/notifications), [Quick Picks](https://code.visualstudio.com/api/ux-guidelines/quick-picks), and [Webviews](https://code.visualstudio.com/api/ux-guidelines/webviews) guidance.
+
+**The only exceptions — each because a modal physically can't do the job:**
+
+| Exception | Why it can't be a modal | Where |
+|---|---|---|
+| `withProgress` | a modal can't show a running progress bar | import / ESV apply / export |
+| `showInputBox` | a modal can't capture typed text | the 2 secret-entry fields |
+
+A **webview** is *not* a prompt mechanism — it's the persistent app surface (Search, the Transfer plan, the connection form). Per the official "webviews only when absolutely necessary," we never render confirm-modals inside a webview; confirmation always uses the native modal.
+
+**Deliberate deviation from the letter of the guideline.** The Notifications page suggests destructive-confirm modals offer an *Always/Never* "don't ask again." We **omit it for the tenant writes** (import / ESV apply): those are irreversible and high-blast-radius, so per-action friction is intentional. The Always/Never pattern targets *repetitive, non-critical* confirms; if we ever add it, the local-and-reversible remove-connection confirm is the only fair candidate.
+
+**Mechanism.** All confirmations route through one shared helper (e.g. `confirm(title, detail, verb): Promise<boolean>` in `src/util/` or a webview-side equivalent) so the shape is guaranteed identical and there's a single place to evolve wording/behavior. `QuickPick` is retired from the codebase.
+
+### D45 — Journey import (Batch 3) + cross-lifecycle upgrades: model, prior-art validation, apply lifecycle
+
+Full working design lives in **`docs/journey-import-model.md`** (PD-1..PD-17). Empirical backing:
+`poc/transfer-endpoints/TRACKER.md` §TD-12/§TD-13. Prior-art validation: `poc/prior-art/`. This entry is the
+committed pointer + the locked themes; the dev sequence is in `docs/progress.md` (M9 Phase 4 Batch 3).
+
+**Plan/decision model (PD-1..6).** One flat, type-sorted plan table — engine ordering / phases / inner-outer
+are hidden. The chosen journey is the **header subject**, not a row; its **private nodes fold into it**, while
+**shared refs (scripts/themes/IdPs/ESVs/inner journeys) are hoisted to their own deduped rows** (one resource
+→ one decision; the target holds one physical copy). Every bundled journey is its own **flat unit row**
+regardless of nesting depth (flat-all, not atomic-subtree), each with **Create / Overwrite / Keep** (Keep =
+"use the target's" = level1 behavior; Overwrite = write my copy = allLevels).
+
+**Empirical hard constraints (TD-12/TD-13).** A missing **inner journey** (level1) and a missing **node type**
+are HARD — AM rejects the node write (`400 "…attribute, Tree Name"` / `404`) — so they're preflight blockers,
+not soft warnings (unlike `require('lib')`/ESV text refs, which are runtime-only → advisory). Scripts are
+**name-unique per realm** (`409` on dup name): the **UUID is the identifier**, the **name is the cross-env
+match key** → reconcile by name + **remap node→script refs `bundleUUID→targetUUID`** (libs/themes/IdPs may
+need the same — open).
+
+**Prior-art-validated upgrades (PD-11..13).** A 6-product investigation (Terraform · ServiceNow · Power
+Platform · Keycloak · Salesforce/Gearset · low-code) reinforced ~9/10 decisions and added: **freeze the plan**
+(snapshot decisions + remap + target state at preview; import runs exactly that; drift → re-plan — kills the
+preview→commit TOCTOU); a **pre-write "no source UUID survives" assertion** (every tool that skipped the remap
+broke); and **Overwrite = update-in-place PUT, never delete-then-recreate** (a live auth journey must never
+have a missing-tree window — Keycloak's #1 failure).
+
+**Error handling (PD-14/15).** Parse the **AM/IDM REST error envelope** (`code/reason/message/detail`) so
+import failures are actionable, + frodo's `Invalid attribute specified` strip-and-retry — *also fixes a
+verified latent bug in shipping leaf-import code*. The journey executor is **dependency-aware** (a failed
+prerequisite skips its dependents with a clear reason; the batch never aborts; per-item result).
+
+**Apply lifecycle (PD-16/17).** confirm (have) → **determinate progress** (bar + live row updates) →
+**downloadable JSON result report** (per-item before/after from the frozen snapshot; success + partial). The
+report is shaped now to power a **future quick rollback** (time-bounded, reverse-precheck-gated — drift makes
+it meaningless after a few days; no union source, unlike git).
+
 ### D33 — Sidebar tree: kind-grouped children with category headers + alphabetical sort
 
 Today the sidebar tree builds a journey's (or script's) children in **discovery order** — whatever order the dependency walker emits as it crawls a journey's nodes. A real journey can mix Inner Journeys, Scripts, Themes, Email Templates, and Social IdPs in any sequence, and the result is hard to scan.
@@ -1506,6 +1567,7 @@ Implements **D42**. Read-only export → no D6 change. Phased: **P1 leaf export*
 
 - **Phase 1 — leaf export:** raw-fetch accessor + `src/export/serialize.ts` (frodo per-type shape + `meta`, per D42) + `paicJourneys.exportComponent` command + save dialog + an Export button on all six leaf cards. ~75% reuses the existing card→message→command plumbing (`openScriptBody` is the template); the only new code is the raw accessor + serializer + save dialog.
 - Endpoint surface + diff masks validated by the `poc/transfer-endpoints/` CRUD POC (all 7 leaves on PAIC; the 3 AM-native leaves identical on the on-prem bed).
+- **Phase 4 / Batch 3 — journey import + cross-lifecycle upgrades:** fully designed in **D45** + `docs/journey-import-model.md`; structural constraints proven (TD-12/TD-13) and prior-art-validated (`poc/prior-art/`). The base→apply upgrades the research surfaced (actionable errors, freeze-the-plan, determinate progress, JSON report, future rollback) are sequenced as a series of dev slices in `docs/progress.md` (M9 Phase 4 Batch 3).
 
 ## Open questions
 

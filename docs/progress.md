@@ -12,7 +12,7 @@
 - [x] Tree view with `host`/`name` label
 - [x] Inline action buttons (Edit, Remove) on each connection row
 - [x] Each connection row is collapsible (folder shape, even with no children yet)
-- [x] Non-modal QuickPick confirmation for Remove (matches database extension pattern)
+- [x] ~~Non-modal QuickPick confirmation for Remove (matches database extension pattern)~~ — superseded by **D44** (now a native modal, via `confirm()`)
 - [x] `LogOutputChannel('PAIC Journeys', { log: true })` wired into all commands
 - [x] `dev-tail.sh` to follow the latest disk log file from a terminal (Linux + macOS)
 - [x] esbuild build pipeline (`npm run build`, `npm run watch`)
@@ -702,7 +702,46 @@ POC complete: live AM 7.5.2 bed at `poc/onprem-am/` (Vagrant+libvirt), endpoint 
 
 > **Script import COMPLETE (engine + table + review)** — write · compare (decision value-compare / library existence-only) · closure discovery (direct lib+ESV refs, existence-checked) · write-reconcile to name-matched target UUID · create-path UUID-collision guard · missing-dep modal warning · TD-8/TD-10 three-phase grid table (opt-in selection + select-all, deps folded in, lock-after-import) · TD-11 Review column (Diff + Find-usages on overwrite rows). The Transfer page imports scripts end-to-end through the designed table UI, with overwrite-evidence affordances. **Remaining (whole feature):** journey import (Batch 3 — needs the structural-wiring POC).
 
-**Batch 3 — journey / inner-journey** — ordered structural write (nodes→tree · inner-tree-before-its-evaluator-node · ref-handling). **Needs the structural-wiring POC first** (TRACKER "Later round"). *(last)*
+**Batch 3 — journey / inner-journey import + cross-lifecycle upgrades** ⏳ — **design locked**: `docs/journey-import-model.md` (PD-1..PD-17) + **D45**. Structural constraints proven (TD-12 inner-journey HARD · TD-13 script name-unique) and prior-art-validated (`poc/prior-art/`). The ordered structural write **plus** the wider base→apply upgrades the investigation surfaced. Sequenced for dev:
+
+*De-risk POCs (do first):*
+- [x] **TD-12** — inner-journey-missing = HARD (AM `400`, both deployments) · `inner-journey-dangling-probe.mjs`
+- [x] **TD-13** — scripts name-unique per realm (`409`); UUID = identifier, name = cross-env match key · `script-dup-name-probe.mjs`
+- [ ] **POC — node-type catalog** — read-only `GET nodes?_action=getAllTypes` diff sb2x/onprem (confirms the node-type gate; cheap)
+- [ ] **POC — export→import round-trip** — feed our *exporter's* bundle through the ordered write into a clean target; discover field-stripping (`_rev`/`_type`/`_outcomes`/coords); exercise name-reconcile + UUID remap; confirm a runnable journey. **Doubles as the Batch-3 integration test.**
+
+*T0 — base-layer fix (independent; fixes a shipping latent bug — can ship anytime):*
+- [ ] **Actionable errors (PD-14)** — `PaicError.from` parses the AM/IDM envelope (`code/reason/message/detail`); add frodo's `Invalid attribute specified` strip-and-retry; regression tests from the probe captures. Fixes G1 (today every AM/IDM write failure surfaces as generic "Request failed with status code N"; the ESV `/already exists/` handler is dead in prod).
+
+*Slice 1 — client + parse foundation:*
+- [ ] **S1 — client methods** — `writeNode`, `writeTree`, `getRawTree`/`listTrees`, `getNodeTypes` (+ fakes + tests).
+- [ ] **S2 — journey bundle decomposition** — `parse.ts` fills `rawComponents` for journeys: decompose trees → leaves + nodes + trees; UUID→name from the per-tree `scripts` map; dedup shared refs (PD-6).
+
+*Slice 2 — preflight gates + reconcile:*
+- [ ] **S3 — preflight gates (PD-7)** — node-type catalog check + inner-journey existence (level1); `RequiredDepVerdict` gains `kind: nodeType|innerJourney` + `severity: blocking|advisory`.
+- [ ] **S4 — name-reconcile + UUID remap (PD-8/PD-12)** — build `bundleUUID→targetUUID` from name-matched scripts; rewrite node `script` refs; pre-write "no source UUID survives" assertion.
+- [ ] **S5 — journey/node/tree verdicts + inner-journey unit (PD-3/4/5/6)** — compare for journey + nodes (folded) + trees; inner-journey unit Create/Overwrite/Keep; dedup/union.
+
+*Slice 3 — executor + freeze:*
+- [ ] **S6 — dependency-ordered executor (PD-13/PD-15)** — leaves→nodes→trees, inner before outer; node-PUT-as-gate; **update-in-place PUT (never delete-recreate)**; dependency-aware skip (failed prereq → dependents skipped; failed node → tree skipped).
+- [ ] **S7 — freeze-the-plan (PD-11)** — snapshot decisions + remap + target state at preview; drift check before write → force re-plan.
+
+*Slice 4 — UI:*
+- [ ] **S8 — journey rows** — journey kind + inner-journey unit rows + Keep + severity gate (blocking `⛔` disables Import); subject-header layout.
+- [ ] **S9 — UI polish (prior-art)** — smart defaults (refine TD-10), count-summary header, concrete per-row reasons, blast-radius usage badge + cross-import find-usages.
+
+*Slice 5 — apply lifecycle:*
+- [ ] **S10 — determinate progress (PD-16)** — notification bar (`N/total` + current item) + live row updates.
+- [ ] **S11 — JSON result report (PD-17)** — Download button; per-item action + before/after (frozen-snapshot baseline); success + partial.
+- [ ] **S12 — re-plan after partial failure (G4)** — recompute vs the changed target; failed rows reappear actionable, succeeded → Identical-skip.
+
+*Future (planned, on the plan — not this build):*
+- [ ] **Quick rollback (PD-17 baseline)** — time-bounded undo; reverse-dependency order; per-item reverse precheck ("still as we left it?"); created→delete (usage-gated), overwritten→restore. JSON report shaped now to support it.
+
+### UX consistency pass (pre-journey-import polish) ✅ (2026-06-13)
+
+- **Combobox reopen-filter fix** — the shared `Combobox` (D38) collapsed the list to the single selected item when reopened (the committed label was reused as the filter). Added a `showAll` flag (set on open, cleared on first keystroke) so reopening lists every option, with select-all-on-focus + revert-abandoned-typing-on-close. New `tests/webview/shared/combobox.test.tsx` (7 — had **no** dedicated coverage before); wired `tests/webview/shared/**` into both tsconfigs.
+- **D44 — one prompt surface** — native modal for every decision; `showQuickPick` retired from `src/`. New `src/util/dialogs.ts` (`confirm` / `chooseModal`, both wrap `showWarningMessage({modal:true})`). Converted `removeConnection` (YES/NO QuickPick → modal) + export-depth (QuickPick → 2-button modal); routed the import + ESV-apply confirms through `confirm()`. Exceptions (a modal physically can't): `withProgress`, `showInputBox`. Policy recorded in design-plan.md **D44** + `.claude/rules/conventions.md` ("User prompts"). Tests: `dialogs.test.ts` (5) + export-journey updated to mock `showWarningMessage`; vscode-mock gains `showWarningMessage`/`showInputBox`, drops `showQuickPick`.
 
 ---
 
@@ -711,7 +750,7 @@ POC complete: live AM 7.5.2 bed at `poc/onprem-am/` (Vagrant+libvirt), endpoint 
 **Connections (M0)**
 - Activity bar icon (`type-hierarchy` tree glyph) opens the PAIC Journeys sidebar.
 - Add / Edit / Remove Connection commands; round-trip with JWK in SecretStorage.
-- Inline Edit + Remove buttons on each connection row; non-modal QuickPick remove confirmation.
+- Inline Edit + Remove buttons on each connection row; native modal remove confirmation (D44).
 - Test Connection button in the Add/Edit form (live JWT-bearer mint + verification, confirmed against sb3).
 
 **Tree (M1)**
@@ -733,7 +772,7 @@ POC complete: live AM 7.5.2 bed at `poc/onprem-am/` (Vagrant+libvirt), endpoint 
 **Build + test**
 - `npm run build` → `out/extension.js` + `out/webview.js` + `out/connection-form.js` + codicons assets.
 - `npm run typecheck` covers both `tsconfig.json` and `tsconfig.webview.json`.
-- 754 unit tests + 7 gated on-prem live integration tests (`PAIC_LIVE=1`, M8 Slice 5; skipped by default) across PAIC transport (incl. `makeLimiter` + the injected AM context path / capability short-circuit + `am-url` helpers — M8 Slice 3/4), tenant registry + client cache, the auth-strategy seam (`paic`/`onprem` strategies — M8), the kind-split connection form (M8 Slice 4), tree nodes, inspector panel + protocol (incl. `findUsages` dispatch), React card + diagram components (incl. 5 card `[🔍 Find usages]` button cases), resolver walk + cache (M4), realm-index build + cache + queries with progress reporting (M5 Slices 1, 5, 6), the Search webview's messages + panel + App with singleton-page + connection/realm dropdowns + build progress bar (M5 Slices 2–4, 6), and the `InspectorFactory.spawnByDescriptor` refactor.
+- 766 unit tests + 7 gated on-prem live integration tests (`PAIC_LIVE=1`, M8 Slice 5; skipped by default) across PAIC transport (incl. `makeLimiter` + the injected AM context path / capability short-circuit + `am-url` helpers — M8 Slice 3/4), tenant registry + client cache, the auth-strategy seam (`paic`/`onprem` strategies — M8), the kind-split connection form (M8 Slice 4), tree nodes, inspector panel + protocol (incl. `findUsages` dispatch), React card + diagram components (incl. 5 card `[🔍 Find usages]` button cases), resolver walk + cache (M4), realm-index build + cache + queries with progress reporting (M5 Slices 1, 5, 6), the Search webview's messages + panel + App with singleton-page + connection/realm dropdowns + build progress bar (M5 Slices 2–4, 6), and the `InspectorFactory.spawnByDescriptor` refactor.
 
 ## What's broken today
 
