@@ -23,14 +23,11 @@ export interface ExportMeta {
   exportToolVersion: string;
 
   // Journey-export only (D42 / TD-5). Undefined for leaf exports.
-  /** `"level1"` (selected journey only) or `"allLevels"` (full inner-journey closure). */
+  /** `"level1"` (selected journey only) or `"allLevels"` (full inner-journey closure).
+   * Informational provenance only — the import derives everything from tree content,
+   * never from `meta` (PD-18 / D45). The derived fields `requires` /
+   * `treesSelectedForExport` / `innerTreesIncluded` are deliberately NOT emitted. */
   depthMode?: "level1" | "allLevels";
-  /** The journey(s) the user selected to export. */
-  treesSelectedForExport?: string[];
-  /** Inner journeys bundled as sibling trees (the closure, when `allLevels`). */
-  innerTreesIncluded?: string[];
-  /** Dependencies NOT bundled — the import pre-flight "must already exist" list. */
-  requires?: { innerJourneys: string[]; esvs: string[]; nodeTypes: string[] };
 }
 
 /** Leaf kinds the serializer emits. ESV is already split into variable/secret

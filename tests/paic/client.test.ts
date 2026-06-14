@@ -689,6 +689,65 @@ describe("import writes (D43)", () => {
     expect(await client.writeScript("alpha", "s-1", { _id: "s-1" })).toBe("overwritten");
   });
 
+  it("writeNode PUTs to /nodes/<type>/<id> with the tree api version; 201 → created", async () => {
+    fake.enqueuePut({}, 201);
+    const out = await client.writeNode("alpha", "ScriptedDecisionNode", "n1", {
+      _id: "n1",
+      script: "s1",
+    });
+    expect(out).toBe("created");
+    const put = fake.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/nodes/ScriptedDecisionNode/n1",
+    );
+    expect(put?.apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(put?.body).toMatchObject({ _id: "n1", script: "s1" });
+  });
+
+  it("writeNode 200 → overwritten", async () => {
+    fake.enqueuePut({}, 200);
+    expect(await client.writeNode("alpha", "PageNode", "p1", {})).toBe("overwritten");
+  });
+
+  it("writeTree PUTs to /trees/<id> with the tree api version; 201 → created", async () => {
+    fake.enqueuePut({}, 201);
+    const out = await client.writeTree("alpha", "Login", { _id: "Login", entryNodeId: "n1" });
+    expect(out).toBe("created");
+    const put = fake.calls.find((c) => c.method === "PUT");
+    expect(put?.url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/trees/Login",
+    );
+    expect(put?.apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(put?.body).toMatchObject({ _id: "Login", entryNodeId: "n1" });
+  });
+
+  it("writeTree 200 → overwritten", async () => {
+    fake.enqueuePut({}, 200);
+    expect(await client.writeTree("alpha", "Login", {})).toBe("overwritten");
+  });
+
+  it("listTrees GETs ?_queryFilter=true (tree api version) and returns the result array", async () => {
+    fake.enqueueGet({ result: [{ _id: "Login" }, { _id: "MFA" }] });
+    const trees = await client.listTrees("alpha");
+    expect(fake.calls[0].url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/trees?_queryFilter=true",
+    );
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(trees.map((t) => t._id)).toEqual(["Login", "MFA"]);
+  });
+
+  it("getNodeTypes POSTs ?_action=getAllTypes and maps result._id, dropping ids-less entries", async () => {
+    fake.enqueuePost({
+      result: [{ _id: "PageNode" }, { _id: "ScriptedDecisionNode" }, { name: "no-id" }],
+    });
+    const types = await client.getNodeTypes("alpha");
+    expect(fake.calls[0].url).toBe(
+      "/am/json/realms/root/realms/alpha/realm-config/authentication/authenticationtrees/nodes?_action=getAllTypes",
+    );
+    expect(fake.calls[0].apiVersion).toBe("protocol=2.1,resource=1.0");
+    expect(types).toEqual(["PageNode", "ScriptedDecisionNode"]);
+  });
+
   it("writeTheme splices into themerealm with If-Match, preserving siblings; create → isDefault:false", async () => {
     fake.enqueueGet({
       _id: "ui/themerealm",

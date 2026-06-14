@@ -3,8 +3,9 @@
  * tree and assembles a frodo/PAIC-UI-compatible `{ meta, trees }` bundle. Pure:
  * the `PaicClient` is injected. Reuses the mappers + `getScriptIdIfRef` predicate
  * + `extractScriptBodyRefs` for dependency DISCOVERY, but keeps the raw wire
- * objects for the bundle (faithful export). ESVs are not bundled (TD-1/TD-4) —
- * referenced names go into `meta.requires.esvs`.
+ * objects for the bundle (faithful export). ESVs are not bundled (TD-1/TD-4); the
+ * import discovers referenced ESVs/libs from script bodies at preflight (PD-18 —
+ * `meta` carries no dependency manifest).
  */
 
 import type { Connection, NodePayload } from "../domain/types";
@@ -42,9 +43,10 @@ export interface JourneyBundle {
 
 interface AssembledTree {
   tree: SingleTreeExport;
+  /** Inner-journey names referenced by this tree's `InnerTreeEvaluatorNode`s — drives
+   * the allLevels closure BFS. No esv/nodeType manifest (PD-18): the import derives
+   * those from tree content, never from `meta`. */
   innerJourneys: string[];
-  esvs: string[];
-  nodeTypes: string[];
 }
 
 export type DepthMode = "level1" | "allLevels";
@@ -62,7 +64,7 @@ async function assembleTree(
   } catch {
     log.warn(
       { event: "exportJourney.treeMiss", realm, journey: journeyId },
-      "Journey not found; left in requires.innerJourneys",
+      "Journey not found; not bundled (the import resolves it on the target)",
     );
     return null;
   }
@@ -70,11 +72,9 @@ async function assembleTree(
   const nodes: RawMap = {};
   const innerNodes: RawMap = {};
   const domainById = new Map<string, NodePayload>();
-  const nodeTypes = new Set<string>();
 
   // 1. top-level nodes (resilient to a missing node).
   const entries = Object.entries(raw.nodes ?? {});
-  for (const [, ref] of entries) nodeTypes.add(ref.nodeType);
   const topRaw = await mapConcurrent(entries, CONCURRENCY, async ([nodeId, ref]) => {
     try {
       return await client.getRawNode(realm, ref.nodeType, nodeId);
@@ -97,7 +97,6 @@ async function assembleTree(
       if (!domainById.has(ref.id) && !childRefs.some((c) => c.id === ref.id)) childRefs.push(ref);
     }
   }
-  for (const ref of childRefs) nodeTypes.add(ref.nodeType);
   if (childRefs.length > 0) {
     const childRaw = await mapConcurrent(childRefs, CONCURRENCY, async (ref) => {
       try {
@@ -114,9 +113,8 @@ async function assembleTree(
     });
   }
 
-  // 3. scripts (+ transitive require()'d libraries; ESV names collected, not bundled).
+  // 3. scripts (+ transitive require()'d libraries; library refs walked, ESVs not — PD-18).
   const scripts: RawMap = {};
-  const esvs = new Set<string>();
   const seenScripts = new Set<string>();
   const addScript = async (rs: RawScript): Promise<void> => {
     if (seenScripts.has(rs._id)) return;
@@ -126,7 +124,6 @@ async function assembleTree(
     if (typeof cleaned.script === "string") cleaned.script = scriptBodyToExport(cleaned.script);
     scripts[rs._id] = cleaned;
     const refs = extractScriptBodyRefs(body);
-    for (const e of refs.esvs) esvs.add(e);
     for (const name of refs.libraryScripts) {
       const lib = await client.getRawScriptByName(realm, name);
       if (lib) await addScript(lib);
@@ -198,8 +195,6 @@ async function assembleTree(
       socialIdentityProviders,
     },
     innerJourneys: [...innerJourneys],
-    esvs: [...esvs],
-    nodeTypes: [...nodeTypes],
   };
 }
 
@@ -217,22 +212,14 @@ export async function buildJourneyBundle(
   log: Logger,
 ): Promise<JourneyBundle | null> {
   const trees: Record<string, SingleTreeExport> = {};
-  const allEsvs = new Set<string>();
-  const allNodeTypes = new Set<string>();
-  const requiresInner = new Set<string>();
-  const innerTreesIncluded: string[] = [];
-
   const merge = (a: AssembledTree, id: string) => {
     trees[id] = a.tree;
-    for (const e of a.esvs) allEsvs.add(e);
-    for (const t of a.nodeTypes) allNodeTypes.add(t);
   };
 
   if (depthMode === "level1") {
     const a = await assembleTree(client, log, realm, journeyId);
     if (!a) return null;
     merge(a, journeyId);
-    for (const j of a.innerJourneys) requiresInner.add(j);
   } else {
     const visited = new Set<string>();
     const queue = [journeyId];
@@ -241,28 +228,20 @@ export async function buildJourneyBundle(
       if (visited.has(jid)) continue;
       visited.add(jid);
       const a = await assembleTree(client, log, realm, jid);
-      if (!a) {
-        if (jid !== journeyId) requiresInner.add(jid); // missing inner → must exist in target
-        continue;
-      }
+      // A missing inner (404) is simply not bundled — the import resolves it on the
+      // target (PD-18: bundled-vs-referenced is derived from tree presence, not meta).
+      if (!a) continue;
       merge(a, jid);
       for (const j of a.innerJourneys) queue.push(j);
     }
-    for (const id of Object.keys(trees)) if (id !== journeyId) innerTreesIncluded.push(id);
   }
 
   if (Object.keys(trees).length === 0) return null;
 
+  // meta = pure provenance + informational depthMode (PD-18 — no derived manifest).
   const meta: ExportMeta = {
     ...buildExportMeta(conn, realm, extensionVersion, nowIso),
     depthMode,
-    treesSelectedForExport: [journeyId],
-    innerTreesIncluded,
-    requires: {
-      innerJourneys: [...requiresInner],
-      esvs: [...allEsvs],
-      nodeTypes: [...allNodeTypes],
-    },
   };
   return { meta, trees };
 }

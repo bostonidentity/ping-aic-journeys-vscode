@@ -9,6 +9,7 @@
  */
 
 import type { ExportMeta } from "../export/serialize";
+import { discoverJourneyRefs } from "./discover";
 
 export type BundleKind =
   | "journey"
@@ -42,8 +43,9 @@ export interface ParsedBundle {
 }
 
 /** A bundle component plus its raw export object — extracted in the same parse
- * pass and kept extension-side (never posted to the webview) for the B2
- * compare. Empty for journey bundles (deferred to Batch 3). */
+ * pass and kept extension-side (never posted to the webview) for the compare.
+ * Journey bundles decompose into journey units (each tree; its nodes fold into
+ * `raw`, PD-3) + the shared leaves they carry, deduped across trees (PD-6). */
 export interface ImportComponent {
   kind: BundleKind;
   id: string;
@@ -66,6 +68,16 @@ const LEAF_KEY_TO_KIND: Record<string, BundleKind> = {
   variable: "variable",
   secret: "secret",
 };
+
+/** Per-tree leaf-map name → BundleKind, for decomposing a journey bundle's shared
+ * leaves (the D42 per-tree maps). Nodes/innerNodes fold into the journey unit
+ * (PD-3); `circlesOfTrust` / `saml2Entities` are out of scope. */
+const TREE_LEAF_MAPS: ReadonlyArray<{ mapKey: string; kind: BundleKind }> = [
+  { mapKey: "scripts", kind: "script" },
+  { mapKey: "themes", kind: "theme" },
+  { mapKey: "emailTemplates", kind: "emailTemplate" },
+  { mapKey: "socialIdentityProviders", kind: "socialIdp" },
+];
 
 const KIND_LABEL: Record<BundleKind, string> = {
   journey: "Journey bundle",
@@ -217,14 +229,45 @@ function summarizeJourney(
     .filter(Boolean)
     .join(" · ");
   if (idmLine) inventory.push(idmLine);
-  if (meta?.innerTreesIncluded?.length) {
-    inventory.push(`Inner trees included: ${meta.innerTreesIncluded.join(", ")}`);
+
+  // Decompose into the flat import units FIRST: one journey unit per tree (its nodes
+  // fold into `raw`, PD-3) + the shared leaves it carries, deduped across trees (PD-6).
+  const rawComponents: ImportComponent[] = [];
+  for (const [treeId, t] of Object.entries(trees)) {
+    if (!isRecord(t)) continue;
+    rawComponents.push({
+      kind: "journey",
+      id: treeId,
+      displayName: treeId,
+      raw: {
+        tree: isRecord(t.tree) ? t.tree : {},
+        nodes: isRecord(t.nodes) ? t.nodes : {},
+        innerNodes: isRecord(t.innerNodes) ? t.innerNodes : {},
+      },
+    });
   }
-  if (meta?.requires?.innerJourneys?.length) {
-    inventory.push(`Requires — inner journeys: ${meta.requires.innerJourneys.join(", ")}`);
+  const seen = new Set<string>();
+  for (const t of Object.values(trees)) {
+    if (!isRecord(t)) continue;
+    for (const { mapKey, kind } of TREE_LEAF_MAPS) {
+      const map = t[mapKey];
+      if (!isRecord(map)) continue;
+      for (const [id, raw] of Object.entries(map)) {
+        const dedupKey = `${kind}:${id}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+        const obj = isRecord(raw) ? raw : {};
+        rawComponents.push({ kind, id, displayName: leafDisplayName(kind, id, obj), raw: obj });
+      }
+    }
   }
-  if (meta?.requires?.esvs?.length) {
-    inventory.push(`Requires — ESVs: ${meta.requires.esvs.join(", ")}`);
+
+  // PD-18 (content-derived, shared with the S3 gate via discoverJourneyRefs): inner
+  // journeys an InnerTreeEvaluatorNode references but that aren't bundled must already
+  // exist on the target.
+  const { innerJourneys } = discoverJourneyRefs(rawComponents);
+  if (innerJourneys.length > 0) {
+    inventory.push(`References inner journeys (must exist on target): ${innerJourneys.join(", ")}`);
   }
 
   const n = names.length;
@@ -235,5 +278,5 @@ function summarizeJourney(
     components,
     inventory,
   };
-  return { bundle, rawComponents: [] };
+  return { bundle, rawComponents };
 }

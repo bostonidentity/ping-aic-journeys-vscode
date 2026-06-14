@@ -100,12 +100,13 @@ describe("parseBundle — journey bundles", () => {
     ...over,
   });
 
-  it("summarizes a level-1 journey: one tree + requires.innerJourneys", () => {
+  it("summarizes a level-1 journey from content; ignores meta.requires (PD-18)", () => {
     const r = parseBundle(
       j({
         meta: {
           ...META,
           depthMode: "level1",
+          // PD-18: even if a (legacy) bundle carries meta.requires, the preview must NOT surface it.
           requires: { innerJourneys: ["inner_j"], esvs: ["esv.x"], nodeTypes: [] },
         },
         trees: { main_j: tree() },
@@ -118,19 +119,13 @@ describe("parseBundle — journey bundles", () => {
     expect(r.bundle.components).toEqual([{ kind: "journey", id: "main_j", displayName: "main_j" }]);
     expect(r.bundle.inventory).toContain("Depth: level1");
     expect(r.bundle.inventory).toContain("Scripts: 2 (1 library)");
-    expect(r.bundle.inventory).toContain("Requires — inner journeys: inner_j");
-    expect(r.bundle.inventory).toContain("Requires — ESVs: esv.x");
+    expect(r.bundle.inventory.some((l) => l.startsWith("Requires"))).toBe(false);
   });
 
-  it("summarizes an all-levels journey: multiple trees + innerTreesIncluded", () => {
+  it("summarizes an all-levels journey from content; ignores meta.innerTreesIncluded (PD-18)", () => {
     const r = parseBundle(
       j({
-        meta: {
-          ...META,
-          depthMode: "allLevels",
-          innerTreesIncluded: ["inner_j"],
-          requires: { innerJourneys: [], esvs: [], nodeTypes: [] },
-        },
+        meta: { ...META, depthMode: "allLevels", innerTreesIncluded: ["inner_j"] },
         trees: { main_j: tree(), inner_j: tree({ socialIdentityProviders: {} }) },
       }),
     );
@@ -138,9 +133,66 @@ describe("parseBundle — journey bundles", () => {
     if (!r.ok) return;
     expect(r.bundle.label).toBe("Journey bundle (2 trees)");
     expect(r.bundle.components.map((c) => c.id)).toEqual(["main_j", "inner_j"]);
-    expect(r.bundle.inventory).toContain("Inner trees included: inner_j");
-    // aggregate counts across both trees (4 scripts, 2 library)
+    // aggregate counts across both trees (content-derived: 4 scripts, 2 library)
     expect(r.bundle.inventory).toContain("Scripts: 4 (2 library)");
+    expect(r.bundle.inventory.some((l) => l.startsWith("Inner trees included"))).toBe(false);
+  });
+
+  it("decomposes a journey into rawComponents: a journey unit per tree (nodes folded) + leaves", () => {
+    const r = parseBundle(j({ meta: META, trees: { main_j: tree() } }));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const byKind = (k: string) => r.rawComponents.filter((c) => c.kind === k);
+    // one journey unit; its nodes/innerNodes fold into raw (PD-3) — no `node` components.
+    const journeys = byKind("journey");
+    expect(journeys.map((c) => c.id)).toEqual(["main_j"]);
+    expect(Object.keys(journeys[0].raw.nodes as Record<string, unknown>)).toEqual(["n1", "n2"]);
+    expect(Object.keys(journeys[0].raw.innerNodes as Record<string, unknown>)).toEqual(["i1"]);
+    expect(journeys[0].raw.tree).toEqual({ _id: "t" });
+    expect(byKind("node")).toEqual([]);
+    // shared leaves extracted as their own components.
+    expect(
+      byKind("script")
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(["s1", "s2"]);
+    expect(byKind("theme").map((c) => c.id)).toEqual(["th"]);
+    expect(byKind("socialIdp").map((c) => c.id)).toEqual(["idp"]);
+  });
+
+  it("dedups a leaf shared across trees into one component (PD-6)", () => {
+    // both trees carry scripts s1/s2 — the allLevels closure → still one component each.
+    const r = parseBundle(j({ meta: META, trees: { main_j: tree(), inner_j: tree() } }));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.rawComponents.filter((c) => c.kind === "journey").map((c) => c.id)).toEqual([
+      "main_j",
+      "inner_j",
+    ]);
+    expect(
+      r.rawComponents
+        .filter((c) => c.kind === "script")
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(["s1", "s2"]);
+  });
+
+  it("surfaces referenced (not-bundled) inner journeys from content (PD-18)", () => {
+    const withInnerRef = tree({
+      nodes: { e1: { _id: "e1", tree: "MFA", _type: { _id: "InnerTreeEvaluatorNode" } } },
+    });
+    // level1: MFA referenced but not bundled → a preview line.
+    const lvl1 = parseBundle(j({ meta: META, trees: { main_j: withInnerRef } }));
+    expect(lvl1.ok).toBe(true);
+    if (!lvl1.ok) return;
+    expect(lvl1.bundle.inventory).toContain(
+      "References inner journeys (must exist on target): MFA",
+    );
+    // allLevels: MFA bundled → no "references" line.
+    const all = parseBundle(j({ meta: META, trees: { main_j: withInnerRef, MFA: tree() } }));
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.bundle.inventory.some((l) => l.startsWith("References inner journeys"))).toBe(false);
   });
 });
 
@@ -177,9 +229,18 @@ describe("parseBundle — rawComponents (extension-side compare payload)", () =>
     expect(r.ok && r.rawComponents.map((c) => c.id)).toEqual(["a", "b"]);
   });
 
-  it("is empty for a journey bundle", () => {
-    const r = parseBundle(j({ trees: { a: { nodes: {} } } }));
-    expect(r.ok && r.rawComponents).toEqual([]);
+  it("decomposes a journey bundle into a journey unit (nodes folded in raw)", () => {
+    const r = parseBundle(j({ trees: { a: { tree: { _id: "a" }, nodes: {}, innerNodes: {} } } }));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.rawComponents).toEqual([
+      {
+        kind: "journey",
+        id: "a",
+        displayName: "a",
+        raw: { tree: { _id: "a" }, nodes: {}, innerNodes: {} },
+      },
+    ]);
   });
 });
 

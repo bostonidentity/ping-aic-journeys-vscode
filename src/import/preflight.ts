@@ -8,7 +8,7 @@
 import type { PaicClient } from "../paic/client";
 import { type ComponentVerdict, classifyCompare } from "./compare";
 import { compatFor } from "./compat";
-import type { DiscoveredRef } from "./discover";
+import { type DiscoveredRef, discoverJourneyRefs } from "./discover";
 import type { ImportComponent } from "./parse";
 
 /** The subset of `PaicClient` the pre-flight reads. */
@@ -23,15 +23,21 @@ export type PreflightClient = Pick<
   | "getRawEsv"
   | "listVariables"
   | "listSecrets"
+  | "getNodeTypes"
+  | "listTrees"
 >;
 
 /** Existence verdict for a discovered (info-only) dependency ref — TD-9. The
  * bundle carries no body/value for these, so they're never written; the Plan
  * shows them as "what this script needs on the target". */
 export interface RequiredDepVerdict {
-  kind: "script" | "esv";
+  kind: "script" | "esv" | "nodeType" | "innerJourney";
   name: string;
   status: "present" | "missing";
+  /** `blocking` — a HARD prerequisite the bundle can't supply (a missing node type
+   * or a level1 inner journey): missing → disables Import (S8). `advisory` (the
+   * default when absent) — a `require('lib')` / ESV ref: missing only warns. */
+  severity?: "blocking" | "advisory";
   /** e.g. "variable" / "secret" for an ESV, or "2 on target" for a dup-name. */
   detail?: string;
 }
@@ -43,7 +49,8 @@ export interface RequiredDepVerdict {
  * "" when nothing is missing (so the caller can concatenate unconditionally).
  */
 export function missingDepsNote(requires: readonly RequiredDepVerdict[]): string {
-  const missing = requires.filter((d) => d.status === "missing");
+  // Advisory only — blocking-missing prerequisites disable Import (S8), not the modal.
+  const missing = requires.filter((d) => d.status === "missing" && d.severity !== "blocking");
   if (missing.length === 0) return "";
   return (
     ` ⚠ ${missing.length} referenced dependency(ies) are missing on the target ` +
@@ -201,7 +208,7 @@ export async function discoverDeps(
     for (const s of secrets) esvIndex.set(s.name, "secret");
   }
 
-  return Promise.all(
+  const verdicts = await Promise.all(
     refs.map(async (ref): Promise<RequiredDepVerdict> => {
       if (ref.kind === "esv") {
         const k = esvIndex?.get(ref.name);
@@ -224,4 +231,61 @@ export async function discoverDeps(
       }
     }),
   );
+  // lib / ESV refs are advisory — the bundle can't supply them; a missing one only warns.
+  return verdicts.map((v) => ({ ...v, severity: "advisory" as const }));
+}
+
+/**
+ * The HARD journey-import prerequisites the bundle can't supply (PD-7), checked
+ * against the target: every node **type** the journeys use must be installed
+ * (`getNodeTypes` catalog — TD-14), and every inner journey referenced but not
+ * bundled must already exist (`listTrees` — TD-12). Both are `severity:"blocking"`.
+ * A leaf bundle (no journey units) yields `[]`. Each catalog read is isolated: a
+ * fetch failure skips that gate's verdicts rather than blocking spuriously (the
+ * write would surface the real cause via `PaicError`). Read-only.
+ */
+export async function checkJourneyGates(
+  client: PreflightClient,
+  realm: string,
+  rawComponents: readonly ImportComponent[],
+): Promise<RequiredDepVerdict[]> {
+  const { nodeTypes, innerJourneys } = discoverJourneyRefs(rawComponents);
+  if (nodeTypes.length === 0 && innerJourneys.length === 0) return [];
+  const out: RequiredDepVerdict[] = [];
+
+  if (nodeTypes.length > 0) {
+    const catalog = await client
+      .getNodeTypes(realm)
+      .then((types) => new Set(types))
+      .catch(() => null);
+    if (catalog) {
+      for (const name of nodeTypes) {
+        out.push({
+          kind: "nodeType",
+          name,
+          status: catalog.has(name) ? "present" : "missing",
+          severity: "blocking",
+        });
+      }
+    }
+  }
+
+  if (innerJourneys.length > 0) {
+    const present = await client
+      .listTrees(realm)
+      .then((trees) => new Set(trees.map((t) => t._id)))
+      .catch(() => null);
+    if (present) {
+      for (const name of innerJourneys) {
+        out.push({
+          kind: "innerJourney",
+          name,
+          status: present.has(name) ? "present" : "missing",
+          severity: "blocking",
+        });
+      }
+    }
+  }
+
+  return out;
 }

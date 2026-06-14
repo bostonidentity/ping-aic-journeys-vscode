@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { DiscoveredRef } from "./discover";
 import type { ImportComponent } from "./parse";
 import {
+  checkJourneyGates,
   discoverDeps,
   missingDepsNote,
   type PreflightClient,
@@ -23,6 +24,8 @@ function client(over: Record<string, () => Promise<unknown>> = {}): PreflightCli
     getRawEsv: async () => null,
     listVariables: async () => [],
     listSecrets: async () => [],
+    getNodeTypes: async () => [],
+    listTrees: async () => [],
     ...over,
   } as unknown as PreflightClient;
 }
@@ -191,12 +194,22 @@ describe("discoverDeps", () => {
   it("library ref present on target → present", async () => {
     const findRawScriptsByName = vi.fn(async () => [{ _id: "u", name: "fraud-helpers" }]);
     const r = await discoverDeps(client({ findRawScriptsByName }), "alpha", [libRef]);
-    expect(r[0]).toEqual({ kind: "script", name: "fraud-helpers", status: "present" });
+    expect(r[0]).toEqual({
+      kind: "script",
+      name: "fraud-helpers",
+      status: "present",
+      severity: "advisory",
+    });
   });
 
   it("library ref absent on target → missing", async () => {
     const r = await discoverDeps(client(), "alpha", [libRef]);
-    expect(r[0]).toEqual({ kind: "script", name: "fraud-helpers", status: "missing" });
+    expect(r[0]).toEqual({
+      kind: "script",
+      name: "fraud-helpers",
+      status: "missing",
+      severity: "advisory",
+    });
   });
 
   it("dup-named library → present with an N-on-target note", async () => {
@@ -213,6 +226,7 @@ describe("discoverDeps", () => {
       name: "esv.threshold",
       status: "present",
       detail: "variable",
+      severity: "advisory",
     });
   });
 
@@ -246,5 +260,73 @@ describe("missingDepsNote", () => {
     expect(note).toContain("esv.threshold");
     expect(note).toContain("may fail at runtime");
     expect(note).not.toContain("ok-lib"); // present deps aren't named
+  });
+
+  it("omits blocking-missing prerequisites (they disable Import, not the modal)", () => {
+    const blockingMiss: RequiredDepVerdict = {
+      kind: "nodeType",
+      name: "PingOneVerifyNode",
+      status: "missing",
+      severity: "blocking",
+    };
+    expect(missingDepsNote([blockingMiss])).toBe("");
+    expect(missingDepsNote([blockingMiss, missLib])).toContain("fraud-helpers");
+    expect(missingDepsNote([blockingMiss, missLib])).not.toContain("PingOneVerifyNode");
+  });
+});
+
+describe("checkJourneyGates", () => {
+  const journeyUnit = (id: string, nodes: Record<string, unknown>): ImportComponent => ({
+    kind: "journey",
+    id,
+    displayName: id,
+    raw: { tree: { _id: id }, nodes, innerNodes: {} },
+  });
+
+  it("node-type gate: present vs missing against the catalog (blocking)", async () => {
+    const getNodeTypes = vi.fn(async () => ["PageNode"]);
+    const r = await checkJourneyGates(client({ getNodeTypes }), "alpha", [
+      journeyUnit("Login", {
+        n1: { _type: { _id: "PageNode" } },
+        n2: { _type: { _id: "PingOneVerifyNode" } },
+      }),
+    ]);
+    expect(r.filter((v) => v.kind === "nodeType")).toEqual([
+      { kind: "nodeType", name: "PageNode", status: "present", severity: "blocking" },
+      { kind: "nodeType", name: "PingOneVerifyNode", status: "missing", severity: "blocking" },
+    ]);
+  });
+
+  it("inner-journey gate: referenced-not-bundled checked vs listTrees (blocking)", async () => {
+    const listTrees = vi.fn(async () => [{ _id: "MFA" }]);
+    const r = await checkJourneyGates(client({ listTrees }), "alpha", [
+      journeyUnit("Login", {
+        a: { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "MFA" }, // present on target
+        b: { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "Risk" }, // missing
+      }),
+    ]);
+    expect(r.filter((v) => v.kind === "innerJourney")).toEqual([
+      { kind: "innerJourney", name: "MFA", status: "present", severity: "blocking" },
+      { kind: "innerJourney", name: "Risk", status: "missing", severity: "blocking" },
+    ]);
+  });
+
+  it("leaf bundle → no gate verdicts, no catalog/tree calls", async () => {
+    const getNodeTypes = vi.fn(async () => ["PageNode"]);
+    const listTrees = vi.fn(async () => []);
+    const r = await checkJourneyGates(client({ getNodeTypes, listTrees }), "alpha", [
+      comp({ kind: "script", id: "s", raw: {} }),
+    ]);
+    expect(r).toEqual([]);
+    expect(getNodeTypes).not.toHaveBeenCalled();
+    expect(listTrees).not.toHaveBeenCalled();
+  });
+
+  it("a catalog-read failure skips the node-type gate (no spurious blockers)", async () => {
+    const getNodeTypes = vi.fn(() => Promise.reject(new Error("boom")));
+    const r = await checkJourneyGates(client({ getNodeTypes }), "alpha", [
+      journeyUnit("Login", { n1: { _type: { _id: "PageNode" } } }),
+    ]);
+    expect(r.filter((v) => v.kind === "nodeType")).toEqual([]);
   });
 });

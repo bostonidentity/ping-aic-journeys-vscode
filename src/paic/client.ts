@@ -170,6 +170,26 @@ export interface PaicClient {
    * The UUID (the bundle `_id`) is preserved; `context: "LIBRARY"` round-trips
    * for library scripts. 201 → created / 200 → overwritten. */
   writeScript(realm: string, id: string, body: Record<string, unknown>): Promise<WriteOutcome>;
+  /** Create/overwrite an authentication-tree node instance
+   * (`PUT …/authenticationtrees/nodes/<nodeType>/<nodeId>`). The export shape is
+   * written as-is (AM tolerates the `_type`/`_outcomes` echoes — TD-15). 201 →
+   * created / 200 → overwritten. */
+  writeNode(
+    realm: string,
+    nodeType: string,
+    nodeId: string,
+    body: Record<string, unknown>,
+  ): Promise<WriteOutcome>;
+  /** Create/overwrite a journey/tree (`PUT …/authenticationtrees/trees/<treeId>`),
+   * written last in the dependency order. 201 → created / 200 → overwritten. */
+  writeTree(realm: string, treeId: string, body: Record<string, unknown>): Promise<WriteOutcome>;
+  /** All trees in a realm (`GET …/authenticationtrees/trees?_queryFilter=true`) —
+   * the import inner-journey existence gate checks membership by `_id`. */
+  listTrees(realm: string): Promise<RawJourney[]>;
+  /** Installed node-type ids in the deployment
+   * (`POST …/authenticationtrees/nodes?_action=getAllTypes`) — the import
+   * node-type gate diffs the bundle's used types against this catalog (TD-14). */
+  getNodeTypes(realm: string): Promise<string[]>;
   /** Environment restart ("apply") status — `ready` or `restarting`. ESV
    * writes only take effect after a restart. Throws on no-ESV backend. */
   getStartupStatus(): Promise<EsvRestartStatus>;
@@ -641,6 +661,71 @@ export function makePaicClient(opts: PaicClientOptions): PaicClient {
         "Wrote script",
       );
       return outcome;
+    },
+
+    async writeNode(
+      realm: string,
+      nodeType: string,
+      nodeId: string,
+      body: Record<string, unknown>,
+    ): Promise<WriteOutcome> {
+      const realmPath = getRealmPath(realm);
+      // Export shape written as-is (AM tolerates the `_type`/`_outcomes` echoes — TD-15).
+      const resp = await http.put(
+        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/nodes/${encodeURIComponent(nodeType)}/${encodeURIComponent(nodeId)}`,
+        body,
+        { apiVersion: TREE_API_VERSION },
+      );
+      const outcome: WriteOutcome = resp.status === 201 ? "created" : "overwritten";
+      log.info(
+        {
+          event: "client.writeNode",
+          realm,
+          node_type: nodeType,
+          node_id: nodeId,
+          status: resp.status,
+        },
+        "Wrote node",
+      );
+      return outcome;
+    },
+
+    async writeTree(
+      realm: string,
+      treeId: string,
+      body: Record<string, unknown>,
+    ): Promise<WriteOutcome> {
+      const realmPath = getRealmPath(realm);
+      const resp = await http.put(
+        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(treeId)}`,
+        body,
+        { apiVersion: TREE_API_VERSION },
+      );
+      const outcome: WriteOutcome = resp.status === 201 ? "created" : "overwritten";
+      log.info(
+        { event: "client.writeTree", realm, tree_id: treeId, status: resp.status },
+        "Wrote tree",
+      );
+      return outcome;
+    },
+
+    async listTrees(realm: string): Promise<RawJourney[]> {
+      const realmPath = getRealmPath(realm);
+      const resp = await http.get<PagedResponse<RawJourney>>(
+        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/trees?_queryFilter=true`,
+        { apiVersion: TREE_API_VERSION },
+      );
+      return resp.data.result;
+    },
+
+    async getNodeTypes(realm: string): Promise<string[]> {
+      const realmPath = getRealmPath(realm);
+      const resp = await http.post<{ result?: Array<{ _id?: string }> }>(
+        `${amPath}/json${realmPath}/realm-config/authentication/authenticationtrees/nodes?_action=getAllTypes`,
+        {},
+        { apiVersion: TREE_API_VERSION },
+      );
+      return (resp.data.result ?? []).map((t) => t._id).filter((id): id is string => Boolean(id));
     },
 
     async getStartupStatus(): Promise<EsvRestartStatus> {

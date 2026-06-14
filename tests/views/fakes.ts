@@ -124,6 +124,10 @@ export function makeFakePaicClient(data: FakePaicClientData): PaicClient {
     writeEsvVariable: vi.fn(() => Promise.resolve("created" as const)),
     writeEsvSecret: vi.fn(() => Promise.resolve("created" as const)),
     writeScript: vi.fn(() => Promise.resolve("created" as const)),
+    writeNode: vi.fn(() => Promise.resolve("created" as const)),
+    writeTree: vi.fn(() => Promise.resolve("created" as const)),
+    listTrees: vi.fn(() => Promise.resolve([])),
+    getNodeTypes: vi.fn(() => Promise.resolve([])),
     getStartupStatus: vi.fn(() => Promise.resolve("ready" as const)),
     applyEsvUpdates: vi.fn(() => Promise.resolve()),
   };

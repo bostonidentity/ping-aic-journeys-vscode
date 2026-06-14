@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoverScriptDeps } from "./discover";
+import { discoverJourneyRefs, discoverScriptDeps } from "./discover";
 import type { ImportComponent } from "./parse";
 
 /** Bundle body form: JSON-stringified decoded source (serialize.ts). */
@@ -54,5 +54,49 @@ describe("discoverScriptDeps", () => {
     expect(
       discoverScriptDeps([{ kind: "script", id: "s", displayName: "s", raw: { script: 42 } }]),
     ).toEqual([]);
+  });
+});
+
+describe("discoverJourneyRefs", () => {
+  const journeyComp = (
+    id: string,
+    nodes: Record<string, unknown>,
+    innerNodes: Record<string, unknown> = {},
+  ): ImportComponent => ({
+    kind: "journey",
+    id,
+    displayName: id,
+    raw: { tree: { _id: id }, nodes, innerNodes },
+  });
+
+  it("collects node types from nodes + innerNodes (deduped, sorted)", () => {
+    const refs = discoverJourneyRefs([
+      journeyComp(
+        "Login",
+        { n1: { _type: { _id: "PageNode" } }, n2: { _type: { _id: "ScriptedDecisionNode" } } },
+        { i1: { _type: { _id: "ScriptedDecisionNode" } } },
+      ),
+    ]);
+    expect(refs.nodeTypes).toEqual(["PageNode", "ScriptedDecisionNode"]);
+    expect(refs.innerJourneys).toEqual([]);
+  });
+
+  it("reports inner journeys referenced (InnerTreeEvaluatorNode.tree) but not bundled", () => {
+    const refs = discoverJourneyRefs([
+      journeyComp("Login", {
+        e1: { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "MFA" }, // bundled below
+        e2: { _type: { _id: "InnerTreeEvaluatorNode" }, tree: "Risk" }, // not bundled → reported
+      }),
+      journeyComp("MFA", {}),
+    ]);
+    expect(refs.innerJourneys).toEqual(["Risk"]);
+    expect(refs.nodeTypes).toEqual(["InnerTreeEvaluatorNode"]);
+  });
+
+  it("returns empty for a leaf bundle (no journey units)", () => {
+    const comps: ImportComponent[] = [
+      { kind: "script", id: "s", displayName: "s", raw: { _id: "s" } },
+    ];
+    expect(discoverJourneyRefs(comps)).toEqual({ nodeTypes: [], innerJourneys: [] });
   });
 });

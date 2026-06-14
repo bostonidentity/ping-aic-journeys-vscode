@@ -117,7 +117,7 @@ function baseFixture(): Fixture {
 }
 
 describe("buildJourneyBundle — level1", () => {
-  it("bundles the selected tree with its leaf deps; inner journeys + ESVs go to requires", async () => {
+  it("bundles the selected tree with its leaf deps; the inner journey is referenced, not bundled", async () => {
     const bundle = await buildJourneyBundle(
       makeClient(baseFixture()),
       CONN,
@@ -140,11 +140,13 @@ describe("buildJourneyBundle — level1", () => {
     expect(Object.keys(t.emailTemplates)).toEqual(["emailTemplate/welcome"]);
     expect(Object.keys(t.socialIdentityProviders)).toEqual(["google"]);
 
+    // level1: the inner journey is referenced (by InnerTreeEvaluatorNode), not bundled.
+    expect(bundle.trees.inner).toBeUndefined();
+    // meta = provenance + informational depthMode only (PD-18 — no derived manifest).
     expect(bundle.meta.depthMode).toBe("level1");
-    expect(bundle.meta.treesSelectedForExport).toEqual(["main"]);
-    expect(bundle.meta.innerTreesIncluded).toEqual([]);
-    expect(bundle.meta.requires?.innerJourneys).toEqual(["inner"]); // referenced, not bundled
-    expect(bundle.meta.requires?.esvs).toEqual(["esv.foo"]); // never bundled
+    expect(bundle.meta).not.toHaveProperty("requires");
+    expect(bundle.meta).not.toHaveProperty("treesSelectedForExport");
+    expect(bundle.meta).not.toHaveProperty("innerTreesIncluded");
   });
 
   it("strips mask fields and decodes the script body", async () => {
@@ -169,7 +171,7 @@ describe("buildJourneyBundle — level1", () => {
 });
 
 describe("buildJourneyBundle — allLevels", () => {
-  it("bundles the inner journey as a sibling tree and records innerTreesIncluded", async () => {
+  it("bundles the inner journey as a sibling tree (allLevels closure)", async () => {
     const bundle = await buildJourneyBundle(
       makeClient(baseFixture()),
       CONN,
@@ -182,9 +184,10 @@ describe("buildJourneyBundle — allLevels", () => {
     );
     if (!bundle) throw new Error("expected a bundle");
     expect(Object.keys(bundle.trees).sort()).toEqual(["inner", "main"]);
-    expect(bundle.meta.innerTreesIncluded).toEqual(["inner"]);
-    expect(bundle.meta.requires?.innerJourneys).toEqual([]);
     expect(Object.keys(bundle.trees.inner.scripts)).toEqual(["sInner"]);
+    // meta = provenance + informational depthMode only (PD-18).
+    expect(bundle.meta.depthMode).toBe("allLevels");
+    expect(bundle.meta).not.toHaveProperty("requires");
   });
 
   it("terminates on a cycle (inner → main → inner)", async () => {

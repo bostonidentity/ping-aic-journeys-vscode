@@ -43,6 +43,63 @@ describe("PaicError", () => {
     expect(e.cause).toBe(axiosErr);
   });
 
+  it("extracts the AM/IDM REST envelope message + detail (no OAuth fields)", () => {
+    const axiosErr = makeAxiosError({
+      status: 400,
+      message: "Request failed with status code 400",
+      data: {
+        code: 400,
+        reason: "Bad Request",
+        message: "Data validation failed for the attribute, Script",
+        detail: { validAttributes: ["script", "_id"] },
+      },
+    });
+
+    const e = PaicError.from(axiosErr);
+
+    expect(e.status).toBe(400);
+    expect(e.description).toBe("Data validation failed for the attribute, Script");
+    // the AM message becomes the actionable Error.message (not axios's generic text)
+    expect(e.message).toBe("Data validation failed for the attribute, Script");
+    expect(e.errorText).toBeUndefined();
+    expect((e.detail as { validAttributes?: string[] }).validAttributes).toEqual(["script", "_id"]);
+  });
+
+  it("extracts an AM/IDM conflict (409) message", () => {
+    const axiosErr = makeAxiosError({
+      status: 409,
+      message: "Request failed with status code 409",
+      data: {
+        code: 409,
+        reason: "Conflict",
+        message: "Script with name login-decision already exist in realm /alpha",
+      },
+    });
+
+    const e = PaicError.from(axiosErr);
+
+    expect(e.status).toBe(409);
+    expect(e.description).toBe("Script with name login-decision already exist in realm /alpha");
+    expect(e.message).toBe("Script with name login-decision already exist in realm /alpha");
+  });
+
+  it("prefers the OAuth error_description over an AM message when both are present", () => {
+    const axiosErr = makeAxiosError({
+      status: 400,
+      data: {
+        error: "invalid_scope",
+        error_description: "Unsupported scope for service account: fr:foo:*",
+        message: "some AM-shaped message",
+      },
+    });
+
+    const e = PaicError.from(axiosErr);
+
+    // OAuth wins → the auth-layer scope fallback (reads `.description`) stays correct
+    expect(e.description).toBe("Unsupported scope for service account: fr:foo:*");
+    expect(e.message).toBe("Unsupported scope for service account: fr:foo:*");
+  });
+
   it("wraps AxiosError without response (network error) — keeps code, no status", () => {
     const axiosErr = makeAxiosError({ message: "connect ECONNREFUSED", code: "ECONNREFUSED" });
 

@@ -106,13 +106,15 @@ async function writeOne(
             toSecretWrite(component.raw, item.secret),
           );
         } catch (err) {
-          // Create-only + a TOCTOU race → 400 "already exists". That satisfies
+          // Create-only + a TOCTOU race → 400 "already exist(s)". That satisfies
           // intent (the secret is present); report it skipped, not failed. Real
           // validation 400s (bad base64/encoding) fall through to `failed`.
+          // `/already exist/i` is wording-tolerant (AM/IDM say "exist", OAuth
+          // "exists"); the real AM/IDM message now reaches here via PaicError (PD-14).
           if (
             err instanceof PaicError &&
             err.status === 400 &&
-            /already exists/i.test(err.description ?? err.message)
+            /already exist/i.test(err.description ?? err.message)
           ) {
             return {
               ...base,

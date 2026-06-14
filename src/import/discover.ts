@@ -26,6 +26,8 @@ export interface DiscoveredRef {
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Decode a bundle script body back to plain source. The bundle carries it
  * JSON-stringified (`serialize.ts:scriptBodyToExport`); tolerate a non-string /
@@ -59,4 +61,41 @@ export function discoverScriptDeps(rawComponents: readonly ImportComponent[]): D
   for (const name of [...libs].sort()) out.push({ kind: "script", name });
   for (const name of [...esvs].sort()) out.push({ kind: "esv", name });
   return out;
+}
+
+/** Node types used + inner journeys referenced-but-not-bundled by a journey
+ * bundle's units — the inputs to the import gates (PD-7). */
+export interface JourneyRefs {
+  /** Every `_type._id` across the journeys' nodes + inner nodes (deduped, sorted). */
+  nodeTypes: string[];
+  /** `InnerTreeEvaluatorNode.tree` refs NOT present as a bundled journey unit
+   * (deduped, sorted) — these must already exist on the target (TD-12). */
+  innerJourneys: string[];
+}
+
+/**
+ * Walk a journey bundle's decomposed units (`kind: "journey"` from `parse.ts`,
+ * nodes folded into `raw`) for the gate inputs: the node types it uses and the
+ * inner journeys it references but does not bundle. Pure; non-journey components
+ * are ignored, so a leaf bundle yields `{ nodeTypes: [], innerJourneys: [] }`.
+ */
+export function discoverJourneyRefs(rawComponents: readonly ImportComponent[]): JourneyRefs {
+  const bundled = new Set(rawComponents.filter((c) => c.kind === "journey").map((c) => c.id));
+  const nodeTypes = new Set<string>();
+  const innerJourneys = new Set<string>();
+  for (const comp of rawComponents) {
+    if (comp.kind !== "journey") continue;
+    const nodes = isRecord(comp.raw.nodes) ? comp.raw.nodes : {};
+    const innerNodes = isRecord(comp.raw.innerNodes) ? comp.raw.innerNodes : {};
+    for (const node of [...Object.values(nodes), ...Object.values(innerNodes)]) {
+      if (!isRecord(node)) continue;
+      const type = isRecord(node._type) ? str(node._type._id) : undefined;
+      if (type) nodeTypes.add(type);
+      if (type === "InnerTreeEvaluatorNode") {
+        const ref = str(node.tree);
+        if (ref && !bundled.has(ref)) innerJourneys.add(ref);
+      }
+    }
+  }
+  return { nodeTypes: [...nodeTypes].sort(), innerJourneys: [...innerJourneys].sort() };
 }

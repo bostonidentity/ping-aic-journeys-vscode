@@ -5,10 +5,14 @@ export interface PaicErrorFields {
   status?: number;
   /** Axios code for transport-level failures, e.g. `ECONNREFUSED`, `ETIMEDOUT`. */
   code?: string;
-  /** `body.error` from a PAIC OAuth/AM error envelope (e.g. `"invalid_scope"`). */
+  /** `body.error` from a PAIC OAuth error envelope (e.g. `"invalid_scope"`). */
   errorText?: string;
-  /** `body.error_description` from a PAIC OAuth/AM error envelope. */
+  /** Human-readable detail: OAuth `error_description`, else the AM/IDM REST
+   * `message` (e.g. "Data validation failed for the attribute, Script"). */
   description?: string;
+  /** AM/IDM REST `detail` object when present (e.g. `{ validAttributes }` for an
+   * "Invalid attribute specified" 400 — readies the future strip-and-retry). */
+  detail?: unknown;
 }
 
 /**
@@ -20,6 +24,7 @@ export class PaicError extends Error {
   readonly code?: string;
   readonly errorText?: string;
   readonly description?: string;
+  readonly detail?: unknown;
   override readonly cause?: unknown;
 
   constructor(message: string, fields: PaicErrorFields = {}, cause?: unknown) {
@@ -29,6 +34,7 @@ export class PaicError extends Error {
     this.code = fields.code;
     this.errorText = fields.errorText;
     this.description = fields.description;
+    this.detail = fields.detail;
     this.cause = cause;
   }
 
@@ -44,16 +50,28 @@ export class PaicError extends Error {
     // tests) the constructor identity check can be unreliable.
     if (axios.isAxiosError(err)) {
       const axiosErr = err as AxiosError;
+      // Two error envelopes funnel through here: the OAuth/token envelope
+      // (`{ error, error_description }`) and the AM/IDM REST envelope
+      // (`{ code, reason, message, detail }`). Extract both; OAuth wins so the
+      // auth-layer scope fallback (which reads `.description`) is unaffected.
       const body = axiosErr.response?.data as
-        | { error?: unknown; error_description?: unknown }
+        | { error?: unknown; error_description?: unknown; message?: unknown; detail?: unknown }
         | undefined;
       const errorText = typeof body?.error === "string" ? body.error : undefined;
-      const description =
+      const oauthDescription =
         typeof body?.error_description === "string" ? body.error_description : undefined;
+      const amMessage = typeof body?.message === "string" ? body.message : undefined;
+      const description = oauthDescription ?? amMessage;
       const message = description ?? errorText ?? axiosErr.message ?? fallbackMessage;
       return new PaicError(
         message,
-        { status: axiosErr.response?.status, code: axiosErr.code, errorText, description },
+        {
+          status: axiosErr.response?.status,
+          code: axiosErr.code,
+          errorText,
+          description,
+          detail: body?.detail,
+        },
         axiosErr,
       );
     }
